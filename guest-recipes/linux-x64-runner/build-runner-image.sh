@@ -384,16 +384,38 @@ log "checking runner runtime dependencies in the base image"
 #         namespace have been permitted since Linux 4.18, so no
 #         `security.privileged` / `security.nesting` / extra `unix-char`
 #         device is required — only this package.
+#       * `git-lfs` is `git`'s natural peer: `actions/checkout` with `lfs: true`
+#         shells out to the `git-lfs` binary and fails BEFORE it fetches
+#         anything with "This repository is configured for Git LFS but
+#         'git-lfs' was not found" when it is not on PATH. Baked here for the
+#         same pre-nix reason `git` is — the clone/checkout runs before any
+#         per-flavor toolchain exists. Concrete blocker for the RC4 repo-label
+#         migration.
+#       * `gawk` provides `awk`, which the shared `setup-nix` / `setup-dev-env`
+#         action's `write-netrc.sh` invokes; without it that step dies with
+#         `awk: command not found` (exit 127). The infra static-runner baseline
+#         (`services/github-runners/common.nix`) already carries gawk for
+#         exactly this reason — the ephemeral golden is a DIFFERENT code path
+#         and never got it.
+#       * `jq` is used pervasively by workflows and is part of the intended
+#         static-runner baseline.
+#       * `gh` (the GitHub CLI) is part of the static-runner baseline
+#         (`common.nix`) and is invoked directly by workflows. It is NOT in
+#         Debian `main`, so it is installed from GitHub's official apt
+#         repository in a separate sub-step below.
 #     apt needs egress, which incusbr0 does not lease; bring up the shared
 #     static build IP for the install (idempotent — the HR1/HR2 bakes reuse it).
-log "installing CI baseline tools (git, xz-utils, ca-certificates, fuse3)"
+log "installing CI baseline tools (git, git-lfs, xz-utils, ca-certificates, fuse3, gawk, jq, gh)"
 ensure_build_egress
 "${INCUS[@]}" exec "$BLD" -- sh -c "
   set -e
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq --no-install-recommends git xz-utils ca-certificates fuse3
+  apt-get install -y -qq --no-install-recommends git git-lfs xz-utils ca-certificates fuse3 gawk jq
   command -v git
+  command -v git-lfs
+  command -v gawk
+  command -v jq
   command -v xz
   # Assert the helper is present AND setuid — an installed-but-not-setuid
   # fusermount3 fails later, at build time, with the far less obvious
@@ -403,6 +425,26 @@ ensure_build_egress
     echo '[build-runner-image] fusermount3 is not setuid — unprivileged FUSE mounts will fail' >&2
     exit 1
   }
+"
+
+# 3b-gh. Install the GitHub CLI (`gh`) from GitHub's OFFICIAL apt repository.
+#        `gh` is not packaged in Debian `main`, so it cannot ride along with the
+#        install above. This follows the canonical, currently-documented method:
+#        fetch the archive keyring, register the `stable main` component signed
+#        by it, then install. Build egress is already up (ensure_build_egress
+#        ran before 3b), so this reuses it — no job-time network is available.
+log "installing GitHub CLI (gh) from cli.github.com apt repository"
+"${INCUS[@]}" exec "$BLD" -- sh -c "
+  set -e
+  export DEBIAN_FRONTEND=noninteractive
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+  chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+  echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' \
+    > /etc/apt/sources.list.d/github-cli.list
+  apt-get update -qq
+  apt-get install -y -qq gh
+  command -v gh
 "
 
 # 3c. Publish the setuid helper at the ABSOLUTE path libfuse tries FIRST.
