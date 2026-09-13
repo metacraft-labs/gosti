@@ -321,6 +321,32 @@ A **daemon-less direct-boot** backend (`backends/qemu_boot.nim`). It implements 
 
   Both polarities are gated. `tests/unit/t_tpm_device_args.nim` asserts the argv is present when enabled and absent when not; `tests/integration/t_guest_sees_tpm_device.nim` boots a real Linux guest (`nix/guest-linux-tpm.nix` — a stock nixpkgs `bzImage` plus a busybox initramfs, direct-kernel-booted) and asserts the guest reports `/dev/tpm0` plus a real TPM2_GetCapability(FAMILY_INDICATOR) response of `"2.0"` with the flag, and no TPM device without it.
 
+### 4.7 Incus (HostPlatform: hpLinux; Guests: goLinux)
+
+- **Transport**: the local Incus administrative socket through the `incus`
+  CLI; in-guest commands use `incus exec`.
+- **Default ephemeral lifecycle**: `incus launch` → probe → force-delete. No
+  KVM device or nesting key is present by default, preserving the original
+  command path.
+- **Operator capability lifecycle**: `EphemeralIncusSpec.securityNesting` or
+  `.nestedKvm` switches creation to `incus init`; vm-harness applies the fixed
+  configuration/device policy while stopped and then calls `incus start`.
+  Nested KVM implies `security.nesting`, attaches only host `/dev/kvm` at guest
+  `/dev/kvm` as `unix-char mode=0666`, converges that mode after start, and
+  verifies the numeric mode plus an actual read/write open before returning.
+  Any failure force-deletes the half-created container.
+- **Trust boundary**: these fields and matching CLI flags are host-controller
+  policy. They accept no arbitrary device path/type/mode and must never be
+  populated from guest user-data or workflow input. Over `serve`, possession
+  of the overlay-only bearer token already authorizes the complete host worker
+  CLI, including these flags; the token is an operator secret.
+- **Tests**: the deterministic subprocess contract pins default-off argv,
+  pre-start ordering, implied nesting, every failure-stage cleanup, and the
+  authenticated `serve` forwarding path. The separate host-gated roundtrip is
+  designed to prove a real Incus guest receives accessible nested KVM and
+  leaves no residue when its explicit Incus/KVM prerequisites are healthy; a
+  prerequisite skip is not claimed as coverage.
+
 ## 5. In-guest scripts (Tier-1 only)
 
 ### 5.1 posix.sh

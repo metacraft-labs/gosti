@@ -66,10 +66,11 @@ without any real hypervisor — the only mock allowed by the test methodology
 - Host needs: the `incus` daemon initialized (declaratively via NixOS
   `virtualisation.incus`, or `incus admin init --minimal` once on a non-NixOS
   host), plus the service user in the `incus-admin` group for socket access.
-- Guests: Linux system containers. Sub-second launch, no `/dev/kvm` — the
-  container analog of the libvirt per-job path.
-- Reset: ephemeral only — `incus launch <base> <name>` → `incus exec` probe
-  → `incus delete --force`, no residual container or storage volume.
+- Guests: Linux system containers. Plain runners need no `/dev/kvm`; an
+  operator can explicitly select fixed nesting and nested-KVM capabilities.
+- Reset: ephemeral only — default `incus launch`; capability runners use
+  `incus init` → fixed config/device → `incus start`; both end with
+  `incus delete --force`, with no residual container or storage volume.
 - Constructor defaults: `baseImage = vmh-base`, `storagePool = default`.
 - Socket-access caveat: if your session pre-dates the `incus-admin` group
   grant (or you are in a sandbox), prefix the CLI:
@@ -79,6 +80,10 @@ without any real hypervisor — the only mock allowed by the test methodology
   injection point (`incus config set <name> cloud-init.user-data ...`) for a
   GARM JIT bootstrap. The base image is pinned locally, e.g.
   `incus image copy images:debian/12 local: --alias vmh-base`.
+- Nested capability seam: `--incus-security-nesting` and
+  `--incus-nested-kvm` are accepted only for `run --ephemeral --backend incus`.
+  They are trusted-controller privileges, never guest/workflow inputs; nested
+  KVM attaches only the fixed `/dev/kvm` mapping and verifies mode `0666`.
 - Networking caveat (host-dependent): on hosts where `incusbr0` DHCP does
   not lease, a static per-job IP is injected via cloud-init and large files are
   streamed in via `cat | incus exec tar` rather than `incus file push` (which

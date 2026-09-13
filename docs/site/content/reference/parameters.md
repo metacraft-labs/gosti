@@ -8,10 +8,12 @@ slug: parameters
 
 vm-harness is a toolkit whose value is its parameters. This page documents the
 knobs consumers rely on as a stable, public contract: name, type, default,
-effect, and security/performance implications. Two surfaces matter most:
+effect, and security/performance implications. Three surfaces matter most:
 
 - the runner-image recipe seams (`VMH_RUNNER_*` and friends) that shape the
   `vmh-linux-runner` Incus image, and
+- the vm-harness ephemeral Incus capability flags a trusted controller sends
+  to a remote host, and
 - the GARM Incus provider options (`incus*`) a fleet operator sets to grant
   per-job containers their capabilities.
 
@@ -105,7 +107,26 @@ The static address is torn down before publish, so the image carries no stray
 address (the provider injects the real per-job IP via cloud-init).
 
 
-## 2. GARM Incus provider options
+## 2. Ephemeral Incus capability flags
+
+These flags are parsed by vm-harness itself and accepted only on
+`run --ephemeral --backend incus`. A capability run is initialised stopped,
+configured, and only then started. With both defaults off, vm-harness retains
+the prior `incus launch` argv exactly.
+
+| Flag | Type | Default | Effect + security posture |
+| --- | --- | --- | --- |
+| `--incus-security-nesting` | bool | `false` | Before first start, sets `security.nesting=true` plus the fixed mknod/setxattr syscall intercepts used by unprivileged nested Docker/Podman. |
+| `--incus-nested-kvm` | bool | `false` | Implies nesting; before first start attaches exactly host `/dev/kvm` to guest `/dev/kvm` as a unix-char device with mode `0666`, then converges and verifies that exact guest mode and a real read/write open. The host path/type/mode are not caller-selectable. |
+
+The caller is part of the trusted host control plane. Locally it already needs
+the Incus administrative socket; remotely it must possess the overlay-only
+`vm-harness serve` bearer token, which authorizes the complete worker CLI.
+Never expose that token to guests or workflows, and never derive these flags
+from user-data. Device attachment/access failure deletes the half-created
+ephemeral container rather than returning a degraded runner.
+
+## 3. GARM Incus provider options
 
 These options shape the per-job Incus container that the GARM vm-harness
 provider launches. They are the run-time complement to the recipe seams above:
@@ -159,7 +180,7 @@ Related provider options that are not incus-specific but commonly set alongside:
 for the libvirt backend, `libvirtURI`, `network`, and `poolDir`.
 
 
-## 3. Other backend / recipe environment variables
+## 4. Other backend / recipe environment variables
 
 Several backends read `VMH_*` variables for tool paths, credentials, timeouts,
 and image locations. These are operator escape hatches — the constructor
@@ -180,5 +201,5 @@ and each backend source under `src/vm_harness/backends/`). Notable ones:
   `VMH_VIRTIO_NETKVM_ARM64_*`).
 
 Only the `VMH_RUNNER_*` recipe seams and the `incus*` provider options in
-sections 1–2 are treated as the primary stable consumer contract; the rest are
+sections 1–3 are treated as the primary stable consumer contract; the rest are
 escape hatches whose supported form is the backend constructor default.
