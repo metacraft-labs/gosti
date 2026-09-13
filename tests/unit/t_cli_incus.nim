@@ -2,6 +2,68 @@ import std/[os, strutils, tempfiles, unittest]
 import vm_harness/cli
 
 suite "CLI Incus lifecycle":
+  test "nested capability flags parse only for ephemeral Incus runs":
+    let both = parseCliOpts(@[
+      "run", "--ephemeral", "--backend", "incus",
+      "--incus-security-nesting", "--incus-nested-kvm",
+      "--baseline", "runner-1", "--", "true",
+    ])
+    check both.incusSecurityNesting
+    check both.incusNestedKvm
+
+    let kvmOnly = parseCliOpts(@[
+      "run", "--ephemeral", "--backend", "incus",
+      "--incus-nested-kvm", "--baseline", "runner-2", "--", "true",
+    ])
+    check not kvmOnly.incusSecurityNesting
+    check kvmOnly.incusNestedKvm
+
+    for invalid in [
+      @["run", "--backend", "incus", "--incus-nested-kvm"],
+      @["run", "--ephemeral", "--backend", "libvirt",
+        "--incus-nested-kvm"],
+      @["provision", "--backend", "incus", "--incus-security-nesting"],
+      @["run", "--ephemeral", "--backend", "auto",
+        "--incus-security-nesting"],
+    ]:
+      expect ValueError:
+        discard parseCliOpts(invalid)
+
+  test "privileged Incus CLI path keeps the configured container running":
+    when defined(linux):
+      let work = createTempDir("vmh-cli-incus-capability", "")
+      defer: removeDir(work)
+      let logPath = work / "incus.log"
+      let fakeIncus = work / "incus"
+      writeFile(fakeIncus,
+        "#!/bin/sh\n" &
+        "printf '%s\\n' \"$*\" >> '" & logPath & "'\n" &
+        "case \"$*\" in\n" &
+        "  'info runner-cap') exit 1 ;;\n" &
+        "  'exec runner-cap -- stat -c %a /dev/kvm') printf '666\\n' ;;\n" &
+        "esac\n")
+      setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
+
+      let previous = getEnv("VMH_INCUS_CMD")
+      putEnv("VMH_INCUS_CMD", fakeIncus)
+      defer: putEnv("VMH_INCUS_CMD", previous)
+
+      check runCli(@[
+        "run", "--ephemeral", "--backend", "incus",
+        "--baseline", "runner-cap", "--base-image", "runner-base",
+        "--incus-security-nesting", "--incus-nested-kvm", "--keep",
+      ]) == 0
+      let lines = readFile(logPath).splitLines()
+      check "init runner-base runner-cap" in lines
+      check "launch runner-base runner-cap" notin lines
+      check "start runner-cap" in lines
+      check "exec runner-cap -- chmod 0666 /dev/kvm" in lines
+      check "exec runner-cap -- stat -c %a /dev/kvm" in lines
+      check "exec runner-cap -- sh -c exec 3<>/dev/kvm" in lines
+      check "delete --force runner-cap" notin lines
+    else:
+      skip()
+
   test "ephemeral-destroy delegates only the named container to Incus":
     when defined(linux):
       let work = createTempDir("vmh-cli-incus", "")
