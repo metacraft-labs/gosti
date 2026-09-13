@@ -488,7 +488,8 @@ proc provisionEphemeralClone*(b: IncusBackend,
 
 proc injectAndRunBootstrap*(b: IncusBackend, vm: VmHandle, payload: string,
                             guestPath: string = IncusBootstrapGuestPath,
-                            logPath: string = IncusBootstrapLogPath) =
+                            logPath: string = IncusBootstrapLogPath,
+                            networkTimeoutSec: int = 120) =
   ## Deliver the runner bootstrap ``payload`` into an already-exec-ready
   ## container and launch it DETACHED. This replaces the cloud-init datasource
   ## path that incus does not drive.
@@ -526,6 +527,32 @@ proc injectAndRunBootstrap*(b: IncusBackend, vm: VmHandle, payload: string,
       raise newVmHarnessError($b.id, lpProvisioning,
         "injectAndRunBootstrap: delivering bootstrap into '" & vm.name &
         "' failed (exit " & $deliver.exitCode & ")")
+    # 1.5 Wait for the guest NETWORK before launching. `startAndAwaitReady`
+    # only proves `incus exec -- true` (init far enough to exec); it does NOT
+    # prove DHCP has assigned an address or that DNS resolves. GARM's bootstrap
+    # curls the metadata/callback URLs and downloads the runner the instant it
+    # starts, so launching it before the network is up makes its first request
+    # fail (curl exit 7 / "HTTP 000000") and the script aborts — the runner
+    # never registers. Poll from the host for a default route AND working DNS
+    # (the runner download needs name resolution), then launch. On timeout fail
+    # the create so the controller recreates rather than leaving a dead guest.
+    block awaitNet:
+      let netDeadline = epochTime() + networkTimeoutSec.float
+      var lastRc = -1
+      while epochTime() < netDeadline:
+        let probe = b.execInGuest(vm, initTable[string, string](),
+          @["sh", "-c",
+            "ip route 2>/dev/null | grep -q '^default' && " &
+            "getent hosts github.com >/dev/null 2>&1"],
+          timeoutSec = 15)
+        lastRc = probe.exitCode
+        if lastRc == 0:
+          break awaitNet
+        sleep(1000)
+      if lastRc != 0:
+        raise newVmHarnessError($b.id, lpStartup,
+          "injectAndRunBootstrap: guest '" & vm.name & "' network not ready " &
+          "(no default route / DNS) within " & $networkTimeoutSec & "s")
     # 2. Launch DETACHED so the exec call returns and run.sh keeps running.
     let launch = b.execInGuest(vm, initTable[string, string](),
       @["setsid", "--fork", "bash", "-lc",

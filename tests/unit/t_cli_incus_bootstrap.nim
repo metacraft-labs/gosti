@@ -81,6 +81,11 @@ suite "CLI Incus bootstrap exec-injection":
       #     argv carries the sh -c wrapper + guest path, NOT the payload.
       check argv.contains("exec vmh-boot-test -- sh -c umask 077 && cat > " &
                           "'/root/garm-bootstrap.sh'")
+      # (b2) the guest NETWORK was gated before the bootstrap launched: a
+      #      default-route + DNS probe runs, so the script never fires its first
+      #      curl before DHCP/resolv are up (the "HTTP 000000"/exit-7 race).
+      check argv.contains("ip route")
+      check argv.contains("getent hosts github.com")
       # (c) it was exec'd DETACHED via setsid --fork, redirected to a guest log.
       check argv.contains("setsid --fork bash -lc '/root/garm-bootstrap.sh'")
       check "garm-bootstrap.sh" in argv
