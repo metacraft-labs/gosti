@@ -4,16 +4,17 @@
 ## per-job Windows/Linux VMs on KVM). Incus system containers launch in
 ## well under a second and cost a fraction of a VM, so the ephemeral loop
 ## (fresh container per job → run one job → destroy) is far cheaper than
-## the libvirt path and needs no ``/dev/kvm``.
+## the libvirt path. Plain containers need no ``/dev/kvm``; a trusted host
+## controller may explicitly attach it for a nested-virtualisation class.
 ##
 ## The backend is a thin adapter around the ``incus`` CLI. Command map
 ## (one CLI verb per VmBackend method):
 ##
 ##   probeAvailability        ``incus info``
 ##   provisionBaseline        ``incus image list <alias>`` (ensure present)
-##   provisionEphemeralClone  ``incus launch <base> <name>`` (+ optional
-##                            ``--ephemeral`` and cloud-init user-data
-##                            injection via ``incus config set``)
+##   provisionEphemeralClone  default ``incus launch <base> <name>``;
+##                            operator capabilities use ``incus init`` →
+##                            fixed config/device → ``incus start``
 ##   startAndAwaitReady       poll ``incus exec <name> -- true`` until it
 ##                            succeeds (container Running + init up)
 ##   execInGuest              ``incus exec <name> -- <cmd>``
@@ -86,9 +87,17 @@ type
     config*: Table[string, string]
       ## optional raw ``incus config set`` keys
       ## (e.g. ``security.nesting`` ,
-      ## ``cloud-init.vendor-data``). Applied after
-      ## launch (before start when ``--ephemeral``
-      ## containers still need a config pass).
+      ## ``cloud-init.vendor-data``). Callers are trusted host-side
+      ## controllers; guest input is never interpreted as config keys.
+    securityNesting*: bool
+      ## Operator-controlled nested-container capability. When true, the
+      ## container is initialised STOPPED, then receives security.nesting and
+      ## the mknod/setxattr syscall intercepts before its first start.
+    nestedKvm*: bool
+      ## Operator-controlled nested-virtualisation capability. When true, the
+      ## container is initialised STOPPED, security.nesting is enabled, and a
+      ## fixed /dev/kvm unix-char device is attached before its first start.
+      ## The device path/type/mode are not caller-selectable.
 
 const
   DefaultIncusBaseImage* = "vmh-base"
@@ -407,16 +416,92 @@ proc applyConfig(b: IncusBackend, name: string, spec: EphemeralIncusSpec) =
         "incus config set " & k & " failed (exit " & $r.exitCode & "): " &
         r.stdout)
 
+proc setRequiredConfig(b: IncusBackend, name, key, value: string) =
+  let r = b.runIncus(@["config", "set", name, key, value], timeoutSec = 30)
+  if r.exitCode != 0:
+    raise newVmHarnessError($b.id, lpProvisioning,
+      "incus config set " & key & " failed (exit " & $r.exitCode & "): " &
+      r.stdout)
+
+proc applyOperatorCapabilities(b: IncusBackend, name: string,
+                               spec: EphemeralIncusSpec) =
+  ## Apply the fixed, operator-selected capability set while the container is
+  ## still stopped. These booleans intentionally do not expose arbitrary
+  ## device paths, device types, modes, or Incus config values.
+  if spec.securityNesting:
+    for key in ["security.nesting",
+                "security.syscalls.intercept.mknod",
+                "security.syscalls.intercept.setxattr"]:
+      b.setRequiredConfig(name, key, "true")
+  elif spec.nestedKvm:
+    # Nested KVM implies nesting, but does not need the Docker-specific
+    # mknod/setxattr intercepts unless securityNesting was selected too.
+    b.setRequiredConfig(name, "security.nesting", "true")
+
+  if spec.nestedKvm:
+    let r = b.runIncus(@["config", "device", "add", name, "kvm", "unix-char",
+                         "source=/dev/kvm", "path=/dev/kvm", "mode=0666"],
+                       timeoutSec = 60)
+    if r.exitCode != 0:
+      raise newVmHarnessError($b.id, lpProvisioning,
+        "incus config device add kvm failed (exit " & $r.exitCode & "): " &
+        r.stdout)
+
+proc convergeNestedKvmAccess(b: IncusBackend, name: string) =
+  ## Incus requests mode=0666 on the unix-char device, but host udev state and
+  ## cloud-init group convergence can still leave the guest node at 0660.
+  ## Before returning a nested-KVM runner to its controller, wait for exec,
+  ## converge the guest-local mode, verify the exact mode, and actually open
+  ## the character device read/write so a cgroup/device-policy denial cannot
+  ## masquerade as usable KVM.
+  let deadline = epochTime() + b.readyTimeoutSec.float
+  var ready = false
+  while epochTime() < deadline:
+    let r = b.runIncus(@["exec", name, "--", "true"], timeoutSec = 15)
+    if r.exitCode == 0:
+      ready = true
+      break
+    sleep(200)
+  if not ready:
+    raise newVmHarnessError($b.id, lpStartup,
+      "incus container " & name &
+      " did not become exec-ready for nested KVM setup")
+
+  let chmodRes = b.runIncus(@["exec", name, "--", "chmod", "0666", "/dev/kvm"],
+                            timeoutSec = 30)
+  if chmodRes.exitCode != 0:
+    raise newVmHarnessError($b.id, lpStartup,
+      "nested KVM access setup on " & name & " failed (exit " &
+      $chmodRes.exitCode & "): " & chmodRes.stdout)
+  # A root `test -r -w` would be a false proof because root can bypass mode
+  # bits. Assert the node's numeric mode instead, which is independent of the
+  # user selected by the runner image and proves access for its unprivileged
+  # process as well.
+  let accessRes = b.runIncus(@["exec", name, "--", "stat", "-c", "%a",
+                              "/dev/kvm"], timeoutSec = 30)
+  if accessRes.exitCode != 0 or accessRes.stdout.strip() != "666":
+    raise newVmHarnessError($b.id, lpStartup,
+      "nested KVM device in " & name & " does not have mode 0666")
+  let openRes = b.runIncus(@["exec", name, "--", "sh", "-c",
+                            "exec 3<>/dev/kvm"], timeoutSec = 30)
+  if openRes.exitCode != 0:
+    raise newVmHarnessError($b.id, lpStartup,
+      "nested KVM device in " & name & " cannot be opened read/write (exit " &
+      $openRes.exitCode & "): " & openRes.stdout)
+
 proc provisionEphemeralClone*(b: IncusBackend,
                               spec: EphemeralIncusSpec): VmHandle =
   ## Materialise ONE fresh per-job container from the base image.
   ##
-  ## Steps (exact commands):
+  ## Default steps retain the original exact command shape:
   ##   1. ``incus launch <base> <name> [--ephemeral] [--profile p ...]``
-  ##      — a brand-new container whose rootfs is a fresh copy of the base
-  ##      image. Nothing from a prior job can bleed in.
-  ##   2. optional ``incus config set <name> cloud-init.user-data <...>``
-  ##      / raw config keys — the IM2 JIT bootstrap-injection seam.
+  ##   2. optional user-data / raw config keys.
+  ##
+  ## Operator-selected security nesting or nested KVM instead uses the
+  ## ordered, pre-start path ``init -> config/device -> start``. This prevents
+  ## cloud-init or any other guest process from running before the fixed host
+  ## capability policy is attached. Defaults remain false and preserve the
+  ## launch path byte-for-byte.
   ##
   ## The returned handle is marked ``ephemeral=true`` so ``stopAndCleanup``
   ## (the DeleteInstance path) force-deletes the container AND its storage
@@ -434,7 +519,9 @@ proc provisionEphemeralClone*(b: IncusBackend,
       "provisionEphemeralClone: container '" & spec.name &
       "' already exists; per-job clones require a fresh name")
 
-  var launchArgs = @["launch", base, spec.name]
+  let needsPreStartCapabilities = spec.securityNesting or spec.nestedKvm
+  var launchArgs = @[
+    (if needsPreStartCapabilities: "init" else: "launch"), base, spec.name]
   if spec.ephemeral:
     launchArgs.add("--ephemeral")
   for p in spec.profiles:
@@ -445,11 +532,21 @@ proc provisionEphemeralClone*(b: IncusBackend,
     # Best-effort teardown of any half-built container.
     discard b.deleteContainer(spec.name)
     raise newVmHarnessError($b.id, lpProvisioning,
-      "incus launch " & base & " " & spec.name & " failed (exit " &
+      "incus " & launchArgs[0] & " " & base & " " & spec.name &
+      " failed (exit " &
       $launchRes.exitCode & "): " & launchRes.stdout)
 
   try:
     b.applyConfig(spec.name, spec)
+    if needsPreStartCapabilities:
+      b.applyOperatorCapabilities(spec.name, spec)
+      let startRes = b.runIncus(@["start", spec.name], timeoutSec = 60)
+      if startRes.exitCode != 0:
+        raise newVmHarnessError($b.id, lpStartup,
+          "incus start " & spec.name & " failed (exit " &
+          $startRes.exitCode & "): " & startRes.stdout)
+      if spec.nestedKvm:
+        b.convergeNestedKvmAccess(spec.name)
   except CatchableError as e:
     discard b.deleteContainer(spec.name)
     raise e

@@ -80,6 +80,7 @@ suite "t_vmharness_serve_roundtrip_incus":
     let token = "incus-test-bearer-77aa"
     writeFile(tokenFile, token)
     let jobName = "vmh-serve-rt-" & $getCurrentProcessId()
+    let nestedJobName = "vmh-serve-kvm-" & $getCurrentProcessId()
 
     let daemon = startProcess(getAppFilename(),
       args = @["__serve", "127.0.0.1", "0", tokenFile, portFile],
@@ -104,6 +105,25 @@ suite "t_vmharness_serve_roundtrip_incus":
       # No residue: the per-job container is gone after the remote cycle.
       check not incusHas(jobName)
 
+    test "authenticated remote controller selects pre-start nested KVM":
+      if not pathExists("/dev/kvm"):
+        echo "[skip] host /dev/kvm absent — nested-KVM remote gate needs KVM"
+        skip()
+      else:
+        var logs: seq[string]
+        let code = client.execStream(
+          @["run", "--ephemeral", "--backend", "incus",
+            "--baseline", nestedJobName, "--base-image", baseImage,
+            "--incus-security-nesting", "--incus-nested-kvm",
+            "--timeout-sec", "90", "--", "sh", "-c",
+            "test -c /dev/kvm && [ \"$(stat -c %a /dev/kvm)\" = 666 ] " &
+              "&& exec 3<>/dev/kvm"],
+          proc(ev: ExecEvent) =
+            if ev.kind == ekLog: logs.add(ev.line))
+        check code == 0
+        check logs.len > 0
+        check not incusHas(nestedJobName)
+
     test "graceful shutdown stops the daemon":
       client.shutdown()
       check daemon.waitForExit(timeout = 8000) == 0
@@ -116,4 +136,7 @@ suite "t_vmharness_serve_roundtrip_incus":
     if incusHas(jobName):
       discard execCmdEx(getEnv("VMH_INCUS_CMD", "incus") &
                         " delete --force " & jobName)
+    if incusHas(nestedJobName):
+      discard execCmdEx(getEnv("VMH_INCUS_CMD", "incus") &
+                        " delete --force " & nestedJobName)
     removeDir(work)

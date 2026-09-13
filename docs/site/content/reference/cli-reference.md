@@ -81,7 +81,7 @@ command after `--` are required.
 libvirt (CoW-clone VM) or incus (fresh container). Launch a fresh clone, probe
 it, destroy it leaving no residue.
 
-- incus: `run --ephemeral --backend incus --baseline <container> [--base-image <alias>] [--user-data <file>] -- <probe cmd>`. Default base image `vmh-base`; `--user-data` injects cloud-init (the JIT seam); the probe defaults to `true`.
+- incus: `run --ephemeral --backend incus --baseline <container> [--base-image <alias>] [--user-data <file>] [--incus-security-nesting] [--incus-nested-kvm] -- <probe cmd>`. Default base image `vmh-base`; `--user-data` injects cloud-init (the JIT seam); the probe defaults to `true`. The capability flags are trusted-controller options configured before first start; nested KVM implies nesting.
 - libvirt: `run --ephemeral --baseline <vm> --golden-image <qcow2> [--user-data <file>] [--kernel/-initrd/-kernel-cmdline ...] [--uefi-loader/-uefi-nvram-template ...] -- [expected-serial-marker]`. A positional arg after `--` is an expected serial boot-marker substring.
 - `--keep`: clone + boot (UEFI) and leave the domain running (no probe/teardown); reclaim it later with `ephemeral-destroy`. Used to drive an out-of-band in-guest probe (e.g. the Windows JIT bootstrap over SSH).
 
@@ -179,6 +179,8 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--keep` | libvirt: with `--ephemeral`, leave the domain running for an out-of-band probe; reclaim with `ephemeral-destroy`. |
 | `--golden-image <path>` | libvirt: golden qcow2 the overlay is cloned from. Requires `--ephemeral`. |
 | `--base-image <alias>` | incus: base image alias the container launches from (default `vmh-base`). |
+| `--incus-security-nesting` | Incus ephemeral runs only: before first start, enable `security.nesting` and the fixed mknod/setxattr intercepts needed by unprivileged nested containers. Default off. |
+| `--incus-nested-kvm` | Incus ephemeral runs only: before first start, imply nesting and attach the fixed host `/dev/kvm` → guest `/dev/kvm` unix-char device at mode `0666`; verify that exact guest mode and a real read/write open before returning. Default off. |
 | `--kernel` / `--initrd` / `--kernel-cmdline` | libvirt: optional direct-kernel-boot for the tiny-Linux golden. |
 | `--user-data <path>` | Cloud-init user-data injected into the ephemeral clone (config-drive on libvirt; `cloud-init.user-data` on incus). The JIT bootstrap seam. |
 | `--meta-data <path>` | libvirt: optional config-drive `meta_data.json` override. |

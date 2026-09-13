@@ -154,6 +154,11 @@ type
                                  ## base image alias/fingerprint the ephemeral
                                  ## per-job container is launched from. Empty ⇒
                                  ## the IncusBackend default (``vmh-base``).
+    incusSecurityNesting*: bool  ## ``--incus-security-nesting`` — trusted
+                                 ## controller opt-in for the fixed Incus
+                                 ## nesting/intercept configuration.
+    incusNestedKvm*: bool        ## ``--incus-nested-kvm`` — trusted controller
+                                 ## opt-in for the fixed /dev/kvm device.
     kernel*: string              ## ``--kernel <path>`` — optional direct-kernel
                                  ## boot bzImage for the ephemeral clone (the
                                  ## tiny Linux golden). Omit for a disk-bootable
@@ -162,12 +167,10 @@ type
                                  ## the direct-kernel ephemeral boot.
     kernelCmdline*: string       ## ``--kernel-cmdline <str>`` — optional kernel
                                  ## cmdline for the direct-kernel ephemeral boot.
-    userDataFile*: string        ## ``--user-data <path>`` — libvirt-only (M3):
-                                 ## a file whose contents become the config-drive
-                                 ## ``openstack/latest/user_data`` (the rendered
-                                 ## GARM bootstrap). vm-harness builds a
-                                 ## ``config-2``-labelled ISO and attaches it so
-                                 ## cloudbase-init runs it on first boot.
+    userDataFile*: string        ## ``--user-data <path>`` — rendered GARM
+                                 ## bootstrap. Libvirt puts it in a config-drive;
+                                 ## Incus sets cloud-init.user-data (pre-start
+                                 ## when an operator capability is selected).
     metaDataFile*: string        ## ``--meta-data <path>`` — optional override for
                                  ## the config-drive ``meta_data.json``.
     uefiLoader*: string          ## ``--uefi-loader <path>`` — OVMF code fd; when
@@ -399,6 +402,13 @@ Common flags:
                                   ephemeral clone is derived from (libvirt: a
                                   qcow2 CoW backing file; hyperv: a golden
                                   VHDX). Requires --ephemeral.
+  --incus-security-nesting       Incus run --ephemeral only: configure
+                                  security.nesting and the mknod/setxattr
+                                  intercepts before first start.
+  --incus-nested-kvm             Incus run --ephemeral only: configure
+                                  security.nesting and attach a fixed
+                                  read/write /dev/kvm device before first
+                                  start. Requires host nested KVM support.
   --kernel <path>                 libvirt-only: optional direct-kernel-boot
                                   bzImage for --ephemeral (tiny Linux golden).
   --initrd <path>                 Initramfs for a direct-kernel boot: the
@@ -666,6 +676,12 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       inc i; result.goldenImage = args[i]; inc i
     of "--base-image":
       inc i; result.baseImage = args[i]; inc i
+    of "--incus-security-nesting":
+      result.incusSecurityNesting = true
+      inc i
+    of "--incus-nested-kvm":
+      result.incusNestedKvm = true
+      inc i
     of "--kernel":
       inc i; result.kernel = args[i]; inc i
     of "--initrd":
@@ -840,6 +856,12 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
   if result.sshHostKeyAlias.anyIt(it.isSpaceAscii or ord(it) < 32):
     raise newException(ValueError,
       "--ssh-host-key-alias must not contain whitespace or control characters")
+  if result.incusSecurityNesting or result.incusNestedKvm:
+    if result.subcommand != "run" or not result.ephemeral or
+       result.backend.toLowerAscii() != $biIncus:
+      raise newException(ValueError,
+        "--incus-security-nesting/--incus-nested-kvm require " &
+        "run --ephemeral --backend incus")
 
 proc logEvent*(format: LogFormat, level: string, msg: string,
               fields: openArray[(string, string)] = []) =
@@ -1325,8 +1347,9 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
   ## base image, run an exec probe, then destroy it (``incus delete
   ## --force``) leaving NO residue. The container analog of the libvirt
   ## CoW-clone path — the same create→probe→destroy lifecycle the GARM
-  ## provider's CreateInstance/DeleteInstance drive, but far cheaper (no
-  ## /dev/kvm, sub-second launch).
+  ## provider's CreateInstance/DeleteInstance drive. Plain containers need no
+  ## /dev/kvm; a trusted controller may explicitly select the fixed nested-KVM
+  ## capability path below.
   ##
   ## ``--baseline`` names the per-job container; ``--base-image`` the image
   ## to launch from (default ``vmh-base``). ``--user-data`` (when set)
@@ -1348,7 +1371,9 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
     baseImage: opts.baseImage,
     ephemeral: false,
     userData: userData,
-    config: initTable[string, string]())
+    config: initTable[string, string](),
+    securityNesting: opts.incusSecurityNesting,
+    nestedKvm: opts.incusNestedKvm)
   logEvent(opts.logFormat, "info", "ephemeral container: launch",
            {"backend": $biIncus, "name": opts.baseline,
             "base": (if opts.baseImage.len > 0: opts.baseImage else: ib.baseImage)})

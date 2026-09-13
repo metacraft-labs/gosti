@@ -2,9 +2,10 @@
 
 Linux host, Linux **system container** guests via the `incus` CLI. This is
 the container-based analog of the libvirt backend: ephemeral per-job
-containers instead of per-job KVM VMs. Containers launch in well under a
+containers instead of per-job KVM VMs. Plain containers launch in well under a
 second and need no `/dev/kvm`, so the per-job loop (fresh container → run
-one job → destroy) is far cheaper than the VM path.
+one job → destroy) is far cheaper than the VM path. An operator may explicitly
+attach `/dev/kvm` when a job class needs nested virtualisation.
 
 Source: `src/vm_harness/backends/incus.nim`.
 Gate: `tests/e2e/t_vmharness_incus_ephemeral_run.nim`.
@@ -89,7 +90,7 @@ incus launch vmh-base t-im0 && incus exec t-im0 -- true && incus delete -f t-im0
 |--------------------------|----------------------------------------------------------|
 | `probeAvailability`      | `incus info`                                             |
 | `provisionBaseline`      | `incus image list <alias>` (ensure present)              |
-| `provisionEphemeralClone`| `incus launch <base> <name> [--ephemeral] [--profile p]` + optional `incus config set <name> cloud-init.user-data <...>` |
+| `provisionEphemeralClone`| default: `incus launch <base> <name> [--ephemeral] [--profile p]`; operator capabilities: `incus init` → config/device → `incus start` |
 | `startAndAwaitReady`     | poll `incus exec <name> -- true` until Running + exec-ready |
 | `execInGuest`            | `incus exec <name> [--env K=V] [--user U] -- <cmd...>`   |
 | `copyToGuest`            | `incus file push [-r] <host> <name><guest>`              |
@@ -125,6 +126,33 @@ via `incus config set <name> cloud-init.user-data <...>` before the
 container is considered ready. This is the GARM JIT bootstrap seam — the
 Incus analog of the libvirt config-drive ISO, but simpler (a config key).
 `spec.config` carries any additional raw `incus config set` keys.
+
+### Operator-controlled nested capabilities
+
+The stable CLI exposes two fixed booleans for an authenticated fleet controller:
+
+- `--incus-security-nesting` sets `security.nesting=true` plus the mknod and
+  setxattr syscall intercepts used by unprivileged nested Docker/Podman.
+- `--incus-nested-kvm` implies `security.nesting=true`, attaches exactly one
+  `kvm` unix-character device from host `/dev/kvm` to guest `/dev/kvm` with
+  mode `0666`, verifies that exact mode, and opens the device read/write before
+  returning the runner.
+
+Both flags are accepted only by `run --ephemeral --backend incus`. Capability
+runs use `incus init`, apply cloud-init/config and the fixed capability policy
+while the container is stopped, then `incus start`; no guest process runs before
+the policy is attached. If device attachment or access convergence fails, the
+half-created container is force-deleted. With both flags absent, the original
+`incus launch` command sequence is unchanged.
+
+These are **controller/operator privileges**, not workflow inputs. A local CLI
+caller already has access to the Incus administrative socket. A remote caller
+must possess the `vm-harness serve` bearer token and reach its overlay-only
+endpoint; that token already authorizes the full worker CLI, so it must be held
+only by the fleet controller/operator and never exposed to a guest, workflow,
+or user-data template. The flags do not accept a host path, device type, mode,
+or arbitrary Incus key. `user-data` remains guest content and cannot select
+host privileges.
 
 ## IM2 — Linux runner image + cloud-init JIT injection
 
