@@ -82,13 +82,34 @@ suite "t_vmharness_serve_roundtrip":
   let work = createTempDir("vmh-serve-", "")
   let tokenFile = work / "token"
   let portFile = work / "port"
+  let incusLog = work / "incus.log"
+  let fakeIncus = work / "incus"
   let token = "unit-test-bearer-3f9a2c"
   writeFile(tokenFile, token)
+  writeFile(fakeIncus,
+    "#!/bin/sh\n" &
+    "printf '%s\\n' \"$*\" >> '" & incusLog & "'\n" &
+    "case \"$*\" in\n" &
+    "  'info remote-capability') exit 1 ;;\n" &
+    "  'list remote-capability --format csv -c s') printf 'RUNNING\\n' ;;\n" &
+    "  'exec remote-capability -- stat -c %a /dev/kvm') " &
+      "printf '666\\n' ;;\n" &
+    "esac\n")
+  setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
 
-  let daemon = startProcess(
-    getAppFilename(),
-    args = @["__serve", "127.0.0.1", "0", tokenFile, portFile],
-    options = {poParentStreams})
+  let priorIncusCmd = getEnv("VMH_INCUS_CMD")
+  putEnv("VMH_INCUS_CMD", fakeIncus)
+  var daemon: Process
+  try:
+    daemon = startProcess(
+      getAppFilename(),
+      args = @["__serve", "127.0.0.1", "0", tokenFile, portFile],
+      options = {poParentStreams})
+  finally:
+    if priorIncusCmd.len > 0:
+      putEnv("VMH_INCUS_CMD", priorIncusCmd)
+    else:
+      delEnv("VMH_INCUS_CMD")
   var port = 0
   try:
     port = waitForPort(portFile)
@@ -109,6 +130,14 @@ suite "t_vmharness_serve_roundtrip":
     let empty = newServeClient(addr0, "")
     expect ServeAuthError:
       discard empty.info()
+
+    writeFile(incusLog, "")
+    expect ServeAuthError:
+      discard bad.execStream(@[
+        "run", "--ephemeral", "--backend", "incus",
+        "--baseline", "remote-capability", "--incus-nested-kvm",
+      ], proc(ev: ExecEvent) = discard)
+    check readFile(incusLog).len == 0
 
   test "authenticated info advertises the noop backend (capability seed)":
     let ni = client.info()
@@ -171,6 +200,36 @@ suite "t_vmharness_serve_roundtrip":
     let localArt = runArtifact(localOut)
     check remoteArt.len > 0
     check normalizeEnvelope(remoteArt) == normalizeEnvelope(localArt)
+
+  test "authenticated remote Incus capability argv reaches fixed local policy":
+    writeFile(incusLog, "")
+    var logs: seq[string]
+    let code = client.execStream(@[
+      "run", "--ephemeral", "--backend", "incus",
+      "--baseline", "remote-capability", "--base-image", "runner-base",
+      "--incus-security-nesting", "--incus-nested-kvm", "--", "true",
+    ], proc(ev: ExecEvent) =
+      if ev.kind == ekLog: logs.add(ev.line))
+    check code == 0
+    check logs.len > 0
+    check readFile(incusLog).strip().splitLines() == @[
+      "info remote-capability",
+      "init runner-base remote-capability",
+      "config set remote-capability security.nesting true",
+      "config set remote-capability security.syscalls.intercept.mknod true",
+      "config set remote-capability security.syscalls.intercept.setxattr true",
+      "config device add remote-capability kvm unix-char source=/dev/kvm " &
+        "path=/dev/kvm mode=0666",
+      "start remote-capability",
+      "exec remote-capability -- true",
+      "exec remote-capability -- chmod 0666 /dev/kvm",
+      "exec remote-capability -- stat -c %a /dev/kvm",
+      "exec remote-capability -- sh -c exec 3<>/dev/kvm",
+      "list remote-capability --format csv -c s",
+      "exec remote-capability -- true",
+      "exec remote-capability -- true",
+      "delete --force remote-capability",
+    ]
 
   test "graceful shutdown stops the daemon":
     client.shutdown()

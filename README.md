@@ -62,8 +62,9 @@ Shipped milestones:
   Linux host, Linux guest via the `incus` CLI. Ephemeral per-job
   containers: `incus launch <base> <name>` → `incus exec` probe →
   `incus delete --force` (no residual container or storage volume).
-  Sub-second launch, no `/dev/kvm` needed — the container analog of the
-  libvirt per-job CoW-clone path. `provisionEphemeralClone` leaves a
+  Plain runners need no `/dev/kvm`; trusted controllers may opt into fixed
+  pre-start nesting and `/dev/kvm` attachment for nested-capability classes.
+  `provisionEphemeralClone` leaves a
   cloud-init `user-data` injection seam (`incus config set <name>
   cloud-init.user-data ...`) for the GARM JIT bootstrap. The base image
   is pinned locally (`incus image copy images:debian/12 local: --alias
@@ -72,7 +73,8 @@ Shipped milestones:
   and the runner/service user is in the `incus-admin` group for socket
   access. In a session that pre-dates the group grant, export
   `VMH_INCUS_CMD="sudo -n incus"`. Gate:
-  `tests/e2e/t_vmharness_incus_ephemeral_run.nim`.
+  `tests/e2e/t_vmharness_incus_ephemeral_run.nim`; authenticated remote
+  capability path: `tests/e2e/t_vmharness_serve_roundtrip_incus.nim`.
 
 - **Remoting — `vm-harness serve`** (`src/vm_harness/serve/`). An
   authenticated network front-end (protocol v1, HTTP/JSON) that exposes this

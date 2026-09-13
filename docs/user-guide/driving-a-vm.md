@@ -155,6 +155,23 @@ and [`../per-backend-notes/incus.md`](../per-backend-notes/incus.md) for the
 mechanics, and the [Parameters catalog](./parameters.md) for the provider knobs
 that shape the per-job container.
 
+A trusted host controller can select the fixed pre-start capability policy in
+the library without constructing raw Incus keys or devices:
+
+```nim
+let vm = incus.provisionEphemeralClone(EphemeralIncusSpec(
+  name: "job-42",
+  baseImage: "vmh-linux-runner",
+  securityNesting: true,
+  nestedKvm: true))
+```
+
+`nestedKvm` implies `security.nesting`; `securityNesting` additionally enables
+the two syscall intercepts for nested containers. Either field switches
+provisioning to `init → fixed config/device → start`. Both default false and
+retain the original `launch` path. These fields are controller/operator policy,
+not values to deserialize from guest user-data or a workflow payload.
+
 ## Notes on `execInGuest`
 
 - `env` is carried into the guest environment (verified for every backend by

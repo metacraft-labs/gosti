@@ -56,6 +56,15 @@ label-derivation contract.
 daemon prepends its configured worker executable and runs it, so the executed
 backend code is byte-for-byte the local `vm-harness` path.
 
+The bearer token is therefore an **operator/controller credential**, not a
+per-workflow credential: an authenticated caller can invoke host-mutating
+operations, including the fixed `--incus-security-nesting` and
+`--incus-nested-kvm` ephemeral-run capabilities. Never place this token in
+guest user-data or workflow-visible state. The daemon must remain bound to the
+operator overlay, and only the central fleet controller/operator may construct
+those argv values. The nested-KVM flag has no arbitrary device/path/mode input;
+it always selects the audited `/dev/kvm` mapping.
+
 ### `/v1/exec` event stream (NDJSON, one JSON object per chunk)
 
 ```
@@ -103,7 +112,8 @@ it to a daemon and relays the streamed output + exit code:
 export VMH_SERVE_TOKEN=$(cat /run/creds/vmh)
 vm-harness --remote 100.72.0.5:8873 probe
 vm-harness --remote 100.72.0.5:8873 run --ephemeral --backend incus \
-  --baseline job-42 --base-image vmh-base -- true
+  --baseline job-42 --base-image vmh-base \
+  --incus-security-nesting --incus-nested-kvm -- true
 ```
 
 Library consumers (e.g. the future `garm-provider-vmharness` remote mode) use
@@ -128,12 +138,16 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   client drives provision → run(exec probe) → destroy against a real daemon
   over the authenticated endpoint using the sanctioned **noop** backend;
   asserts no residue, byte-equivalence to the local `run` path, and that an
-  unauthenticated / wrong-credential client is rejected (401). Hermetic via a
-  no-threads self-exec topology (the test binary re-execs itself as daemon and
-  as CLI worker). In `just test`.
+  unauthenticated / wrong-credential client is rejected (401). Its fake-Incus
+  leg also pins authenticated forwarding of the complete fixed capability
+  argv, local pre-start ordering, and exact cleanup without requiring a host
+  daemon. Hermetic via a no-threads self-exec topology (the test binary
+  re-execs itself as daemon and as CLI worker). In `just test`.
 - `tests/e2e/t_vmharness_serve_roundtrip_incus.nim` — the same remote path
-  against a **real** incus ephemeral container. Host-gated (`just test-host`),
-  self-skips without a usable incus.
+  against a **real** incus ephemeral container, including authenticated
+  selection of the pre-start nesting/KVM policy and guest mode verification.
+  Host-gated (`just test-host`), self-skips without usable Incus/KVM; such a
+  prerequisite skip is visible but is not claimed as real-host coverage.
 
 ## Follow-ups (later milestones / deferred)
 
