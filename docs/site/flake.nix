@@ -45,8 +45,15 @@
   };
 
   outputs =
-    { self, isonim, isonim-docs, nim-everywhere, nim-faststreams, nim-stew
-    , codetracer-design-system }:
+    {
+      self,
+      isonim,
+      isonim-docs,
+      nim-everywhere,
+      nim-faststreams,
+      nim-stew,
+      codetracer-design-system,
+    }:
     let
       # Reuse isonim's own nixpkgs + flake-utils pins so the toolchain versions
       # (nim 2.2.4, node, …) are byte-for-byte identical to isonim's dev shell.
@@ -63,9 +70,11 @@
       {
         devShells.default = pkgs.mkShell {
           # Inherit the entire isonim toolchain (nim/nimble/node/just/…). This
-          # site adds no tools of its own — the SSG builds with plain
-          # `nim c` / `nim js` + node, all of which isonim's shell provides.
+          # site adds only vm-harness's Linux PCRE compile dependency; the SSG
+          # otherwise builds with plain `nim c` / `nim js` + node, all of which
+          # isonim's shell provides.
           inputsFrom = [ isonim.devShells.${system}.default ];
+          packages = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcre.dev ];
 
           # CRUCIAL — make the framework SOURCE available with NO sibling repos.
           # We export the store path of each input as a VMH_DOCS_* env var;
