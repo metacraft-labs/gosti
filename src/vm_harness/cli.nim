@@ -1339,9 +1339,11 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
   ## /dev/kvm, sub-second launch).
   ##
   ## ``--baseline`` names the per-job container; ``--base-image`` the image
-  ## to launch from (default ``vmh-base``). ``--user-data`` (when set)
-  ## injects cloud-init user-data — the IM2 JIT seam. Args after ``--`` are
-  ## the in-guest probe command (default ``true``).
+  ## to launch from (default ``vmh-base``). ``--user-data`` (when set) is the
+  ## runner BOOTSTRAP payload; on incus it is delivered + launched DETACHED
+  ## over ``incus exec`` once the container is exec-ready (NOT via cloud-init,
+  ## which incus does not drive — see ``injectAndRunBootstrap``). Args after
+  ## ``--`` are the in-guest probe command (default ``true``).
   let backend = newBackend(biIncus)
   if opts.baseline.len == 0:
     raise newException(ValueError,
@@ -1364,6 +1366,18 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
             "base": (if opts.baseImage.len > 0: opts.baseImage else: ib.baseImage)})
   var vm = ib.provisionEphemeralClone(spec)
   if opts.keepEphemeral:
+    # The GARM CreateInstance path (`run --ephemeral --keep`). When a bootstrap
+    # payload is present, deliver + launch it DETACHED over `incus exec` once
+    # the container is exec-ready (incus does not drive the golden's cloud-init
+    # datasource). The exec returns promptly — it does not block on the runner
+    # — so the "launch + return" contract holds. The payload/token is never
+    # logged and never placed on a command line.
+    if userData.len > 0:
+      let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 60
+      ib.startAndAwaitReady(vm, readyTimeout)
+      ib.injectAndRunBootstrap(vm, userData)
+      logEvent(opts.logFormat, "info", "ephemeral container: bootstrap launched",
+               {"name": opts.baseline})
     logEvent(opts.logFormat, "info", "ephemeral container: kept running",
              {"name": opts.baseline})
     echo opts.baseline
@@ -1372,6 +1386,12 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
   try:
     let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 60
     ib.startAndAwaitReady(vm, readyTimeout)
+    # A bootstrap payload (the runner registration script) is delivered +
+    # launched DETACHED after readiness, then the diagnostic probe runs. In
+    # this NON-keep path the container is torn down after the probe, so the
+    # bootstrap is exercised but not left running (production uses --keep).
+    if userData.len > 0:
+      ib.injectAndRunBootstrap(vm, userData)
     let probeCmd = if opts.cmd.len > 0: opts.cmd else: @["true"]
     let r = ib.execInGuest(vm, initTable[string, string](), probeCmd,
                            timeoutSec = readyTimeout)
