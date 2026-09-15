@@ -79,6 +79,12 @@ const posixTestSpecs: seq[VmHarnessTestSpec] = @[
     binary: "t_qemu_windows_arm_backend"),
   VmHarnessTestSpec(source: "tests/unit/t_tart_backend.nim",
     binary: "t_tart_backend"),
+  # Runner-Fleet-M3-ARM-Wave MA3 gate: t_qemu_windows_arm_golden_build, unit
+  # tier. POSIX-only: it drives advisory locks, unix monitor sockets and a
+  # re-executed fake QEMU. The host tier lives in tests/e2e/ and is run by
+  # scripts/run-host-tests.sh.
+  VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_golden_build.nim",
+    binary: "t_qemu_windows_arm_golden_build"),
 ]
 
 package vm_harness:
@@ -141,7 +147,12 @@ package vm_harness:
       let edge = buildNimUnittest.build(
         source = spec.source,
         binary = output,
-        extraInputs = @["src", "config.nims", "guest-scripts", "guest-recipes"],
+        # vm_harness.nimble is an input because the MA3 golden-build gate
+        # asserts that the version it stamps into every golden manifest is
+        # still the package version — a drift guard that has to be able to
+        # read the package version.
+        extraInputs = @["src", "config.nims", "guest-scripts", "guest-recipes",
+                        "vm_harness.nimble"],
         actionId = "vm_harness.test_build." & spec.binary)
       when defined(linux):
         # The unittest adapter does not register Nim's C compiler itself.
