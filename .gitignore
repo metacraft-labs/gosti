@@ -27,3 +27,14 @@ tests/**/nimcache/
 /x1-e2e-test*.log
 /x1-review-rerun.log
 /x1-serial-logs*/
+
+# Compiled Nim test binaries. `nim c tests/unit/t_foo.nim` writes its executable
+# beside the source, as `tests/unit/t_foo`. Every real asset under tests/ carries
+# an extension; the compiled output is the only thing that does not.
+tests/**/t_*
+!tests/**/t_*/
+!tests/**/t_*.*
+# ...then re-ignore the Windows spellings, which DO carry an extension and would
+# otherwise be resurrected by the re-include above (cf. `*.exe` near the top).
+tests/**/t_*.exe
+tests/**/t_*.pdb
