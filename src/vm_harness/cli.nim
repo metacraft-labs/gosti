@@ -223,9 +223,12 @@ type
                                  ## identity lifetime (default 3600).
     hostId*: string              ## ``serve --host-id <name>`` — identity host
                                  ## label; default the OS hostname.
-    serveThreads*: int           ## ``serve --serve-threads <n>`` — accept-loop
-                                 ## worker threads; 0 ⇒ auto-size (see
+    serveThreads*: int           ## ``serve --serve-threads <n>`` — request
+                                 ## handler threads; 0 ⇒ auto-size (see
                                  ## serve/server.nim ``resolveThreadCount``).
+    execDeadlineSec*: int        ## ``serve --exec-deadline-sec <n>`` — wall
+                                 ## clock budget for one ``/v1/exec``; 0 ⇒
+                                 ## ``DefaultExecDeadlineSec``.
 
 const HelpText = """
 vm-harness <subcommand> [flags]
@@ -432,7 +435,7 @@ Common flags:
 serve daemon (RA1 remoting — the authenticated network access point):
   vm-harness serve --listen <host:port> [--auth-token-file <f> | --auth-token <t>]
                    [--worker-exe <path>] [--port-file <f>] [--quiet]
-                   [--serve-threads <n>]
+                   [--serve-threads <n>] [--exec-deadline-sec <n>]
                    [--enroll-secret-file <f>] [--identity-ttl-sec <n>]
                    [--host-id <name>]
     Expose the vm-harness CLI backend ops over a versioned HTTP/JSON RPC
@@ -440,8 +443,12 @@ serve daemon (RA1 remoting — the authenticated network access point):
     Every op runs the SAME local vm-harness binary (a thin network front-end,
     not a reimplementation). Bind to a NetBird overlay IP only — NEVER a public
     interface. The bearer token also reads from $VMH_SERVE_TOKEN. Connections
-    are served CONCURRENTLY by a pool of accept-loop threads (--serve-threads,
-    default: max(4, CPU count) capped at 32) so one slow op cannot stall others.
+    are served CONCURRENTLY by a pool of handler threads (--serve-threads,
+    default: max(4, CPU count) capped at 32) behind a dedicated acceptor, so
+    one slow op cannot stall others and a fully saturated pool answers 503
+    rather than letting connections pile up unanswered. --exec-deadline-sec
+    bounds ONE exec (default 46800 = 13h, sized above the 12h runner lifetime
+    the GARM provider forwards) so a hung guest op cannot hold a slot forever.
     See docs/serve.md.
 
   RA6 enrollment / signed capability manifest (GET /v1/manifest):
@@ -794,6 +801,10 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       inc i; result.serveThreads = parseInt(args[i]); inc i
       if result.serveThreads < 0:
         raise newException(ValueError, "--serve-threads must be >= 0")
+    of "--exec-deadline-sec":
+      inc i; result.execDeadlineSec = parseInt(args[i]); inc i
+      if result.execDeadlineSec < 0:
+        raise newException(ValueError, "--exec-deadline-sec must be >= 0")
     of "-h", "--help":
       result.subcommand = "help"
       inc i
@@ -2181,7 +2192,8 @@ proc cmdServe(opts: CliOpts): int =
     stateDir: opts.stateDir,
     identityTtlSec: opts.identityTtlSec,
     hostId: opts.hostId,
-    serveThreads: opts.serveThreads)
+    serveThreads: opts.serveThreads,
+    execDeadlineSec: opts.execDeadlineSec)
   try:
     runServe(cfg)
   except CatchableError as e:

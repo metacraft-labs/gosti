@@ -95,6 +95,19 @@ const posixTestSpecs: seq[VmHarnessTestSpec] = @[
     binary: "t_qemu_windows_arm_dead_guest_is_named"),
 ]
 
+# Runner-Fleet-M3-ARM-Wave MA12 gate:
+# `t_vmharness_serve_survives_a_hung_request` is NOT listed above, and that is
+# deliberate rather than an omission. This graph builds the "deterministic,
+# host-independent suite" (see the module doc); the serve DAEMON gates —
+# `t_vmharness_serve_roundtrip`, `t_vmharness_serve_concurrency`,
+# `t_vmharness_serve_enrollment` — are none of them here either, because each
+# binds a TCP port, re-execs itself as several processes, and measures wall
+# clock. MA12's gate does all three and additionally holds real hung workers
+# for tens of seconds, so it belongs exactly where its siblings already are:
+# `scripts/run-tests.sh`, which is what `just test` runs. Adding it here would
+# make it the only port-binding, time-measuring member of an otherwise
+# hermetic collection.
+
 package vm_harness:
   defaultToolProvisioning "path"
 

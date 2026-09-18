@@ -89,15 +89,56 @@ vm-harness serve --listen 100.72.0.5:8873 --auth-token-file /run/creds/vmh
 # readiness / health: the bound port is written to --port-file when listening.
 ```
 
-The daemon handles connections CONCURRENTLY via a small pool of accept-loop
-threads (`--serve-threads <n>`, default `max(4, CPU count)` capped at 32), each
-looping accept → handle → close on the shared listening socket. This is
-required by the control driver (a central GARM), which fires many simultaneous
+### Concurrency, saturation, and the per-exec deadline
+
+The daemon runs ONE acceptor thread that owns the listening socket, plus a
+bounded pool of request handlers (`--serve-threads <n>`, default
+`max(4, CPU count)` capped at 32) that the acceptor feeds. This is required by
+the control driver (a central GARM), which fires many simultaneous
 create/delete/retry calls: a single long-running `/v1/exec` must not stall
 unrelated connections past the client's response-header timeout. Each request
 already runs in its own isolated child process and touches no shared mutable
 state, so coordinating *placement* across hosts remains the central GARM's job,
 not this daemon's. A `/v1/shutdown` clears an atomic flag that drains the pool.
+
+Why the acceptor is a SEPARATE thread rather than every handler calling
+`accept` (which is what this daemon shipped with, and what is deployed at the
+time of writing): a pool in which every member accepts bounds the damage of one
+hung request to one slot, but once every slot is hung NOBODY is in `accept`,
+and the kernel goes on completing handshakes into the listen backlog until it
+fills. That happened twice in production — high-mem-server and gpu-server-001 —
+each time leaving a daemon that `systemctl` called `active`, with its port
+`LISTEN`ing, `ss -lnt` showing `Recv-Q 4097` against `Send-Q 4096`, and callers
+seeing connect/response TIMEOUTS rather than refusals. One outage ran nineteen
+hours.
+
+With a dedicated acceptor the daemon always has somebody in `accept`, so it can
+always answer. When no handler is free the answer is an immediate
+**503 Service Unavailable** (`{"code":"handlers_saturated"}`, `Retry-After: 1`)
+rather than silence — actionable for the caller and, unlike a timeout,
+detectable by a health probe.
+
+`--exec-deadline-sec <n>` (default **46800**, thirteen hours) bounds ONE
+`/v1/exec`: a worker that overruns is killed and the client is told so in the
+event stream. The default is sized ABOVE the longest legitimate operation, not
+as a latency target — the GARM provider forwards `--timeout-sec 43200` (12h) on
+runner creates because a GitHub Actions job may run six hours and the one-shot
+guest must outlive it, so a shorter deadline would kill live runners. Treat it
+as a LEAK bound: it guarantees a wedged `ephemeral-destroy` eventually returns
+its slot instead of holding it indefinitely.
+
+These three layers bound the damage but cannot bound the OUTAGE if the daemon
+wedges for an unanticipated reason. That is the deployment's job: the
+`services.vm-harness-serve` modules in `nixos-modules` ship a health watchdog
+(a systemd timer on Linux, a launchd `StartInterval` job on darwin) that probes
+the listener and restarts it after repeated failures.
+
+**Probing liveness cheaply.** Use an UNAUTHENTICATED request; a live daemon
+answers `401`, and producing that 401 still exercises accept → dispatch → read
+→ respond. Do NOT probe `/v1/info` authenticated on a timer: it synchronously
+probes every registered hypervisor backend. Measured on aarch64-darwin
+2026-09-18, against the same daemon: **16.7 s authenticated vs 5 ms
+unauthenticated.**
 
 ## Driving a remote host
 
@@ -136,6 +177,19 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   unauthenticated / wrong-credential client is rejected (401). Hermetic via a
   no-threads self-exec topology (the test binary re-execs itself as daemon and
   as CLI worker). In `just test`.
+- `tests/e2e/t_vmharness_serve_concurrency.nim` — a slow `/v1/exec` must not
+  serialize unrelated connections. In `just test`.
+- `tests/e2e/t_vmharness_serve_survives_a_hung_request.nim` — **the MA12
+  gate.** Three layers: one HUNG exec does not stop a concurrent request; a
+  FULLY SATURATED pool answers 503 immediately instead of letting connections
+  rot in the backlog; and the daemon recovers once the hangs drain. Falsifiable
+  in both directions — `VMH_HUNG_TEST_THREADS=1` makes layer 1 fail
+  (serial-equivalent), and the pre-MA12 accept-in-every-handler daemon passes
+  layer 1 but fails layer 2. Hermetic (the worker is a self-exec hang/quick
+  role). In `just test`. Its HOST tier,
+  `t_vmharness_serve_survives_a_hung_request_host.nim`, is READ-ONLY and
+  asserts that a DEPLOYED listener answers and that its accept backlog is not
+  saturated; `just test-host`, skips loudly with no deployed daemon.
 - `tests/e2e/t_vmharness_serve_roundtrip_incus.nim` — the same remote path
   against a **real** incus ephemeral container. Host-gated (`just test-host`),
   self-skips without a usable incus.
@@ -143,8 +197,13 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
 ## Follow-ups (later milestones / deferred)
 
 - Framed stdout/stderr separation in the exec stream (RA1 merges them).
-- Per-op daemon-side timeout enforcement (RA1 relies on the CLI's own
-  `--timeout-sec`; the `timeoutSec` field is carried but advisory).
+- ~~Per-op daemon-side timeout enforcement~~ — IMPLEMENTED as
+  `--exec-deadline-sec` (see "Concurrency, saturation, and the per-exec
+  deadline" above). The daemon now kills a worker that overruns its budget and
+  says so in the event stream. The per-request `timeoutSec` field on the wire
+  remains advisory and is still the CLI's own `--timeout-sec`; the deadline is
+  a daemon-side backstop for a worker that stops responding entirely, which no
+  client-supplied timeout can enforce.
 - The enrollment/identity model + the richer signed capability manifest
   (campaign RA6) is IMPLEMENTED: `GET /v1/manifest`, per-host enrollment
   secret + signed identity, controller-side verify/expiry/revocation, and the

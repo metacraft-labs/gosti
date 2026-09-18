@@ -70,6 +70,17 @@ run_nim r --hints:off tests/e2e/t_vmharness_serve_roundtrip.nim
 # old serial accept loop, passes against the thread-pool loop. Hermetic (the
 # worker is a trivial self-exec sleep/quick role — no backend).
 run_nim r --hints:off tests/e2e/t_vmharness_serve_concurrency.nim
+# Runner-Fleet-M3-ARM-Wave MA12 gate:
+# t_vmharness_serve_survives_a_hung_request — the daemon must survive a HUNG
+# request, not merely a slow one. Three layers: one hung /v1/exec does not
+# stop a concurrent request (the thread pool); a FULLY SATURATED pool answers
+# 503 immediately instead of letting connections rot in the listen backlog
+# (the production wedge — `Recv-Q 4097` on a LISTEN socket, twice, once for 19
+# hours); and the daemon recovers once the hangs drain. Falsifiable in both
+# directions: VMH_HUNG_TEST_THREADS=1 makes layer 1 fail (serial-equivalent),
+# and the pre-MA12 thread-pool-only daemon passes layer 1 but fails layer 2.
+# Hermetic — the worker is a trivial self-exec hang/quick role, no backend.
+run_nim r --hints:off tests/e2e/t_vmharness_serve_survives_a_hung_request.nim
 # RA6 enrollment gate: a remote client reads the daemon's SIGNED identity +
 # capability manifest over /v1/manifest and verifies it against a trust store;
 # unenrolled/expired/revoked/tampered identities are rejected. Hermetic (noop).
