@@ -36,6 +36,7 @@ import ./backends/libvirt
 import ./backends/incus
 {.pop.}
 import ./prune
+import ./ephemeral_handle
 import ./layer_gc
 import ./instances
 import ./serve/server
@@ -1527,6 +1528,230 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
              {"name": opts.baseline, "exit": $code})
   code
 
+const VmRunEphemeralBackends* = {
+  biTartMacos, biTartLinuxArm, biQemuWindowsArm, biUtmWindowsArm}
+  ## The backends whose ephemeral lifecycle is provision → revert → start →
+  ## inject, rather than libvirt's clone-an-overlay-and-boot-it. They are
+  ## exactly the backends `garm-provider-vmharness` drives by LOCAL EXEC with a
+  ## long-lived supervising process, and the reason they need their own
+  ## ephemeral path is in `cmdRunEphemeralVmRun`.
+
+type
+  EphemeralPath* = enum
+    ## Which `run --ephemeral` lifecycle a backend gets. Pulled out as a value
+    ## so the ROUTING is testable without booting anything: the defect this
+    ## replaced was purely a routing one, and it was invisible precisely
+    ## because the fallthrough looked like a default rather than a decision.
+    epLibvirt = "libvirt"
+    epIncus = "incus"
+    epHyperV = "hyperv"
+    epVmRun = "vm-harness-run"
+
+proc ephemeralPathFor*(backend: string): EphemeralPath =
+  ## Route a `--backend` string to its ephemeral lifecycle.
+  ##
+  ## Matching is on the STRING, not on a parsed `BackendId`: `parseBackendId`
+  ## RAISES for an unknown name, and an unknown `--backend` must still reach
+  ## the libvirt body and fail the way it always has rather than turning into
+  ## a parse error from the dispatcher.
+  ##
+  ## `epLibvirt` is the fallback, and that is now a deliberate, named choice
+  ## instead of an accident of control flow — which is what made every tart and
+  ## QEMU request from the remote provider die on `--golden-image is required`.
+  if backend == $biIncus: return epIncus
+  if backend == $biHyperv: return epHyperV
+  for vmRunId in VmRunEphemeralBackends:
+    if backend == $vmRunId: return epVmRun
+  epLibvirt
+
+proc resolveEphemeralGolden*(goldenImage, sourceImage, baseImage,
+                             backend: string): string =
+  ## The golden for a vm-harness-run ephemeral instance.
+  ##
+  ## `garm-provider-vmharness` forwards the golden under the GENERIC
+  ## `--source-image` / `--base-image` flags — the same naming incus and
+  ## libvirt take — not `--golden-image`. Accept all three, explicit
+  ## `--golden-image` winning, exactly as the hyperv path already does.
+  ##
+  ## Failing without any of them must NAME THE FLAGS THE CALLER CAN SEND. The
+  ## old libvirt fallthrough said "--golden-image is required", pointing every
+  ## reader at a flag the provider has no reason to pass and away from the real
+  ## fault, which was that the request had been routed to libvirt at all.
+  if goldenImage.len > 0: return goldenImage
+  if sourceImage.len > 0: return sourceImage
+  if baseImage.len > 0: return baseImage
+  raise newException(ValueError,
+    "run --ephemeral --backend " & backend &
+    ": a golden image is required (pass --source-image, --base-image " &
+    "or --golden-image)")
+
+proc guestOsFor*(id: BackendId): GuestOs =
+  ## The guest a backend produces. Needed because the remote provider's argv
+  ## carries no `--guest` (see `ephemeralRecipe` in the provider), and the
+  ## bootstrap has to be launched with the right shell.
+  case id
+  of biTartMacos: goMacos
+  of biTartLinuxArm: goLinux
+  of biQemuWindowsArm, biUtmWindowsArm: goWindows
+  else: goLinux
+
+proc buildDetachedBootstrapCommand*(guest: GuestOs, guestPath: string): seq[string] =
+  ## Start the injected bootstrap so it OUTLIVES the session that starts it.
+  ##
+  ## This is the whole difference between the local and remote models. Locally
+  ## the provider runs the bootstrap in the FOREGROUND and keeps the
+  ## `vm-harness run` process alive for the instance's life, so the runner
+  ## agent it spawns is anchored to that process. `run --ephemeral --keep`
+  ## returns immediately, so the bootstrap must be detached in the GUEST or the
+  ## runner dies with the SSH session that launched it.
+  ##
+  ## On Windows that means `Win32_Process.Create`, NOT `Start-Process`, and the
+  ## reason is measured rather than assumed: Windows OpenSSH puts every process
+  ## of a session into a job object and kills the job at session end, and a
+  ## `Start-Process` child stays inside it. The same finding — and the same
+  ## `$`-free constraint, because sshd's DefaultShell is powershell and an
+  ## OUTER parse expands `$` inside double quotes — is recorded at length on
+  ## `buildSysprepRemoteCommand`, which solved this first for sysprep.
+  case guest
+  of goWindows:
+    @["powershell.exe", "-NoLogo", "-NoProfile", "-Command",
+      "if ((Invoke-CimMethod -ClassName Win32_Process -MethodName Create " &
+      "-Arguments @{CommandLine = " &
+      powershellLiteral("powershell.exe -ExecutionPolicy Bypass -NoProfile -File " &
+                        guestPath) &
+      "}).ReturnValue -ne 0) { exit 1 }; exit 0"]
+  else:
+    # `nohup … &` detaches from the SSH session's controlling terminal and
+    # survives its hangup. Redirect all three streams: a child still holding
+    # the session's stdout keeps the SSH channel open, and `execInGuest` would
+    # then block for the runner's entire life — which is precisely the
+    # foreground behaviour this path exists to avoid.
+    @["/bin/sh", "-c",
+      "chmod +x " & guestPath & " && nohup " & guestPath &
+      " >/dev/null 2>&1 </dev/null & echo started"]
+
+proc cmdRunEphemeralVmRun(opts: CliOpts): int =
+  ## Per-job ephemeral instance for the vm-harness-run backends (tart-macos,
+  ## tart-linux-arm, qemu-windows-arm, utm-windows-arm).
+  ##
+  ## WHY THIS EXISTS AT ALL. `cmdRunEphemeral` used to dispatch only `incus`
+  ## and `hyperv` and send EVERY other backend into the libvirt path, which
+  ## demands `--golden-image` and knows nothing about tart or QEMU. So the
+  ## central GARM's remote (RB1) provider — whose recipe is
+  ## `run --ephemeral --backend <target> … --keep` — could never drive these
+  ## backends: every CreateInstance died with
+  ## "run --ephemeral: --golden-image is required". That is why m3's
+  ## linux-arm64, macos-arm64 and windows-arm64 POOLS sat with every runner in
+  ## `error` while the same guest classes served CI happily through the
+  ## per-host GARM, which uses the local-exec path instead.
+  ##
+  ## THE LIFECYCLE, and how it differs from libvirt's. There is no CoW overlay
+  ## to boot here: the backend owns cloning. Provision resolves the golden,
+  ## revert mints the per-job clone, start waits for SSH, and the runner
+  ## bootstrap arrives as `--user-data` (the provider sends it in the /v1/exec
+  ## `userData` field; the serve daemon materialises it to a temp file). With
+  ## `--keep` the guest is LEFT RUNNING and the handle is persisted, because
+  ## `stopAndCleanup` for these backends needs `qemuPid`/`swtpmPid`/`vmDir`
+  ## from the live handle and those are not derivable from `--baseline` the way
+  ## libvirt's artifact paths are. See `ephemeral_handle.nim`.
+  let id = parseBackendId(opts.backend)
+  if opts.baseline.len == 0:
+    raise newException(ValueError,
+      "run --ephemeral --backend " & opts.backend &
+      ": --baseline (instance name) is required")
+  # The provider forwards the golden under the generic --source-image /
+  # --base-image flags, exactly as it does for hyperv; accept both, and let an
+  # explicit --golden-image win. Without this the tart backends silently
+  # substitute their built-in cirruslabs image and run something nobody asked
+  # for.
+  let golden = resolveEphemeralGolden(opts.goldenImage, opts.sourceImage,
+                                      opts.baseImage, opts.backend)
+
+  var userData = ""
+  if opts.userDataFile.len > 0:
+    if not fileExists(opts.userDataFile):
+      raise newException(ValueError,
+        "run --ephemeral: --user-data file not found: " & opts.userDataFile)
+    userData = readFile(opts.userDataFile)
+
+  let backend = newBackend(id)
+  let guest = guestOsFor(id)
+  var spec: BaselineSpec
+  applyDefaults(spec, opts)
+  spec.sourceImage = golden
+  if opts.ephemeralPrefix.len > 0:
+    spec.backendOptions["ephemeralPrefix"] = opts.ephemeralPrefix
+  logEvent(opts.logFormat, "info", "ephemeral vm: provision",
+           {"backend": $id, "name": opts.baseline, "golden": golden})
+  backend.provisionBaseline(spec)
+  var vm = backend.revertToBaseline(opts.baseline)
+  let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 600
+  var started = false
+  try:
+    backend.startAndAwaitReady(vm, readyTimeout)
+    started = true
+    if userData.len > 0:
+      # Land the bootstrap in the guest, then start it detached. The guest path
+      # mirrors the local-exec path's so an operator reading either log finds
+      # the same file in the same place.
+      let guestPath =
+        if guest == goWindows: "C:\\garm-bootstrap.ps1" else: "/tmp/garm-bootstrap.sh"
+      let hostPath = getTempDir() / ("vmh-userdata-" & opts.baseline &
+                                     (if guest == goWindows: ".ps1" else: ".sh"))
+      writeFile(hostPath, userData)
+      try:
+        setFilePermissions(hostPath, {fpUserRead, fpUserWrite, fpUserExec})
+      except CatchableError:
+        discard
+      backend.copyToGuest(vm, hostPath, guestPath)
+      try:
+        removeFile(hostPath)
+      except CatchableError:
+        discard
+      let launch = buildDetachedBootstrapCommand(guest, guestPath)
+      let r = backend.execInGuest(vm, initTable[string, string](), launch,
+                                  timeoutSec = readyTimeout)
+      if r.exitCode != 0:
+        raise newVmHarnessError($id, lpExec,
+          "ephemeral bootstrap did not start in the guest (exit " &
+          $r.exitCode & "): " & r.stderr.strip())
+      logEvent(opts.logFormat, "info", "ephemeral vm: bootstrap launched",
+               {"name": vm.name, "guest_path": guestPath})
+  except CatchableError:
+    # A guest that booted but could not be provisioned is NOT left running:
+    # it would hold one of the host's few guest slots and never register a
+    # runner, which is the failure shape the pool capacity arithmetic assumes
+    # cannot happen.
+    if started or vm != nil:
+      try:
+        backend.stopAndCleanup(vm, deleteVm = true)
+      except CatchableError:
+        discard
+    raise
+
+  if opts.keepEphemeral:
+    saveEphemeralHandle($id, opts.baseline, vm)
+    logEvent(opts.logFormat, "info", "ephemeral vm: kept running",
+             {"name": vm.name, "baseline": opts.baseline})
+    echo vm.name
+    return 0
+
+  var verdict = 0
+  try:
+    if opts.cmd.len > 0:
+      let r = backend.execInGuest(vm, initTable[string, string](), opts.cmd,
+                                  timeoutSec = readyTimeout)
+      verdict = (if r.exitCode == 0: 0 else: 1)
+      logEvent(opts.logFormat,
+               (if verdict == 0: "info" else: "error"),
+               "ephemeral probe",
+               {"cmd": opts.cmd.join(" "), "exit": $r.exitCode})
+  finally:
+    backend.stopAndCleanup(vm, deleteVm = true)
+    logEvent(opts.logFormat, "info", "ephemeral vm: destroyed",
+             {"name": vm.name})
+  verdict
+
 proc cmdRunEphemeral(opts: CliOpts): int =
   ## M2 per-job ephemeral CoW clone: clone a fresh overlay from the
   ## golden, boot it on KVM, harvest the serial console (boot-marker
@@ -1540,13 +1765,16 @@ proc cmdRunEphemeral(opts: CliOpts): int =
   ## instead use the SSH ``execInGuest`` path. When ``--`` supplies an
   ## argument it is treated as the expected serial marker substring.
   ##
-  ## The Incus container path is a separate lifecycle (no serial console,
-  ## an in-guest exec probe instead) — dispatch to it when the backend is
-  ## ``incus``.
-  if opts.backend == $biIncus:
-    return cmdRunEphemeralIncus(opts)
-  if opts.backend == $biHyperv:
-    return cmdRunEphemeralHyperV(opts)
+  ## DISPATCH IS ON THE BACKEND, and the libvirt body below is the fallback
+  ## for libvirt ONLY — it is not a generic path. It demands `--golden-image`
+  ## and drives `virsh`, so any backend that reaches it by accident fails with
+  ## a message about a flag the caller never had reason to pass. That is what
+  ## used to happen to every tart and QEMU request from the remote provider.
+  case ephemeralPathFor(opts.backend)
+  of epIncus: return cmdRunEphemeralIncus(opts)
+  of epHyperV: return cmdRunEphemeralHyperV(opts)
+  of epVmRun: return cmdRunEphemeralVmRun(opts)
+  of epLibvirt: discard
   let id = biLibvirt
   let backend = newBackend(id)
   if opts.baseline.len == 0:
@@ -1658,6 +1886,31 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
   if opts.baseline.len == 0:
     raise newException(ValueError,
       "ephemeral-destroy: --baseline is required")
+
+  # The vm-harness-run backends cannot have their handle RECONSTRUCTED from
+  # `--baseline` the way libvirt's and incus's can — `revertToBaseline` mints
+  # its own per-job name and `stopAndCleanup` needs pids and a vmDir that only
+  # the live handle carried. `run --ephemeral --keep` persisted it; load it
+  # back. A MISSING record is success, not failure: GARM retries deletes, and
+  # an instance that is already gone must not keep erroring.
+  if ephemeralPathFor(opts.backend) == epVmRun:
+    let vmRunId = parseBackendId(opts.backend)
+    let b = newBackend(vmRunId)
+    let loaded = loadEphemeralHandle($vmRunId, opts.baseline, b)
+    if loaded.isNone:
+      logEvent(opts.logFormat, "info",
+               "ephemeral vm: no kept-instance record — nothing to destroy",
+               {"backend": $vmRunId, "baseline": opts.baseline})
+      return 0
+    let vm = loaded.get
+    b.stopAndCleanup(vm, deleteVm = true)
+    # Only forget the record AFTER a teardown that did not raise, so a
+    # failure leaves the instance reclaimable instead of orphaning it.
+    forgetEphemeralHandle($vmRunId, opts.baseline)
+    logEvent(opts.logFormat, "info", "ephemeral vm: destroyed",
+             {"backend": $vmRunId, "name": vm.name,
+              "baseline": opts.baseline})
+    return 0
 
   if opts.backend.toLowerAscii() == "incus":
     let ib = IncusBackend(newBackend(biIncus))
