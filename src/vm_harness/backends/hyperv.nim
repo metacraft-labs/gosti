@@ -1189,9 +1189,29 @@ if ($switch -and $switch.Length -gt 0) {{
   Get-VMNetworkAdapter -VMName $vmName -ErrorAction SilentlyContinue | ForEach-Object {{
     Connect-VMNetworkAdapter -VMNetworkAdapter $_ -SwitchName $switch -ErrorAction SilentlyContinue
   }}
+  # STATIC MAC per clone. Hyper-V's DYNAMIC MAC-pool allocator is broken on some
+  # hosts (win-ci-bare-001: Start-VM fails "No available MAC address for Network
+  # Adapter" / 0x800701E7 even with a healthy 256-address range), which leaves
+  # an ephemeral clone unable to power on. A per-clone STATIC MAC side-steps the
+  # allocator entirely (the same workaround the hyperv-pool.ps1 warm-pool tool
+  # uses). Locally-administered (02:..) and derived from a hash of the unique
+  # ephemeral VM name, so concurrent clones never collide.
+  $md5 = [System.Security.Cryptography.MD5]::Create().ComputeHash(
+    [System.Text.Encoding]::UTF8.GetBytes($vmName))
+  $mac = ('02155D{{0:X2}}{{1:X2}}{{2:X2}}' -f $md5[0], $md5[1], $md5[2])
+  Get-VMNetworkAdapter -VMName $vmName -ErrorAction SilentlyContinue | ForEach-Object {{
+    Set-VMNetworkAdapter -VMNetworkAdapter $_ -StaticMacAddress $mac -ErrorAction SilentlyContinue
+  }}
 }} else {{
   try {{ Get-VMNetworkAdapter -VMName $vmName -ErrorAction SilentlyContinue | Remove-VMNetworkAdapter -ErrorAction SilentlyContinue }} catch {{}}
 }}
+
+# Enable the Guest Service Interface. `Copy-VMFile` (host->guest transfer for
+# the JIT/exec payload and harvest) rides on GSI, which a `New-VM` clone leaves
+# DISABLED by default -- so without this the run boots and reaches PowerShell
+# Direct but every Copy-VMFile silently fails and the job exits non-zero
+# (observed on-box 2026-09-18: exit 1 after a full clean boot). Idempotent.
+Enable-VMIntegrationService -VMName $vmName -Name 'Guest Service Interface' -ErrorAction SilentlyContinue
 
 # Optional cloudbase-init ConfigDrive ISO (JIT bootstrap injection), attached
 # read-only. cloudbase-init in the golden consumes the injected user_data on
