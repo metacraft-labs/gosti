@@ -1445,16 +1445,26 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
   if opts.baseline.len == 0:
     raise newException(ValueError,
       "run --ephemeral --backend hyperv: --baseline (VM name) is required")
-  if opts.goldenImage.len == 0:
+  # garm-provider-vmharness forwards the golden VHDX under the GENERIC
+  # --source-image/--base-image flags (the same naming the incus/libvirt
+  # backends take), not --golden-image. Accept those as aliases so the
+  # provider's CreateInstance argv drives the hyperv path unmodified; an
+  # explicit --golden-image still wins when supplied.
+  let golden =
+    if opts.goldenImage.len > 0: opts.goldenImage
+    elif opts.sourceImage.len > 0: opts.sourceImage
+    else: opts.baseImage
+  if golden.len == 0:
     raise newException(ValueError,
-      "run --ephemeral --backend hyperv: --golden-image (golden VHDX) is required")
+      "run --ephemeral --backend hyperv: golden VHDX is required " &
+      "(pass --golden-image, or --source-image/--base-image)")
   let credCache = getEnv("VMH_HYPERV_CRED_CACHE")
   let hb = HyperVBackend(newBackend(biHyperv))
   if credCache.len > 0:
     hb.credentialCachePath = credCache
   let spec = HyperVEphemeralCloneSpec(
     name: opts.baseline,
-    goldenVhdx: opts.goldenImage,
+    goldenVhdx: golden,
     useDifferencing: getEnv("VMH_HYPERV_FULL_COPY") == "",
     cpus: opts.cpus,
     memoryMB: opts.memoryMB,
@@ -1465,7 +1475,7 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
     configDriveIso: getEnv("VMH_HYPERV_CONFIG_DRIVE"))
   logEvent(opts.logFormat, "info", "ephemeral hyperv: clone+boot",
            {"backend": $biHyperv, "name": opts.baseline,
-            "golden": opts.goldenImage})
+            "golden": golden})
   let timeoutSec = if opts.timeoutSec > 0: opts.timeoutSec else: 300
   let code = runEphemeralHyperVJob(hb, spec,
     probeArgv = opts.cmd,

@@ -1087,8 +1087,20 @@ method closeSerial*(b: HyperVBackend, stream: SerialStream) =
 # win-ci-bare-001.
 
 const EphemeralVmNamePrefix* = "repro-eph-hyperv-"
-  ## Per-job ephemeral VM names MUST start with this so the create/teardown
-  ## safety guards can never touch a long-lived (baseline / boot) VM.
+  ## Default per-job ephemeral VM name prefix. Names MUST start with the
+  ## ACTIVE prefix (see `ephemeralVmNamePrefix`) so the create/teardown safety
+  ## guards can never touch a long-lived (baseline / boot) VM.
+
+proc ephemeralVmNamePrefix*(): string =
+  ## The prefix the create/teardown guards enforce, overridable via
+  ## `VMH_HYPERV_EPH_PREFIX`. An external orchestrator names the per-job VM
+  ## (the `vm-harness serve` daemon forwards whatever `--baseline` the GARM
+  ## provider sends, e.g. `<pool runner_prefix>-<id>` → `garm-…`), so the
+  ## sanctioned prefix has to be alignable with that convention rather than
+  ## hardcoded. libvirt/incus enforce no such prefix at all; tart/lima/utm
+  ## already take it as a parameter — this brings hyperv in line. Defaults to
+  ## `EphemeralVmNamePrefix` so nothing changes unless the env is set.
+  getEnv("VMH_HYPERV_EPH_PREFIX", EphemeralVmNamePrefix)
 
 type
   HyperVEphemeralCloneSpec* = object
@@ -1166,8 +1178,8 @@ $configDrive = '{psQuote(spec.configDriveIso)}'
 
 # SAFETY: an ephemeral VM name is namespaced so teardown can force-Remove-VM
 # it without ever risking a long-lived (baseline / boot) VM.
-if (-not $vmName.StartsWith('{psQuote(EphemeralVmNamePrefix)}')) {{
-  throw "SAFETY: refusing to create ephemeral VM $vmName (must start with '{psQuote(EphemeralVmNamePrefix)}')"
+if (-not $vmName.StartsWith('{psQuote(ephemeralVmNamePrefix())}')) {{
+  throw "SAFETY: refusing to create ephemeral VM $vmName (must start with '{psQuote(ephemeralVmNamePrefix())}')"
 }}
 if (Get-VM -Name $vmName -ErrorAction SilentlyContinue) {{
   throw "ephemeral VM $vmName already exists; per-job clones require a fresh name"
@@ -1285,10 +1297,10 @@ proc provisionEphemeralClone*(b: HyperVBackend,
   when defined(windows):
     if spec.name.len == 0:
       raise newException(ValueError, "provisionEphemeralClone: spec.name is empty")
-    if not spec.name.startsWith(EphemeralVmNamePrefix):
+    if not spec.name.startsWith(ephemeralVmNamePrefix()):
       raise newException(ValueError,
         "provisionEphemeralClone: spec.name must start with '" &
-        EphemeralVmNamePrefix & "' (got '" & spec.name & "')")
+        ephemeralVmNamePrefix() & "' (got '" & spec.name & "')")
     if spec.goldenVhdx.len == 0:
       raise newException(ValueError,
         "provisionEphemeralClone: spec.goldenVhdx is empty")
