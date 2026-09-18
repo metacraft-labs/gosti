@@ -168,7 +168,12 @@ proc pwshInvokeCommand*(b: HyperVBackend, vmName: string,
 $cred = Import-Clixml -Path '{b.credentialCachePath.replace("'", "''")}'
 $out = Invoke-Command -VMName '{vmName.replace("'", "''")}' -Credential $cred -ScriptBlock {{ {scriptBlock} }} -ArgumentList {argListExpr}
 $out | Out-String
-exit $LASTEXITCODE
+# A remote scriptBlock's `exit 0` does NOT set the host $LASTEXITCODE (it comes
+# back $null), so a bare `exit $LASTEXITCODE` would exit 1 and make every
+# SUCCESSFUL guest command look like a failure. Treat an unset code as success;
+# a non-zero remote exit DOES propagate and is preserved. Callers that need the
+# guest process's exact code (execInGuest) carry it out-of-band in the output.
+if ($null -eq $LASTEXITCODE) {{ exit 0 }} else {{ exit $LASTEXITCODE }}
 """
   let pwsh = @[$b.powershellLauncher, "-NoLogo", "-NoProfile",
                "-ExecutionPolicy", "Bypass", "-Command", psCommand]
@@ -270,7 +275,7 @@ method execInGuest*(b: HyperVBackend, vm: VmHandle,
     var envLines = ""
     for k, v in env:
       envLines &= "Set-Item -Path 'Env:" & k.replace("'", "''") &
-                  "' -Value '" & v.replace("'", "''") & "'`n"
+                  "' -Value '" & v.replace("'", "''") & "'; "
     let exe = cmd[0].replace("'", "''")
     var argList = ""
     if cmd.len > 1:
@@ -279,17 +284,37 @@ method execInGuest*(b: HyperVBackend, vm: VmHandle,
         if i > 1: argList &= ","
         argList &= "'" & cmd[i].replace("'", "''") & "'"
       argList &= ")"
+    # The guest process's exit code is carried OUT-OF-BAND as a sentinel line
+    # rather than via `exit $p.ExitCode`. A remote scriptBlock's `exit` does not
+    # reliably set the host $LASTEXITCODE (an `exit 0` comes back $null), so
+    # relying on it made every successful guest command report failure. The
+    # sentinel is emitted last, parsed here, and stripped from the returned
+    # stdout so callers never see it.
     let scriptBlock = envLines &
       "$p = Start-Process -FilePath '" & exe & "' -NoNewWindow -Wait -PassThru " &
       argList & " -RedirectStandardOutput \"$env:TEMP\\vmh-stdout.txt\" " &
-      "-RedirectStandardError \"$env:TEMP\\vmh-stderr.txt\"`n" &
-      "$out = if (Test-Path \"$env:TEMP\\vmh-stdout.txt\") { Get-Content -Raw \"$env:TEMP\\vmh-stdout.txt\" } else { '' }`n" &
-      "$err = if (Test-Path \"$env:TEMP\\vmh-stderr.txt\") { Get-Content -Raw \"$env:TEMP\\vmh-stderr.txt\" } else { '' }`n" &
-      "Write-Host $out`n" &
-      "if ($err) { [Console]::Error.WriteLine($err) }`n" &
-      "exit $p.ExitCode"
-    return pwshInvokeCommand(b, vm.name, scriptBlock,
-                             timeoutSec = timeoutSec)
+      "-RedirectStandardError \"$env:TEMP\\vmh-stderr.txt\"; " &
+      "$out = if (Test-Path \"$env:TEMP\\vmh-stdout.txt\") { Get-Content -Raw \"$env:TEMP\\vmh-stdout.txt\" } else { '' }; " &
+      "$err = if (Test-Path \"$env:TEMP\\vmh-stderr.txt\") { Get-Content -Raw \"$env:TEMP\\vmh-stderr.txt\" } else { '' }; " &
+      "Write-Host $out; " &
+      "if ($err) { [Console]::Error.WriteLine($err) }; " &
+      "Write-Output ('__VMH_RC__=' + [string]([int]$p.ExitCode))"
+    var r = pwshInvokeCommand(b, vm.name, scriptBlock,
+                              timeoutSec = timeoutSec)
+    # Extract the last __VMH_RC__=<n> sentinel as the guest exit code, and strip
+    # every sentinel line from stdout.
+    var guestRc = r.exitCode
+    var keptLines: seq[string]
+    for line in r.stdout.splitLines():
+      let t = line.strip()
+      if t.startsWith("__VMH_RC__="):
+        try: guestRc = parseInt(t["__VMH_RC__=".len .. ^1].strip())
+        except ValueError: discard
+      else:
+        keptLines.add(line)
+    r.stdout = keptLines.join("\n")
+    r.exitCode = guestRc
+    return r
   else:
     raise newException(BackendUnavailableError,
       "HyperVBackend.execInGuest requires a Windows host")
