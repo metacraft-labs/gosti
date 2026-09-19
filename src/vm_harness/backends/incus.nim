@@ -12,9 +12,14 @@
 ##
 ##   probeAvailability        ``incus info``
 ##   provisionBaseline        ``incus image list <alias>`` (ensure present)
-##   provisionEphemeralClone  default ``incus launch <base> <name>``;
-##                            operator capabilities use ``incus init`` →
-##                            fixed config/device → ``incus start``
+##   provisionEphemeralClone  default ``incus launch <base> <name>`` (+
+##                            optional ``--ephemeral`` and raw ``incus config
+##                            set`` keys); operator capabilities instead use
+##                            ``incus init`` → fixed config/device → ``incus
+##                            start``. The runner bootstrap payload is
+##                            delivered + launched over ``incus exec`` after
+##                            readiness (``injectAndRunBootstrap``), NOT via
+##                            cloud-init.
 ##   startAndAwaitReady       poll ``incus exec <name> -- true`` until it
 ##                            succeeds (container Running + init up)
 ##   execInGuest              ``incus exec <name> -- <cmd>``
@@ -78,12 +83,18 @@ type
                            ## still the reliable teardown)
     profiles*: seq[string] ## optional profiles (``--profile p``); empty
                            ## ⇒ the ``default`` profile
-    userData*: string      ## optional cloud-init user-data. When set it
-                           ## is injected via
-                           ## ``incus config set <name>
-                           ##   cloud-init.user-data <...>`` — the IM2
-                           ## JIT bootstrap-injection seam. Requires a
-                           ## cloud-init-enabled image to take effect.
+    userData*: string      ## optional bootstrap payload (GARM's rendered
+                           ## runner registration script). NOTE: on incus
+                           ## this is NOT consumed via cloud-init — the
+                           ## guest API is served on ``/dev/incus/sock``
+                           ## while a cloud-init built for LXD probes
+                           ## ``/dev/lxd/sock``, so its datasource never
+                           ## initialises and injected user-data is never
+                           ## executed. The payload is instead delivered +
+                           ## launched DETACHED via ``incus exec`` once the
+                           ## container is exec-ready (see
+                           ## ``injectAndRunBootstrap``). This field carries
+                           ## the payload; the CLI drives the exec-injection.
     config*: Table[string, string]
       ## optional raw ``incus config set`` keys
       ## (e.g. ``security.nesting`` ,
@@ -103,6 +114,11 @@ const
   DefaultIncusBaseImage* = "vmh-base"
   DefaultIncusStoragePool* = "default"
   DefaultIncusReadyTimeoutSec* = 60
+  IncusBootstrapGuestPath* = "/root/garm-bootstrap.sh"
+    ## In-guest path the bootstrap payload is delivered to (root-only, 0700).
+  IncusBootstrapLogPath* = "/var/log/garm-bootstrap.log"
+    ## In-guest log the detached bootstrap's stdout/stderr is redirected to;
+    ## deliberately NOT streamed back (the runner foregrounds and never ends).
 
 proc resolveIncusCmd(incusCmd: seq[string]): seq[string] =
   ## Honour the ``VMH_INCUS_CMD`` env var (space-split) when the caller
@@ -400,15 +416,16 @@ proc listDevices*(b: IncusBackend, container: string): seq[string] =
 # provisionEphemeralClone + teardown (the per-job core).
 
 proc applyConfig(b: IncusBackend, name: string, spec: EphemeralIncusSpec) =
-  ## Inject cloud-init user-data (the IM2 JIT seam) + any raw config keys.
-  if spec.userData.len > 0:
-    let r = b.runIncus(@["config", "set", name,
-                         "cloud-init.user-data", spec.userData],
-                         timeoutSec = 30)
-    if r.exitCode != 0:
-      raise newVmHarnessError($b.id, lpProvisioning,
-        "incus config set cloud-init.user-data failed (exit " &
-        $r.exitCode & "): " & r.stdout)
+  ## Apply any raw ``incus config set`` keys from ``spec.config``.
+  ##
+  ## NOTE: ``spec.userData`` is deliberately NOT written to
+  ## ``cloud-init.user-data`` here. On incus the guest API lives on
+  ## ``/dev/incus/sock`` while the golden's cloud-init probes
+  ## ``/dev/lxd/sock``, so its datasource never comes up and the injected
+  ## user-data is never executed. The bootstrap payload is instead delivered
+  ## and launched over ``incus exec`` after the container is exec-ready — see
+  ## ``injectAndRunBootstrap``. Keeping the token OUT of the container config
+  ## (``incus config show`` would otherwise expose it) is a bonus.
   for k, v in spec.config:
     let r = b.runIncus(@["config", "set", name, k, v], timeoutSec = 30)
     if r.exitCode != 0:
@@ -495,7 +512,13 @@ proc provisionEphemeralClone*(b: IncusBackend,
   ##
   ## Default steps retain the original exact command shape:
   ##   1. ``incus launch <base> <name> [--ephemeral] [--profile p ...]``
-  ##   2. optional user-data / raw config keys.
+  ##      — a brand-new container whose rootfs is a fresh copy of the base
+  ##      image. Nothing from a prior job can bleed in.
+  ##   2. optional raw ``incus config set <name> <k> <v>`` keys from
+  ##      ``spec.config``. The bootstrap payload (``spec.userData``) is NOT
+  ##      applied here — it is delivered + launched over ``incus exec`` after
+  ##      the container is exec-ready (see ``injectAndRunBootstrap``), because
+  ##      incus does not drive the golden's cloud-init datasource.
   ##
   ## Operator-selected security nesting or nested KVM instead uses the
   ## ordered, pre-start path ``init -> config/device -> start``. This prevents
@@ -565,6 +588,86 @@ proc provisionEphemeralClone*(b: IncusBackend,
     sshUser: b.execUser,
     sshAuth: SshAuth(kind: saNone),
     extra: extra)
+
+proc injectAndRunBootstrap*(b: IncusBackend, vm: VmHandle, payload: string,
+                            guestPath: string = IncusBootstrapGuestPath,
+                            logPath: string = IncusBootstrapLogPath,
+                            networkTimeoutSec: int = 120) =
+  ## Deliver the runner bootstrap ``payload`` into an already-exec-ready
+  ## container and launch it DETACHED. This replaces the cloud-init datasource
+  ## path that incus does not drive.
+  ##
+  ## The payload is GARM's rendered ``#!/bin/bash`` registration script (it
+  ## sets the callback/metadata URLs + bearer token, then downloads and runs
+  ## the actions runner in the FOREGROUND). Because incus serves its guest API
+  ## on ``/dev/incus/sock`` while the golden's cloud-init probes
+  ## ``/dev/lxd/sock``, that datasource never comes up and the injected
+  ## user-data is never executed — so we deliver and start the script directly.
+  ##
+  ## Delivery: the payload is streamed on STDIN into an in-guest ``cat`` (never
+  ## placed on the argv), so the registration TOKEN it carries never reaches a
+  ## command line, the host process table, or this backend's command log. The
+  ## file is created root-only (``umask 077`` + explicit ``chmod 0700``).
+  ##
+  ## Launch: ``setsid --fork`` starts the script in a NEW session, detached
+  ## from the exec channel, with stdout/stderr redirected to an in-guest log
+  ## and stdin closed. The ``incus exec`` call therefore RETURNS PROMPTLY — it
+  ## does not block on ``run.sh`` (which foregrounds, listening for jobs) —
+  ## which is what the ``run --ephemeral --keep`` = "launch + return" contract
+  ## needs. The runner log is deliberately NOT streamed back (it never ends).
+  when defined(linux):
+    if payload.len == 0:
+      raise newException(ValueError, "injectAndRunBootstrap: empty payload")
+    # 1. Deliver the payload root-only, contents on STDIN (never on the argv).
+    let deliver = b.execInGuest(vm, initTable[string, string](),
+      @["sh", "-c",
+        "umask 077 && cat > '" & guestPath & "' && chmod 0700 '" &
+        guestPath & "'"],
+      stdin = payload, timeoutSec = 60)
+    if deliver.exitCode != 0:
+      # The payload travelled on stdin; keep the message generic regardless so
+      # nothing derived from the payload/token can leak into an error string.
+      raise newVmHarnessError($b.id, lpProvisioning,
+        "injectAndRunBootstrap: delivering bootstrap into '" & vm.name &
+        "' failed (exit " & $deliver.exitCode & ")")
+    # 1.5 Wait for the guest NETWORK before launching. `startAndAwaitReady`
+    # only proves `incus exec -- true` (init far enough to exec); it does NOT
+    # prove DHCP has assigned an address or that DNS resolves. GARM's bootstrap
+    # curls the metadata/callback URLs and downloads the runner the instant it
+    # starts, so launching it before the network is up makes its first request
+    # fail (curl exit 7 / "HTTP 000000") and the script aborts — the runner
+    # never registers. Poll from the host for a default route AND working DNS
+    # (the runner download needs name resolution), then launch. On timeout fail
+    # the create so the controller recreates rather than leaving a dead guest.
+    block awaitNet:
+      let netDeadline = epochTime() + networkTimeoutSec.float
+      var lastRc = -1
+      while epochTime() < netDeadline:
+        let probe = b.execInGuest(vm, initTable[string, string](),
+          @["sh", "-c",
+            "ip route 2>/dev/null | grep -q '^default' && " &
+            "getent hosts github.com >/dev/null 2>&1"],
+          timeoutSec = 15)
+        lastRc = probe.exitCode
+        if lastRc == 0:
+          break awaitNet
+        sleep(1000)
+      if lastRc != 0:
+        raise newVmHarnessError($b.id, lpStartup,
+          "injectAndRunBootstrap: guest '" & vm.name & "' network not ready " &
+          "(no default route / DNS) within " & $networkTimeoutSec & "s")
+    # 2. Launch DETACHED so the exec call returns and run.sh keeps running.
+    let launch = b.execInGuest(vm, initTable[string, string](),
+      @["setsid", "--fork", "bash", "-lc",
+        "'" & guestPath & "' > '" & logPath & "' 2>&1 </dev/null"],
+      timeoutSec = 60)
+    if launch.exitCode != 0:
+      raise newVmHarnessError($b.id, lpProvisioning,
+        "injectAndRunBootstrap: launching bootstrap in '" & vm.name &
+        "' failed (exit " & $launch.exitCode & ")")
+  else:
+    raise newException(BackendUnavailableError,
+      "IncusBackend.injectAndRunBootstrap requires a Linux host")
 
 # ---------------------------------------------------------------------------
 # VmBackend method overrides.

@@ -1,5 +1,19 @@
 ## t_incus_linux_jit_boot (campaign IM2 gate).
 ##
+## SUPERSEDED PREMISE — DO NOT READ A GREEN HERE AS VALIDATING THE LIVE PATH.
+## This gate asserts the OLD cloud-init injection (`incus config set <name>
+## cloud-init.user-data ...`). That path does NOT work on Incus 6.x: Incus
+## serves its guest API on `/dev/incus/sock` while this golden's cloud-init
+## (22.4.2) probes `/dev/lxd/sock`, so the datasource never initialises and the
+## injected user-data is never executed. The live mechanism is now
+## exec-injection (`IncusBackend.injectAndRunBootstrap`: deliver the bootstrap
+## on stdin + `setsid --fork bash`), covered hermetically by
+## `tests/unit/t_cli_incus_bootstrap.nim`. This gate self-skips without a real
+## incus daemon + image, so it does not false-green in normal CI; on a real host
+## it would now exercise the dead path. FOLLOW-UP: retarget this gate at
+## exec-injection (assert the runner registers via the delivered script) and
+## drop the cloud-init-user-data assertion.
+##
 ## Proves the ephemeral LINUX JIT-injection MECHANISM end-to-end on real
 ## Incus containers, with NO live GitHub (a mock GARM metadata + actions
 ## endpoint stands in). The container-based analog of the Windows M3 gate
