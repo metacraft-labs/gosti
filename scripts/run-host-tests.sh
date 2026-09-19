@@ -57,6 +57,18 @@ run_nim r --hints:off tests/e2e/t_qemu_windows_arm_per_job_boot_host.nim
 # SSH before MA8. ~1 minute, no opt-in flag; skips loudly when there is no
 # golden.
 run_nim r --hints:off tests/e2e/t_qemu_windows_arm_dead_guest_is_named_host.nim
+# Runner-Fleet-M3-ARM-Wave MA12 gate:
+# t_vmharness_serve_survives_a_hung_request, HOST TIER. READ-ONLY, and safe
+# against a daemon serving live CI: it starts nothing and sends no /v1/exec.
+# It asserts the two things that were true on both wedged production hosts and
+# that no hermetic test can see — the DEPLOYED listener answers an
+# unauthenticated probe within the same budget the watchdog gives it, and its
+# accept backlog is not saturated (`Recv-Q` below `Send-Q` on the LISTEN
+# socket; the incident showed 4097 against 4096). Probes
+# $VMH_SERVE_HOST_ADDR, default 127.0.0.1:8873. Skips loudly, naming the
+# address it looked at, when no daemon is deployed there; the backlog layer
+# additionally skips off-Linux, where the accept queue is not observable.
+run_nim r --hints:off tests/e2e/t_vmharness_serve_survives_a_hung_request_host.nim
 run_nim r --hints:off tests/integration/t_utm_lifecycle.nim
 run_nim r --hints:off tests/e2e/t_vm_harness_utm_windows_arm_smoke.nim
 run_nim r --hints:off tests/e2e/t_vm_harness_utm_windows_dism_works_under_prism.nim
