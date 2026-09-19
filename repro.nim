@@ -79,6 +79,8 @@ const posixTestSpecs: seq[VmHarnessTestSpec] = @[
     binary: "t_incus_ephemeral_capabilities"),
   VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_backend.nim",
     binary: "t_qemu_windows_arm_backend"),
+  VmHarnessTestSpec(source: "tests/unit/t_cli_ephemeral_vmrun.nim",
+    binary: "t_cli_ephemeral_vmrun"),
   VmHarnessTestSpec(source: "tests/unit/t_tart_backend.nim",
     binary: "t_tart_backend"),
   # Runner-Fleet-M3-ARM-Wave MA0 gate: t_vmharness_image_is_honoured (c).
