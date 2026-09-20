@@ -22,6 +22,33 @@ proc params(name = ""): CrudParams =
   CrudParams(name: name, guestOs: goLinux, guestArch: gaX86_64,
              env: initTable[string, string]())
 
+proc assertError(r: CrudResponse, kind: CrudErrorKind) =
+  ## Assert the stable failure envelope + exit code for a given kind.
+  check r.exitCode == exitCode(kind)
+  check not r.json["ok"].getBool
+  check r.json["error"]["kind"].getStr == $kind
+  check r.json["error"]["code"].getInt == exitCode(kind)
+  check r.json["error"]["message"].kind == JString
+
+# ---------------------------------------------------------------------------
+# Two tiny stub backends whose methods raise — the vehicle for the exit-code
+# arms NoopBackend can never reach (it implements every method successfully).
+# create_vm is the driver: it calls provisionBaseline first, so overriding
+# that one method is enough to route a verb into runCrud's exception handlers.
+
+type
+  UnavailableBackend = ref object of VmBackend
+    ## Every operation reports the backend cannot run here → exit 4.
+  ExplodingBackend = ref object of VmBackend
+    ## Raises a plain, uncategorised error → the internal arm, exit 1.
+
+method provisionBaseline(b: UnavailableBackend, spec: BaselineSpec) =
+  raise newException(BackendUnavailableError,
+    "stub backend is unavailable on this host")
+
+method provisionBaseline(b: ExplodingBackend, spec: BaselineSpec) =
+  raise newException(ValueError, "stub backend hit an unexpected fault")
+
 suite "CRUD façade — exit-code contract":
   test "exitCode maps every failure kind to its stable code":
     check exitCode(cekBadArgs) == 2
@@ -159,13 +186,6 @@ suite "CRUD façade — failure envelopes over noop":
     let backend = newNoopBackend()
     let session = newCrudSession(backend)
 
-  proc assertError(r: CrudResponse, kind: CrudErrorKind) =
-    check r.exitCode == exitCode(kind)
-    check not r.json["ok"].getBool
-    check r.json["error"]["kind"].getStr == $kind
-    check r.json["error"]["code"].getInt == exitCode(kind)
-    check r.json["error"]["message"].kind == JString
-
   test "get_vm on a missing VM is not-found (exit 3)":
     assertError(runCrud(session, "get_vm", params("ghost")), cekNotFound)
 
@@ -199,3 +219,23 @@ suite "CRUD façade — failure envelopes over noop":
     var p = params("vm1")
     p.snapshot = "no-such-snap"
     assertError(runCrud(session, "restore_snapshot", p), cekNotFound)
+
+suite "CRUD façade — backend-unavailable and internal arms":
+  # These two arms are unreachable through NoopBackend (which implements every
+  # method), so they are driven end-to-end through runCrud with stub backends
+  # that raise — closing the full frozen exit-code table (0/2/3/4/5, 1).
+  test "a BackendUnavailableError maps to backend-unavailable (exit 4)":
+    let session = newCrudSession(
+      UnavailableBackend(id: biNoop, hostPlatform: hpLinux,
+                         supportedGuests: {goLinux}))
+    let r = runCrud(session, "create_vm", params("vm1"))
+    assertError(r, cekBackendUnavailable)
+    check r.exitCode == 4
+
+  test "an uncategorised error maps to internal (exit 1)":
+    let session = newCrudSession(
+      ExplodingBackend(id: biNoop, hostPlatform: hpLinux,
+                       supportedGuests: {goLinux}))
+    let r = runCrud(session, "create_vm", params("vm1"))
+    assertError(r, cekInternal)
+    check r.exitCode == 1
