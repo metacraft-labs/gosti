@@ -479,6 +479,31 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
     #
     # Each close is guarded separately: a stream that was never materialised
     # (no stdin was written, say) must not prevent the others from closing.
+    # REAP THE CHILD BEFORE CLOSING IT. `close(p)` releases handles; it does
+    # NOT wait(2), so a child that has not been reaped becomes a ZOMBIE and the
+    # kernel keeps its pipe inodes alive with both ends still charged to this
+    # process.
+    #
+    # The happy path calls `waitForExit` above and is fine. Every OTHER exit
+    # from the try block skips it: the client disconnecting mid-stream makes
+    # `writeChunk` raise, and the deadline reaper SIGKILLing a worker makes the
+    # read loop fail — both land straight here with an unreaped child.
+    #
+    # MEASURED on high-mem-server after the earlier stream-close fix: 215
+    # children in state Z and 639 pipe inodes held at BOTH ends, at 19.6h
+    # uptime. The stream closes alone were not enough precisely because the
+    # zombie keeps the pipe alive regardless of which fds we drop.
+    #
+    # `peekExitCode` is non-blocking and returns -1 while the child lives, so a
+    # worker we are abandoning gets killed first; `waitForExit` on an
+    # already-exited child just collects the status. Guarded because a double
+    # reap must not raise out of a `finally`.
+    try:
+      if p.peekExitCode == -1:
+        try: p.kill() except CatchableError: discard
+      discard p.waitForExit()
+    except CatchableError:
+      discard
     try: p.inputStream.close() except CatchableError: discard
     try: p.outputStream.close() except CatchableError: discard
     try: p.errorStream.close() except CatchableError: discard
