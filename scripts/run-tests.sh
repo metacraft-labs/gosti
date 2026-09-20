@@ -10,6 +10,9 @@ run_nim() {
 # Host-independent unit tests.
 run_nim r --hints:off tests/unit/t_output_envelope.nim
 run_nim r --hints:off tests/unit/t_auto_selection.nim
+# GOSTI2 PR-1: the generic-CRUD façade contract (JSON schema + exit codes),
+# every verb driven through the noop backend in-process. Hermetic.
+run_nim r --hints:off tests/unit/t_crud_facade.nim
 run_nim r --hints:off tests/unit/t_guest_scripts.nim
 run_nim r --hints:off tests/unit/t_cli_probe.nim
 run_nim r --hints:off tests/unit/t_cli_boot.nim

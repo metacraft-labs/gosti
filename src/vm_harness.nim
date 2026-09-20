@@ -22,6 +22,7 @@ import ./vm_harness/types
 import ./vm_harness/pool
 import ./vm_harness/output
 import ./vm_harness/auto
+import ./vm_harness/crud
 import ./vm_harness/orchestrator
 import ./vm_harness/guest_scripts
 import ./vm_harness/serial
@@ -51,6 +52,7 @@ export types
 export pool
 export output
 export auto
+export crud
 export orchestrator
 export guest_scripts
 export serial
