@@ -1504,6 +1504,16 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
   let hb = HyperVBackend(newBackend(biHyperv))
   if credCache.len > 0:
     hb.credentialCachePath = credCache
+  # `--user-data` (the GARM-rendered runner bootstrap the serve daemon staged
+  # from the /v1/exec userData field): the backend injects + starts it in-guest
+  # over PowerShell Direct on the `--keep` path so the JIT runner serves its job.
+  var userData = ""
+  if opts.userDataFile.len > 0:
+    if not fileExists(opts.userDataFile):
+      raise newException(ValueError,
+        "run --ephemeral --backend hyperv: --user-data file not found: " &
+        opts.userDataFile)
+    userData = readFile(opts.userDataFile)
   let spec = HyperVEphemeralCloneSpec(
     name: opts.baseline,
     goldenVhdx: golden,
@@ -1514,7 +1524,8 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
     secureBootEnabled: true,
     tpmEnabled: true,
     switchName: getEnv("VMH_HYPERV_SWITCH"),
-    configDriveIso: getEnv("VMH_HYPERV_CONFIG_DRIVE"))
+    configDriveIso: getEnv("VMH_HYPERV_CONFIG_DRIVE"),
+    userData: userData)
   logEvent(opts.logFormat, "info", "ephemeral hyperv: clone+boot",
            {"backend": $biHyperv, "name": opts.baseline,
             "golden": golden})

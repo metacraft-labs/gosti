@@ -1125,6 +1125,13 @@ type
     configDriveIso*: string      ## optional cloudbase-init ConfigDrive ISO
                                  ## (JIT bootstrap injection), attached as a
                                  ## read-only DVD. Empty ⇒ none.
+    userData*: string            ## optional GARM-rendered runner bootstrap
+                                 ## (Windows PowerShell, JIT). The golden has no
+                                 ## cloudbase-init, so — mirroring the incus
+                                 ## deliver-and-start-detached pattern — it is
+                                 ## injected + started in-guest over PowerShell
+                                 ## Direct on the `--keep` path rather than via a
+                                 ## config drive. Empty ⇒ no in-guest bootstrap.
 
 proc ephemeralClonePathFor*(spec: HyperVEphemeralCloneSpec): string =
   ## Resolve the per-job clone disk path: honour `spec.clonePath` when set,
@@ -1430,6 +1437,36 @@ method stopAndCleanup*(b: HyperVBackend, vm: VmHandle, deleteVm: bool = true) =
   else:
     discard
 
+proc launchGuestRunnerBootstrap(b: HyperVBackend, vm: VmHandle, userData: string) =
+  ## Inject the GARM-rendered runner bootstrap into the guest and start it
+  ## DETACHED — a one-shot SYSTEM Scheduled Task — so the JIT runner registers
+  ## (over github.com, which the NAT'd guest can reach) and serves its job
+  ## independently of this PowerShell-Direct session, which returns immediately
+  ## for the `--keep` path. This is the Hyper-V analog of the incus
+  ## deliver-and-start-detached path (the golden has no cloudbase-init, so serve
+  ## drives the bootstrap over VMBus). The payload is base64'd so arbitrary
+  ## script bytes (quotes, newlines) survive the -ArgumentList round-trip and
+  ## stay well under the command-line length limit.
+  let b64 = base64.encode(userData)
+  let scriptBlock =
+    "$ErrorActionPreference='Stop'; " &
+    "$txt = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($args[0])); " &
+    "$dir = 'C:\\vmh'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; " &
+    "$script = Join-Path $dir 'runner-bootstrap.ps1'; " &
+    "Set-Content -LiteralPath $script -Value $txt -Encoding UTF8; " &
+    "$act = New-ScheduledTaskAction -Execute 'powershell.exe' " &
+      "-Argument ('-NoProfile -ExecutionPolicy Bypass -File \"' + $script + '\"'); " &
+    "$prin = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest; " &
+    "$task = New-ScheduledTask -Action $act -Principal $prin; " &
+    "Register-ScheduledTask -TaskName 'vmh-runner-bootstrap' -InputObject $task -Force | Out-Null; " &
+    "Start-ScheduledTask -TaskName 'vmh-runner-bootstrap'"
+  let r = b.pwshInvokeCommand(vm.name, scriptBlock, arguments = @[b64],
+                              timeoutSec = 120)
+  if r.exitCode != 0:
+    raise newException(IOError,
+      "launchGuestRunnerBootstrap: in-guest bootstrap task failed (exit " &
+      $r.exitCode & "): " & r.stdout & r.stderr)
+
 proc runEphemeralHyperVJob*(b: HyperVBackend, spec: HyperVEphemeralCloneSpec,
                             probeArgv: seq[string] = @[],
                             probeEnv: Table[string, string] =
@@ -1451,6 +1488,20 @@ proc runEphemeralHyperVJob*(b: HyperVBackend, spec: HyperVEphemeralCloneSpec,
   when defined(windows):
     var vm = b.provisionEphemeralClone(spec)
     if keep:
+      # GARM path: with a rendered runner bootstrap (`spec.userData`, staged by
+      # the serve daemon from the /v1/exec userData field) and the PS-Direct
+      # credential cache, wait for the guest to become reachable and start the
+      # bootstrap DETACHED, so the JIT runner registers and serves its job while
+      # this call returns for `--keep`. On any failure, destroy the clone so a
+      # broken create does not leak a VM (GARM would otherwise wait out the
+      # runner-bootstrap timeout on a dead guest).
+      if spec.userData.len > 0 and b.credentialCachePath.len > 0:
+        try:
+          b.startAndAwaitReady(vm, timeoutSec)
+          b.launchGuestRunnerBootstrap(vm, spec.userData)
+        except CatchableError:
+          b.stopAndCleanup(vm, deleteVm = true)
+          raise
       echo spec.name
       return 0
     var verdict = 0
