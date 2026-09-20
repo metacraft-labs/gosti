@@ -522,52 +522,141 @@ vm-harness shell --backend tart --baseline base-clean
 vm-harness run --backend tart --baseline base-clean ... -- <cmd>
 ```
 
-## 8. Rust port (M15: ah-vm-harness)
+## 8. Rust binding (ah-vm: thin subprocess adapter)
 
-The Rust port is a *nearly mechanical translation* of the Nim design once it's proven across all five backend cells (M10).
+> [!IMPORTANT]
+> **Superseded.** Earlier revisions of this section specified a *nearly
+> mechanical Rust port* — a parallel `ah-vm-harness` crate that re-implemented
+> `VmBackend` and every backend (`hyperv.rs`/`wsl.rs`/`tart.rs`/`utm.rs`/
+> `libvirt.rs`) and was held to a byte-identical-artifact `diff -r` gate. That
+> approach is **retired** by the campaign decision in
+> `reprobuild-specs/Sovereign-CI-Fleet-And-GOSTI-Substrate.milestones.org`
+> (milestone **GOSTI2**): there is exactly ONE implementation of the backends —
+> this Nim library (`gosti`) — and NO parallel Rust backend code. The paragraphs
+> below describe the binding that replaces the port.
 
-### 8.1 Mapping
+The Rust side is a **thin subprocess binding**, not a port. `ah-vm` already
+defines a `VmOrchestrator` trait for its own use; GOSTI2 adds a
+`GostiOrchestrator` that *implements that existing trait* by driving `gosti`:
 
-| Nim concept | Rust mapping |
+- **local** — invoke the `vm-harness` CLI's generic-CRUD subcommands
+  (`vm-harness crud <verb> … `, §6), or
+- **remote** — `POST /v1/exec` against a `vm-harness serve` daemon (§14 / the
+  serve protocol),
+
+and in both cases **parse the CRUD `--json` envelope** documented below. The
+binding carries no backend logic, no guest scripts, and no output-envelope
+writer of its own — it marshals trait calls into argv/HTTP and unmarshals the
+JSON reply. gosti remains the single source of truth for how a VM is created,
+started, execed, snapshotted, and destroyed.
+
+### 8.1 The CRUD wire contract (canonical)
+
+This is the contract the binding parses; it is established by the gosti
+`crud` façade (`src/vm_harness/crud.nim`, GOSTI2 PR-1) and is the frozen
+consumer-facing spec. Do not change a key name or an exit code without
+versioning it here.
+
+**Verbs** (one per `VmOrchestrator` method):
+`create_vm`, `start_vm`, `stop_vm`, `delete_vm`, `get_vm`, `list_vms`, `exec`,
+`copy_to_vm`, `copy_from_vm`, `ssh_endpoint`, `snapshot`, `restore_snapshot`,
+`list_snapshots`.
+
+**Response envelope** — every invocation prints exactly one JSON object on
+stdout:
+
+```jsonc
+// success
+{"ok": true,  "verb": "<verb>", "data": { /* verb-specific, see below */ }}
+// failure
+{"ok": false, "verb": "<verb>",
+ "error": {"code": <int>, "kind": "<kind>", "message": "<human text>"}}
+```
+
+**`data` shapes** (all keys stable):
+
+| verb | `data` |
 |---|---|
-| `VmBackend` ref object + base methods | `trait VmBackend { fn ... }` + `Box<dyn VmBackend>` |
-| `Option[T]`, `Table[K, V]`, `seq[T]` | `Option<T>`, `HashMap<K, V>`, `Vec<T>` |
-| `osproc.startProcess` | `std::process::Command` |
-| `try/finally` | `Drop` impl on `VmHandle` for guaranteed cleanup |
-| `osproc + reader thread` for streaming stdout | `tokio::process::Command` with stdout/stderr piped |
-| Nim's exception hierarchy | `thiserror::Error` derive |
+| create_vm / start_vm / stop_vm / get_vm | `{"vm": VmInfo}` |
+| delete_vm | `{"name": str, "deleted": true, "state": "stopped"}` |
+| list_vms | `{"vms": [VmInfo, …]}` |
+| exec | `{"exit_code": int, "stdout": str, "stderr": str, "elapsed_ms": int}` |
+| copy_to_vm / copy_from_vm | `{"copied": true, "source": str, "dest": str}` |
+| ssh_endpoint | `{"ssh": SshEndpoint}` |
+| snapshot | `{"snapshot": {"vm": str, "name": str, "id": str}}` |
+| restore_snapshot | `{"vm": str, "snapshot": str, "restored": true}` |
+| list_snapshots | `{"vm": str, "snapshots": [str, …]}` |
 
-### 8.2 Crate layout
-
-```
-agent-harbor/main/crates/ah-vm-harness/
-├── Cargo.toml
-├── src/
-│   ├── lib.rs                   # public API + trait
-│   ├── backends/
-│   │   ├── mod.rs
-│   │   ├── hyperv.rs
-│   │   ├── wsl.rs
-│   │   ├── tart.rs
-│   │   ├── utm.rs
-│   │   └── libvirt.rs
-│   ├── guest_scripts.rs         # include_str! of vendored posix.sh and windows.ps1
-│   ├── output.rs                # output envelope writer
-│   └── auto.rs                  # backend auto-selection
-├── tests/
-│   └── integration/             # one file per backend
-└── third-party/vm-harness/      # git submodule: metacraft-labs/vm-harness
-    └── guest-scripts/           # the canonical Tier-1 scripts
+```jsonc
+VmInfo      = {"name": str, "backend": str, "baseline": str,
+               "state": VmState, "ssh": SshEndpoint | null}
+SshEndpoint = {"host": str, "port": int, "user": str, "auth": AuthKind}
+VmState     = "stopped" | "starting" | "running" | "paused" | "error"
+AuthKind    = "none" | "password" | "keyfile"
 ```
 
-### 8.3 Correctness gate
+**Exit codes** (frozen — the binding branches on these, never on message text):
 
-The Rust port's acceptance test is *byte-identical artifacts*: run both the Nim and Rust ports against the same backend cell with the same gate, then `diff -r` the output directories. Modulo timestamps (which are normalized via a deterministic-time flag for testing), every file must match. This is a hard CI gate.
+| code | kind | meaning |
+|---|---|---|
+| 0 | — | success (`"ok": true`) |
+| 2 | `bad-args` | missing/invalid argument, unknown verb |
+| 3 | `not-found` | VM or snapshot does not resolve |
+| 4 | `backend-unavailable` | backend cannot run on this host / not usable |
+| 5 | `backend-error` | a backend operation failed |
+| 1 | `internal` | any other/unexpected failure |
 
-### 8.4 Consumed by
+Over the remote path the same envelope and exit code are relayed by the serve
+worker (which re-invokes this exact CLI), so local and remote behaviour are
+byte-for-byte identical.
 
-- `agent-harbor/main/crates/ah-vm/` — extends with low-level backend access via `ah-vm-harness`. (Existing `ah-vm` keeps its higher-level orchestration; `ah-vm-harness` becomes its dispatch layer.)
-- `agent-harbor/main/crates/ah-harness-vm/` — Phase C test-isolation harness composes `ah-vm-harness` lifecycle with AH's Tier-3 scripts (mutagen sync, cargo test, JUnit harvest).
+### 8.2 Verb → VmBackend mapping
+
+gosti has no *defined-but-stopped instance* at the `VmBackend` layer —
+`provisionBaseline` builds a template, `revertToBaseline` materialises a running
+instance. The façade adapts accordingly:
+
+- `create_vm` ⇒ `provisionBaseline` (idempotent) + `revertToBaseline` ⇒ Running.
+- `start_vm` ⇒ idempotent when running; re-`revertToBaseline` after a stop.
+- `stop_vm` ⇒ `stopAndCleanup(deleteVm=false)`.
+- `delete_vm` ⇒ `stopAndCleanup(deleteVm=true)`.
+- `exec` / `copy_*` / `ssh_endpoint` ⇒ `execInGuest` / `copyTo|FromGuest` / project the `VmHandle`.
+- `snapshot` / `restore_snapshot` / `list_snapshots` ⇒ the matching `VmBackend` snapshot methods.
+
+See `crud.nim`'s module header for the full table and the process-local-registry
+caveat (cross-invocation instance state is a persistence follow-up, not part of
+the wire contract).
+
+### 8.3 Crate layout
+
+```
+agent-harbor/…/crates/ah-vm/
+└── src/
+    └── gosti.rs      # GostiOrchestrator: impl VmOrchestrator by shelling out to
+                      #   `vm-harness crud …` (local) or POST /v1/exec (remote),
+                      #   parsing the §8.1 envelope. No backend code.
+```
+
+There is no `ah-vm-harness` crate and no `third-party/vm-harness` submodule of
+backend sources: the binding depends on the `vm-harness` *binary* (built from
+this repo) at runtime, discovered on `PATH` or by an explicit path/endpoint.
+
+### 8.4 Correctness gate
+
+The binding's acceptance test is *contract conformance*, not artifact diffing:
+drive every `VmOrchestrator` method through `GostiOrchestrator` against a gosti
+CLI configured with the `noop` backend and assert the parsed `VmInfo` /
+`SshEndpoint` / error mapping — the Rust mirror of gosti's own
+`tests/unit/t_crud_facade.nim`. Because there is one backend implementation, the
+old byte-identical `diff -r` gate is moot and is removed.
+
+### 8.5 Consumed by
+
+- `ah-vm` — `GostiOrchestrator` becomes an available `VmOrchestrator`
+  implementation alongside AH's native ones; callers select gosti for the
+  Windows/macOS/Linux hypervisor cells this repo owns.
+- Higher-level AH test-isolation harnesses compose that orchestrator's
+  lifecycle with AH's own Tier-3 scripts (sync, test, harvest) unchanged.
 
 ## 9. Test methodology
 
