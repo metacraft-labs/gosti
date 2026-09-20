@@ -193,7 +193,15 @@ proc runOk(exe: string, args: openArray[string]): bool =
   try:
     let p = startProcess(exe, args = @args,
                          options = {poUsePath, poStdErrToStdOut})
-    defer: p.close()
+    # `close(p)` reaps the child but does NOT release the stdio pipes
+    # `startProcess` opened on this side — see the same fix in server.nim's exec
+    # path, where the leak was measured as one pipe PAIR per spawn. This probe
+    # runs per hypervisor on every /v1/manifest, so it leaks on a schedule too.
+    defer:
+      try: p.inputStream.close() except CatchableError: discard
+      try: p.outputStream.close() except CatchableError: discard
+      try: p.errorStream.close() except CatchableError: discard
+      try: p.close() except CatchableError: discard
     for _ in p.lines: discard    # drain so the pipe never blocks
     p.waitForExit() == 0
   except CatchableError:

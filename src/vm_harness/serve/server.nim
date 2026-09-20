@@ -462,6 +462,26 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
     # token this slot no longer owns.
     execKillToken[slot].store(0)
     execDeadlineAt[slot].store(0)
+    # CLOSE THE STREAMS EXPLICITLY, THEN THE PROCESS. `close(p)` alone does NOT
+    # release the stdio pipes this process opened: on POSIX it reaps the child
+    # and frees the handle, but the parent's read/write ends of the pipes
+    # `startProcess` created stay open. MEASURED on high-mem-server: the daemon
+    # held complete pipe PAIRS — fd 10 read and fd 11 write of the same inode —
+    # one pair per exec, with zero live workers, climbing at the exec rate
+    # (54 -> 60 pipes in 106s across six execs).
+    #
+    # That is a slow, unbounded leak against the process's file-descriptor
+    # limit, and it is what put this daemon at 1022 open fds against systemd's
+    # 1024 soft default: every central-GARM create then failed with
+    # "Too many open files" while the daemon itself looked healthy. Raising the
+    # limit bounds the blast radius but does not fix this — it only buys time
+    # proportional to the new ceiling.
+    #
+    # Each close is guarded separately: a stream that was never materialised
+    # (no stdin was written, say) must not prevent the others from closing.
+    try: p.inputStream.close() except CatchableError: discard
+    try: p.outputStream.close() except CatchableError: discard
+    try: p.errorStream.close() except CatchableError: discard
     try: p.close() except CatchableError: discard
     # Delete the user-data seed as soon as the worker exits: the backend has
     # already read it (incus copies it into ``cloud-init.user-data``), so the
