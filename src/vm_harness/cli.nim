@@ -1779,9 +1779,20 @@ proc cmdRunEphemeral(opts: CliOpts): int =
   let backend = newBackend(id)
   if opts.baseline.len == 0:
     raise newException(ValueError, "run --ephemeral: --baseline is required")
-  if opts.goldenImage.len == 0:
-    raise newException(ValueError,
-      "run --ephemeral: --golden-image is required")
+  # The golden arrives under the GENERIC flags from the remote provider, not as
+  # `--golden-image`. `garm-provider-vmharness` renders its pool image into
+  # `--base-image` + `--source-image` for EVERY target — that is one recipe
+  # shared by incus, libvirt, hyperv and the vm-harness-run backends — so a
+  # libvirt path that accepts only `--golden-image` cannot be driven remotely at
+  # all. It failed with a message naming a flag the provider has no reason to
+  # send, which reads as a caller mistake rather than a missing alias.
+  #
+  # hyperv already resolved this the same way, and so does
+  # `resolveEphemeralGolden` for tart/qemu. This is the last branch that did
+  # not, and it is why the windows/amd64 pool (hms-libvirt) sat in `error`
+  # while every other failure mode was being fixed around it.
+  let golden = resolveEphemeralGolden(opts.goldenImage, opts.sourceImage,
+                                      opts.baseImage, $id)
   let lb = LibvirtBackend(backend)
   # M3: build the config-drive ISO from --user-data so cloudbase-init runs
   # the injected bootstrap on first boot. Per-job artifacts (ISO + nvram)
@@ -1802,7 +1813,7 @@ proc cmdRunEphemeral(opts: CliOpts): int =
     uefiNvram = lb.imagePoolDir / (opts.baseline & "_VARS.fd")
   let spec = EphemeralCloneSpec(
     name: opts.baseline,
-    goldenImage: opts.goldenImage,
+    goldenImage: golden,
     cpus: (if opts.cpus > 0: opts.cpus else: 2),
     memoryMB: (if opts.memoryMB > 0: opts.memoryMB else: 1024),
     kernel: opts.kernel,
@@ -1816,7 +1827,7 @@ proc cmdRunEphemeral(opts: CliOpts): int =
   let timeoutSec = if opts.timeoutSec > 0: opts.timeoutSec else: 120
   logEvent(opts.logFormat, "info", "ephemeral clone: boot",
            {"backend": $id, "name": opts.baseline,
-            "golden": opts.goldenImage})
+            "golden": golden})
   var vm = lb.provisionEphemeralClone(spec)
 
   # --keep: leave the domain RUNNING for an out-of-band in-guest probe
