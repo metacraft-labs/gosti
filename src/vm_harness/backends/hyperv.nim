@@ -31,10 +31,15 @@
 ## ``newHyperVBackend`` constructor itself does no I/O, so simply
 ## importing this module is always safe.
 
-import std/[os, osproc, streams, strformat, strtabs,
+# `base64` is NOT windows-only: buildBootstrapScriptBlock encodes the user-data
+# on every platform, and it is reached from the cross-platform ephemeral path.
+# It sat under the `when defined(windows)` guard below, so every macOS/Linux
+# build failed with "undeclared identifier: 'base64'" — including the package
+# build, which is how gosti `dev` came to be red.
+import std/[base64, os, osproc, streams, strformat, strtabs,
             strutils, tables, times]
 when defined(windows):
-  import std/[base64, options]
+  import std/[options]
 import ../types
 import ../auto
 import ../output
