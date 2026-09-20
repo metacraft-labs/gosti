@@ -38,6 +38,7 @@ import ./backends/incus
 import ./prune
 import ./layer_gc
 import ./instances
+import ./crud
 import ./serve/server
 import ./serve/client
 
@@ -306,6 +307,17 @@ Subcommands:
                           --sweep-tmp also age-removes transient /tmp scratch
                           files (SSH password files, mount-share scripts).
                           --dry-run reports what would be reclaimed.
+  crud <verb> [<name>] [args] [--backend <id>] [--baseline <name>] ...
+                          Generic-CRUD façade for the ah-vm Rust binding.
+                          Verbs: create_vm, start_vm, stop_vm, delete_vm,
+                          get_vm, list_vms, exec (-- <argv>), copy_to_vm
+                          <src> <dst>, copy_from_vm <src> <dst>, ssh_endpoint,
+                          snapshot <snap>, restore_snapshot <snap>,
+                          list_snapshots. ALWAYS prints one stable JSON
+                          envelope on stdout; exit codes: 0 ok, 2 bad-args,
+                          3 not-found, 4 backend-unavailable, 5 backend-error,
+                          1 internal. See src/vm_harness/crud.nim for the
+                          verb→backend mapping and the JSON schema.
 
 Common flags:
   --backend <auto|noop|hyperv|wsl|tart-macos|tart-linux-arm|
@@ -2158,6 +2170,76 @@ proc cmdServe(opts: CliOpts): int =
     return 1
   0
 
+proc cmdCrud(opts: CliOpts): int =
+  ## GOSTI2 PR-1: the generic-CRUD façade surface (``crud <verb> …``) that the
+  ## ah-vm Rust binding drives. ALWAYS emits a single stable JSON envelope on
+  ## stdout (independent of ``--log-format``, which governs the human/JSON
+  ## event log only) and returns the documented per-kind exit code:
+  ##
+  ##   0 success · 2 bad-args · 3 not-found · 4 backend-unavailable ·
+  ##   5 backend-error · 1 internal
+  ##
+  ## Positionals (``opts.cmd``) are ``<verb> [<name>] [<a> <b> …]``; the
+  ## exec argv is everything after the name (use ``--`` to pass flags
+  ## through). Verb→VmBackend mapping and the JSON schema are documented in
+  ## ``crud.nim``.
+  ##
+  ## The registry is process-local: a single invocation runs one verb against
+  ## a fresh session, so cross-invocation VM state (create in one process,
+  ## exec in the next) is a persistence follow-up, NOT part of PR-1. The
+  ## contract this surface pins down — envelope shape + exit codes — is
+  ## exercised end-to-end by the in-process gate in ``t_crud_facade``.
+  if opts.cmd.len < 1:
+    echo $(%*{"ok": false, "verb": "",
+              "error": {"code": exitCode(cekBadArgs), "kind": $cekBadArgs,
+                        "message": "crud requires <verb> (one of: " &
+                          CrudVerbs.join(", ") & ")"}})
+    return exitCode(cekBadArgs)
+  let verb = opts.cmd[0]
+  var p = CrudParams(
+    baseline: opts.baseline,
+    sourceImage: opts.sourceImage,
+    cpus: opts.cpus,
+    memoryMB: opts.memoryMB,
+    diskGB: opts.diskGB,
+    guestOs: (if opts.guestSet: opts.guest else: goLinux),
+    guestArch: gaX86_64,
+    env: opts.envPairs,
+    force: opts.force)
+  if opts.cmd.len >= 2:
+    p.name = opts.cmd[1]
+  # Verb-specific positional layout. Kept permissive: the façade re-validates
+  # required fields and returns a ``bad-args`` envelope for anything missing.
+  case verb
+  of "exec":
+    if opts.cmd.len >= 3: p.argv = opts.cmd[2 .. ^1]
+  of "copy_to_vm", "copy_from_vm":
+    if opts.cmd.len >= 3: p.srcPath = opts.cmd[2]
+    if opts.cmd.len >= 4: p.destPath = opts.cmd[3]
+  of "snapshot", "restore_snapshot":
+    if opts.cmd.len >= 3: p.snapshot = opts.cmd[2]
+  else: discard
+  # Resolve the backend up front so an unregistered/unavailable backend maps
+  # to the stable ``backend-unavailable`` envelope rather than an uncaught
+  # exception out of ``runCli``.
+  var session: CrudSession
+  try:
+    let (_, backend) = resolveBackend(opts)
+    session = newCrudSession(backend)
+  except BackendUnavailableError as e:
+    echo $(%*{"ok": false, "verb": verb,
+              "error": {"code": exitCode(cekBackendUnavailable),
+                        "kind": $cekBackendUnavailable, "message": e.msg}})
+    return exitCode(cekBackendUnavailable)
+  except ValueError as e:
+    echo $(%*{"ok": false, "verb": verb,
+              "error": {"code": exitCode(cekBadArgs), "kind": $cekBadArgs,
+                        "message": e.msg}})
+    return exitCode(cekBadArgs)
+  let resp = runCrud(session, verb, p)
+  echo $resp.json
+  resp.exitCode
+
 proc cmdManifest(opts: CliOpts): int =
   ## Print THIS host's UNSIGNED capability manifest (RA6) as JSON. The signed,
   ## enrolled form is served over ``GET /v1/manifest`` by a running daemon and
@@ -2189,6 +2271,7 @@ proc dispatch*(opts: CliOpts): int =
   of "prune":     cmdPrune(opts)
   of "layer":     cmdLayer(opts)
   of "serve":     cmdServe(opts)
+  of "crud":      cmdCrud(opts)
   of "manifest":  cmdManifest(opts)
   else:
     stderr.writeLine("vm-harness: unknown subcommand '" & opts.subcommand & "'")
