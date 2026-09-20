@@ -2612,4 +2612,31 @@ method closeSerial*(b: LibvirtBackend, stream: SerialStream) =
 # ``--backend libvirt`` and ``vm-harness probe`` see the backend.
 
 registerBackend(biLibvirt,
-  proc(): VmBackend = newLibvirtBackend())
+  proc(): VmBackend =
+    # ENV SEAM FOR THE IMAGE POOL, matching how every other backend here takes
+    # its state directory (VM_HARNESS_TART_STATE_DIR,
+    # VM_HARNESS_QEMU_WINDOWS_ARM_STATE_DIR, VMH_HYPERV_*).
+    #
+    # The default is libvirt's system pool, /var/lib/libvirt/images, which on a
+    # hardened host the daemon cannot write: it is root-owned 0711, and a
+    # `ProtectSystem=strict` unit lists only the paths it actually needs in
+    # ReadWritePaths. The per-job CONFIG-DRIVE ISO is written into this pool, so
+    # a Windows guest then fails with
+    #
+    #   buildConfigDriveIso: no ISO tool (genisoimage/mkisofs/xorriso) succeeded
+    #
+    # — a message that reads as a missing tool when the tools are present and
+    # the directory is simply unwritable. MEASURED on high-mem-server: the
+    # daemon runs as uid 970 with groups libvirtd+kvm, `ReadWritePaths` names
+    # /storage/vm-harness-serve/images, and the pool it actually used was the
+    # unwritable system one.
+    #
+    # The CLI already has `--image-pool-dir`, but the central GARM's remote
+    # provider renders one argv for every backend and has no place to put a
+    # libvirt-only flag. An env var is the seam a deployment can set, which is
+    # exactly the pattern the other backends use.
+    let poolDir = getEnv("VMH_LIBVIRT_IMAGE_POOL_DIR")
+    if poolDir.len > 0:
+      newLibvirtBackend(imagePoolDir = poolDir)
+    else:
+      newLibvirtBackend())
