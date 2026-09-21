@@ -76,7 +76,7 @@
 ## helpers can run anywhere. Backend *registration* is unconditional,
 ## but ``probeAvailability`` returns false on non-Linux hosts.
 
-import std/[options, os, strutils, tables, times]
+import std/[atomics, options, os, random, strutils, tables, times]
 when not defined(posix):
   import std/[osproc, streams, strtabs]
 import ../types
@@ -84,6 +84,7 @@ import ../auto
 import ../firmware
 import ../serial
 import ../ssh
+import ../cloud_init_seed
 when defined(posix):
   import ../process_capture
 export ssh
@@ -606,6 +607,18 @@ type
                                  ## cloudbase-init consumes + runs the injected
                                  ## user_data on first boot. This is the M3 JIT
                                  ## bootstrap-injection seam.
+    noCloudSeedIso*: string      ## optional: absolute path to a NoCloud
+                                 ## cloud-init seed ISO (volume label
+                                 ## ``CIDATA``, root files ``user-data`` +
+                                 ## ``meta-data`` — see
+                                 ## ``cloud_init_seed.buildNoCloudIso``). When
+                                 ## set it is attached to the domain as a
+                                 ## read-only CD-ROM so a Linux cloud-init guest
+                                 ## auto-detects the ``cidata`` datasource and
+                                 ## runs the injected user-data on first boot.
+                                 ## This is the GOSTI2 Linux counterpart of
+                                 ## ``configDriveIso`` (which is the Windows /
+                                 ## cloudbase-init ConfigDrive seam).
     uefiLoader*: string          ## optional: OVMF code firmware
                                  ## (``edk2-x86_64-code.fd``). When set the
                                  ## domain boots UEFI (required by Windows 11);
@@ -621,6 +634,13 @@ proc configDriveIsoPathFor*(b: LibvirtBackend, name: string): string =
   ## the ephemeral teardown can find and remove exactly it (never a
   ## pool-shared install ISO).
   b.imagePoolDir / (name & ".config-drive.iso")
+
+proc noCloudSeedIsoPathFor*(b: LibvirtBackend, name: string): string =
+  ## Per-job NoCloud cloud-init seed ISO path, named ``<domain>.cidata.iso``
+  ## so the ephemeral teardown can find and remove exactly it (never a
+  ## pool-shared install ISO). GOSTI2 Linux counterpart of
+  ## ``configDriveIsoPathFor``.
+  b.imagePoolDir / (name & ".cidata.iso")
 
 proc buildConfigDriveIso*(isoPath, userData: string;
                           metaData: string = ""): string =
@@ -732,6 +752,19 @@ proc buildEphemeralDomainXml*(b: LibvirtBackend, spec: EphemeralCloneSpec,
       "      <target dev='sda' bus='sata'/>\n" &
       "      <readonly/>\n" &
       "    </disk>\n"
+  # Optional NoCloud cloud-init seed CD-ROM (GOSTI2 Linux path). Attached
+  # read-only on the SATA bus at ``sdb`` (``sda`` is the config-drive slot, so
+  # the two can coexist). A Linux cloud-init guest auto-detects the ``cidata``
+  # labelled volume and runs the injected user-data on first boot.
+  var noCloudSeedDisk = ""
+  if spec.noCloudSeedIso.len > 0:
+    noCloudSeedDisk =
+      "    <disk type='file' device='cdrom'>\n" &
+      "      <driver name='qemu' type='raw'/>\n" &
+      "      <source file='" & spec.noCloudSeedIso & "'/>\n" &
+      "      <target dev='sdb' bus='sata'/>\n" &
+      "      <readonly/>\n" &
+      "    </disk>\n"
   # A firmware (disk-boot) golden — the real Windows golden — needs a
   # network interface so cloudbase-init can reach the mock/real GARM
   # metadata endpoint. A direct-kernel tiny-Linux golden does not (it
@@ -781,6 +814,7 @@ proc buildEphemeralDomainXml*(b: LibvirtBackend, spec: EphemeralCloneSpec,
     "      <target dev='vda' bus='virtio'/>\n" &
     "    </disk>\n" &
     configDriveDisk &
+    noCloudSeedDisk &
     netIface &
     "    <serial type='file'>\n" &
     "      <source path='" & serialLogPath & "'/>\n" &
@@ -893,6 +927,8 @@ method provisionEphemeralClone*(b: LibvirtBackend,
     extra["serialLogPath"] = serialLogPath
     if spec.configDriveIso.len > 0:
       extra["configDriveIso"] = spec.configDriveIso
+    if spec.noCloudSeedIso.len > 0:
+      extra["noCloudSeedIso"] = spec.noCloudSeedIso
     if spec.uefiNvram.len > 0:
       extra["uefiNvram"] = spec.uefiNvram
     result = VmHandle(
@@ -1589,6 +1625,95 @@ method revertToBaseline*(b: LibvirtBackend, baselineName: string): VmHandle =
     raise newException(BackendUnavailableError,
       "LibvirtBackend.revertToBaseline requires a Linux host")
 
+method honorsUserData*(b: LibvirtBackend): bool =
+  ## libvirt builds a NoCloud "cidata" seed from ``BaselineSpec.userData`` and
+  ## attaches it to the instance (see ``revertToBaselineWithUserData``), so the
+  ## CRUD ``create_vm --user-data`` guard lets libvirt through instead of
+  ## failing closed. (``honorsMounts`` is intentionally left at the base
+  ## default of false — libvirt does not attach ``BaselineSpec.mounts`` yet, so
+  ## ``--mount`` stays fail-closed.)
+  true
+
+# Collision-resistant uniqueness for concurrently-created ephemeral instances.
+# The name is the SINGLE source of truth for the domain name, the
+# ``<name>.cidata.iso`` seed path AND the ``<name>.overlay.qcow2`` CoW overlay,
+# so a duplicate name would make one create clobber another's storage. A bare
+# millisecond timestamp collides for two runners created in the same ms — the
+# normal case when CI fans out ephemeral runners — so we compose three parts:
+#   * the ms timestamp (human-readable ordering),
+#   * a process-local ATOMIC counter (thread-safe, strictly monotonic ⇒ unique
+#     within this process even for same-ms concurrent creates), and
+#   * a per-process random salt seeded once at module init (distinguishes two
+#     processes on one host, whose counters both start at 0).
+var ephemeralCreateCounter: Atomic[uint64]
+let ephemeralProcessSalt: uint32 = block:
+  # A private RNG (not the shared global) so seeding here can't perturb, and
+  # isn't perturbed by, any other ``std/random`` user; drawn once per process.
+  var r = initRand()
+  uint32(r.rand(high(int)) and 0xFFFFFFFF)
+
+proc ephemeralInstanceName*(baselineName: string): string =
+  ## Build a per-instance ephemeral name unique even for same-millisecond
+  ## concurrent creates on one host (see the note above). Deterministic length:
+  ## ``<baseline>-ci-<ms:8h>-<counter:6h>-<salt:8h>``.
+  let n = ephemeralCreateCounter.fetchAdd(1)
+  let ms = int64(epochTime() * 1000.0) and 0xFFFFFFFF'i64
+  baselineName & "-ci-" &
+    toHex(ms, 8).toLowerAscii() & "-" &
+    toHex(int64(n) and 0xFFFFFF'i64, 6).toLowerAscii() & "-" &
+    toHex(int64(ephemeralProcessSalt), 8).toLowerAscii()
+
+method revertToBaselineWithUserData*(b: LibvirtBackend, baselineName: string,
+                                     userData: string = ""): VmHandle =
+  ## Per-INSTANCE cloud-init. With no ``userData`` this is exactly
+  ## ``revertToBaseline`` (start the long-lived baseline domain). With
+  ## ``userData`` set, materialise a FRESH ephemeral CoW clone of the
+  ## baseline's disk carrying a NoCloud "cidata" seed built from ``userData``,
+  ## attached as a read-only CD-ROM — so a cloud-init-enabled guest boots with
+  ## the caller's user-data. Each ephemeral CI runner is a distinct instance
+  ## with its own seed (its own registration token), which is why this is a
+  ## per-clone create rather than a mutation of the shared baseline domain.
+  ##
+  ## Test coverage: the seed BUILD + ATTACH primitives are exercised
+  ## hermetically by the unit gate (``buildNoCloudIso`` round-trip +
+  ## ``buildEphemeralDomainXml`` referencing the cidata ISO), and DISPATCH into
+  ## this override is proven via ``honorsUserData`` through a base ref. Accepted
+  ## follow-up: no automated gate exercises THIS METHOD'S BODY (seed build +
+  ## attach + ``provisionEphemeralClone`` end to end) — it needs a live
+  ## libvirtd and a cloud-init-enabled golden, so the override wiring is
+  ## e2e/manual until that fixture exists.
+  when defined(linux):
+    if userData.len == 0:
+      return b.revertToBaseline(baselineName)
+    if not b.domainExists(baselineName):
+      raise newVmHarnessError($b.id, lpRevert,
+        "LibvirtBackend.revertToBaselineWithUserData: baseline domain '" &
+        baselineName & "' is not defined; run provisionBaseline first")
+    let golden = b.domainDiskPath(baselineName)
+    if not fileExists(golden):
+      raise newVmHarnessError($b.id, lpRevert,
+        "LibvirtBackend.revertToBaselineWithUserData: baseline disk '" &
+        golden & "' does not exist")
+    # A distinct per-instance domain name so many ephemerals can derive from
+    # one baseline concurrently without colliding — the domain name, the seed
+    # ISO path and the CoW overlay path ALL derive from this one name.
+    let instanceName = ephemeralInstanceName(baselineName)
+    createDir(b.imagePoolDir)
+    let seedIso = b.noCloudSeedIsoPathFor(instanceName)
+    # NoCloud needs a meta-data with at least an instance-id for cloud-init to
+    # treat this as a fresh first boot; synthesise a minimal one.
+    let metaData = "instance-id: " & instanceName & "\n" &
+      "local-hostname: " & instanceName & "\n"
+    writeNoCloudIso(seedIso, userData, metaData)
+    let spec = EphemeralCloneSpec(
+      name: instanceName,
+      goldenImage: golden,
+      noCloudSeedIso: seedIso)
+    result = b.provisionEphemeralClone(spec)
+  else:
+    raise newException(BackendUnavailableError,
+      "LibvirtBackend.revertToBaselineWithUserData requires a Linux host")
+
 method startAndAwaitReady*(b: LibvirtBackend, vm: VmHandle,
                           timeoutSec: int = 120) =
   ## Probe SSH connectivity by running ``hostname`` repeatedly until
@@ -1716,6 +1841,12 @@ method stopAndCleanup*(b: LibvirtBackend, vm: VmHandle,
           let cdIso = vm.extra.getOrDefault("configDriveIso", "")
           if cdIso.len > 0 and fileExists(cdIso):
             try: removeFile(cdIso)
+            except CatchableError: discard
+          # Also remove this job's NoCloud cloud-init seed ISO (GOSTI2 Linux
+          # path); a per-job artifact named after the domain, never the golden.
+          let seedIso = vm.extra.getOrDefault("noCloudSeedIso", "")
+          if seedIso.len > 0 and fileExists(seedIso):
+            try: removeFile(seedIso)
             except CatchableError: discard
           let nvram = vm.extra.getOrDefault("uefiNvram", "")
           if nvram.len > 0 and fileExists(nvram):

@@ -314,9 +314,15 @@ proc createVm(session: CrudSession, p: CrudParams): JsonNode =
   let spec = buildSpec(p)
   let baseline = spec.name
   # provisionBaseline is idempotent — safe to ensure the template on every
-  # create; revertToBaseline then materialises + starts the instance.
+  # create; the revert seam then materialises + starts the instance. We drive
+  # the per-INSTANCE seam (revertToBaselineWithUserData) so a backend that
+  # honours cloud-init boots this instance with spec.userData (each ephemeral
+  # CI runner carries its own registration token). Backends that do not model
+  # cloud-init inherit the seam's default, which ignores userData and behaves
+  # exactly like revertToBaseline — so this is behaviour-preserving for them.
   session.backend.provisionBaseline(spec)
-  let handle = session.backend.revertToBaseline(baseline)
+  let handle =
+    session.backend.revertToBaselineWithUserData(baseline, spec.userData)
   let rec = VmRecord(name: p.name, baseline: baseline,
                      handle: handle, state: vsRunning)
   session.registry[p.name] = rec

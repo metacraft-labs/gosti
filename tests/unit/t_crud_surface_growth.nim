@@ -149,18 +149,24 @@ suite "CRUD surface growth — exec wrap reaches the backend verbatim":
 # ``dispatch``) since that is where it lives. --ssh-user is genuinely advisory
 # and DOES reach the spec (asserted through the backend-agnostic runCrud path).
 
-suite "CRUD surface growth — create_vm --user-data/--mount FAIL CLOSED":
+suite "CRUD surface growth — create_vm --user-data/--mount BACKEND-AWARE guard":
   # Drive the guard through the real CLI path: parseCliOpts lifts the flags off
-  # the ``crud`` argv, and ``crudCreateGuard`` (what ``cmdCrud`` consults BEFORE
-  # resolving a backend) decides. Hermetic — no backend, no hypervisor.
+  # the ``crud`` argv, and ``crudCreateGuard`` (what ``cmdCrud`` consults after
+  # resolving the backend) decides FROM THE RESOLVED BACKEND'S CAPABILITIES.
+  # Hermetic — the backends are constructed directly (no hypervisor, no
+  # network): MockBackend does NOT honour user-data (honorsUserData defaults
+  # false) so it must fail closed; LibvirtBackend DOES (it builds + attaches a
+  # NoCloud seed) so it must be allowed through.
+  let nonHonoring = newMockBackend()          ## honorsUserData()=false
+  let honoring: VmBackend = newLibvirtBackend() ## honorsUserData()=true
 
-  test "--user-data on create_vm is backend-unavailable (exit 4), not ok":
-    let ud = createTempDir("vmh-pr3-fc-", "")
+  test "--user-data is backend-unavailable (exit 4) for a non-honoring backend":
+    let ud = createTempDir("vmh-fc-", "")
     defer: removeDir(ud)
     let udFile = ud / "cloud.yaml"
     writeFile(udFile, "#cloud-config\nruncmd:\n  - /opt/agent/bootstrap.sh\n")
     let opts = parseCliOpts(@["crud", "create_vm", "vm1", "--user-data", udFile])
-    let g = crudCreateGuard("create_vm", opts)
+    let g = crudCreateGuard("create_vm", opts, nonHonoring)
     check g.isSome
     let r = g.get()
     check r.exitCode == exitCode(cekBackendUnavailable)
@@ -171,10 +177,22 @@ suite "CRUD surface growth — create_vm --user-data/--mount FAIL CLOSED":
     check r.json["error"]["code"].getInt == 4
     check "user-data" in r.json["error"]["message"].getStr
 
-  test "--mount on create_vm is backend-unavailable (exit 4), not ok":
+  test "--user-data is ALLOWED (guard passes) for a backend that honors it":
+    let ud = createTempDir("vmh-ok-", "")
+    defer: removeDir(ud)
+    let udFile = ud / "cloud.yaml"
+    writeFile(udFile, "#cloud-config\nruncmd:\n  - /opt/agent/bootstrap.sh\n")
+    check honoring.honorsUserData()
+    let opts = parseCliOpts(@["crud", "create_vm", "vm1", "--user-data", udFile])
+    # A honoring backend builds + attaches the seed, so the guard must NOT trip.
+    check crudCreateGuard("create_vm", opts, honoring).isNone
+
+  test "--mount on create_vm is backend-unavailable (exit 4) — no backend honors it":
     let opts = parseCliOpts(
       @["crud", "create_vm", "vm1", "--mount", "/host/work:/work"])
-    let g = crudCreateGuard("create_vm", opts)
+    # Even the user-data-honoring libvirt backend does not attach mounts yet.
+    check not honoring.honorsMounts()
+    let g = crudCreateGuard("create_vm", opts, honoring)
     check g.isSome
     check g.get().exitCode == 4
     check not g.get().json["ok"].getBool
@@ -183,14 +201,15 @@ suite "CRUD surface growth — create_vm --user-data/--mount FAIL CLOSED":
 
   test "a plain create_vm (no guarded options) is NOT guarded":
     let opts = parseCliOpts(@["crud", "create_vm", "vm1"])
-    check crudCreateGuard("create_vm", opts).isNone
+    check crudCreateGuard("create_vm", opts, nonHonoring).isNone
+    check crudCreateGuard("create_vm", opts, honoring).isNone
 
   test "the guard is create_vm-only — other verbs are never guarded":
     # --user-data/--mount on a non-create verb are meaningless but must not trip
     # the guard (it keys on the verb, so e.g. exec is untouched).
     let opts = parseCliOpts(
       @["crud", "exec", "vm1", "--mount", "/h:/g", "--", "true"])
-    check crudCreateGuard("exec", opts).isNone
+    check crudCreateGuard("exec", opts, nonHonoring).isNone
 
 suite "CRUD surface growth — create_vm --ssh-user reaches the spec (advisory)":
   setup:

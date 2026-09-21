@@ -18,6 +18,16 @@ run_nim r --hints:off tests/unit/t_crud_facade.nim
 # lifecycle state machine, snapshot persistence + guest-fs restore, and the
 # canned/deterministic VmInfo/SshEndpoint/ExecResult. Hermetic (in-memory).
 run_nim r --hints:off tests/unit/t_crud_facade_mock.nim
+# GOSTI2 PR-3 + honor-userdata follow-up: the CRUD create surface growth
+# (--user-data/--mount/--ssh-user, exec --cwd/--run-as/--timeout) and the
+# BACKEND-AWARE fail-closed guard (--user-data allowed only for a backend whose
+# honorsUserData() is true; libvirt honors it, the mock does not). Hermetic.
+run_nim r --hints:off tests/unit/t_crud_surface_growth.nim
+# GOSTI2 honor-userdata: libvirt BUILDS a NoCloud "cidata" seed from the
+# caller's cloud-init user-data and ATTACHES it to the domain XML as a
+# read-only CD-ROM. Pure-function gate (seed round-trip + domain-XML render +
+# capability signal) — no libvirtd, no VM. Live cloud-init boot is a follow-up.
+run_nim r --hints:off tests/unit/t_libvirt_nocloud_seed.nim
 run_nim r --hints:off tests/unit/t_guest_scripts.nim
 run_nim r --hints:off tests/unit/t_cli_probe.nim
 run_nim r --hints:off tests/unit/t_cli_boot.nim

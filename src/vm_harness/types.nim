@@ -352,6 +352,48 @@ method revertToBaseline*(b: VmBackend, baselineName: string): VmHandle {.base.} 
   ## flag in ``e2e_vm_harness_per_gate_revert_meets_m0_budget``.
   raise newException(CatchableError, "revertToBaseline not implemented")
 
+# ---------------------------------------------------------------------------
+# GOSTI2 (honor-userdata follow-up): per-INSTANCE cloud-init seam + backend
+# capability signals.
+#
+# ``revertToBaseline`` takes only the baseline NAME, so per-instance
+# ``BaselineSpec.userData`` was dropped at instance-creation time. Threading
+# it by widening ``revertToBaseline``'s signature would silently break method
+# dispatch for every backend (a multimethod override matches the FULL
+# signature — an added-parameter base would leave the existing 2-arg
+# overrides bound to nothing the new call dispatches to). So the seam is an
+# ADDITIVE new method whose DEFAULT delegates to ``revertToBaseline`` and
+# ignores ``userData``. Every existing backend inherits the default unchanged
+# and keeps compiling; a backend that actually honours cloud-init (libvirt)
+# overrides it to build + attach a NoCloud "cidata" seed built from
+# ``userData``. For CI, user-data is per-INSTANCE (each ephemeral runner gets
+# its own registration token), which is exactly what this seam threads.
+
+method revertToBaselineWithUserData*(b: VmBackend, baselineName: string,
+                                     userData: string = ""): VmHandle {.base.} =
+  ## Materialise an instance from ``baselineName`` that boots with the caller's
+  ## per-instance cloud-init ``userData``. The DEFAULT ignores ``userData`` and
+  ## delegates to ``revertToBaseline`` — so every backend that does not model
+  ## cloud-init keeps its existing behaviour with zero changes. A backend that
+  ## builds + attaches a NoCloud seed (libvirt) overrides this. ``userData``
+  ## empty ⇒ identical to ``revertToBaseline``.
+  b.revertToBaseline(baselineName)
+
+method honorsUserData*(b: VmBackend): bool {.base.} =
+  ## Capability signal: does this backend BUILD + ATTACH a cloud-init seed
+  ## from ``BaselineSpec.userData`` (so a create with ``--user-data`` actually
+  ## boots the guest with it)? Defaults false — the CRUD ``create_vm`` guard
+  ## fails closed on ``--user-data`` for any backend that returns false, rather
+  ## than silently reporting success for a VM that would boot without it. A
+  ## backend that honours user-data (libvirt) overrides this to true.
+  false
+
+method honorsMounts*(b: VmBackend): bool {.base.} =
+  ## Capability signal: does this backend attach the host→guest shares in
+  ## ``BaselineSpec.mounts``? Defaults false — no gosti backend attaches them
+  ## yet, so ``crud create_vm --mount`` stays fail-closed everywhere.
+  false
+
 method startAndAwaitReady*(b: VmBackend, vm: VmHandle, timeoutSec: int = 120) {.base.} =
   ## Many backends fold start-and-wait into ``revertToBaseline``; this hook
   ## exists for backends that want to expose a separate ready-poll step

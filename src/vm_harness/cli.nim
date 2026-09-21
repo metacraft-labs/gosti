@@ -2590,22 +2590,24 @@ proc cmdServe(opts: CliOpts): int =
     return 1
   0
 
-proc crudCreateGuard*(verb: string, opts: CliOpts): Option[CrudResponse] =
-  ## GOSTI2 PR-3 FAIL-CLOSED guard for ``crud create_vm``.
+proc crudCreateGuard*(verb: string, opts: CliOpts,
+                      backend: VmBackend): Option[CrudResponse] =
+  ## GOSTI2 BACKEND-AWARE FAIL-CLOSED guard for ``crud create_vm``.
   ##
   ## ``--user-data`` and ``--mount`` PARSE (the surface is real and tested), but
-  ## NO gosti backend consumes ``BaselineSpec.userData`` / ``.mounts`` yet:
-  ## ``revertToBaseline`` takes only a baseline name, and e.g. incus explicitly
-  ## documents ignoring userData. Reporting ``{"ok":true}`` for a create_vm that
-  ## would boot with NO cloud-init (or without the requested shares) is exactly
-  ## the silent-wrong the ah-vm binding's fail-closed guard exists to prevent —
-  ## so we refuse to LIE ABOUT SUCCESS, returning a ``backend-unavailable``
-  ## (exit 4) envelope the caller emits BEFORE resolving a backend or creating
-  ## anything. ``cmdCrud`` consults this first; the gate drives it directly.
+  ## whether the RESOLVED backend actually consumes ``BaselineSpec.userData`` /
+  ## ``.mounts`` varies. Reporting ``{"ok":true}`` for a create_vm that would
+  ## boot with NO cloud-init (or without the requested shares) is exactly the
+  ## silent-wrong the ah-vm binding's fail-closed guard exists to prevent — so
+  ## for a backend that does NOT honour the option we refuse to LIE ABOUT
+  ## SUCCESS, returning a ``backend-unavailable`` (exit 4) envelope BEFORE
+  ## creating anything.
   ##
-  ## The guard lifts the moment a backend honours ``BaselineSpec.userData`` by
-  ## building + attaching a NoCloud seed (``cloud_init_seed.buildNoCloudIso``
-  ## exists) — the follow-up before the binding forwards ``--user-data``.
+  ## The guard consults the backend's capability signals:
+  ##   * ``--user-data`` is allowed iff ``backend.honorsUserData()`` (libvirt
+  ##     builds + attaches a NoCloud "cidata" seed; the others fail closed).
+  ##   * ``--mount`` is allowed iff ``backend.honorsMounts()`` (no backend does
+  ##     yet, so it stays fail-closed everywhere).
   ## ``--ssh-user`` is genuinely advisory (a backend may ignore it) and is NOT
   ## guarded — it reaches the spec as accept-advisory.
   if verb != "create_vm":
@@ -2616,15 +2618,16 @@ proc crudCreateGuard*(verb: string, opts: CliOpts): Option[CrudResponse] =
       json: %*{"ok": false, "verb": verb,
                "error": {"code": exitCode(cekBackendUnavailable),
                          "kind": $cekBackendUnavailable,
-                         "message": flag & " is not yet honored by any gosti " &
-                           "backend (" & detail & "); refusing to report " &
-                           "success for a VM that would boot without it"}}))
-  if opts.userDataFile.len > 0:
+                         "message": flag & " is not honored by the resolved " &
+                           "gosti backend '" & $backend.id & "' (" & detail &
+                           "); refusing to report success for a VM that would " &
+                           "boot without it"}}))
+  if opts.userDataFile.len > 0 and not backend.honorsUserData():
     return refuse("--user-data",
-      "no backend builds a NoCloud seed from BaselineSpec.userData")
-  if opts.mounts.len > 0:
+      "this backend builds no NoCloud seed from BaselineSpec.userData")
+  if opts.mounts.len > 0 and not backend.honorsMounts():
     return refuse("--mount",
-      "no backend attaches host→guest shares from BaselineSpec.mounts")
+      "this backend attaches no host→guest shares from BaselineSpec.mounts")
   none(CrudResponse)
 
 proc cmdCrud(opts: CliOpts): int =
@@ -2653,9 +2656,31 @@ proc cmdCrud(opts: CliOpts): int =
                           CrudVerbs.join(", ") & ")"}})
     return exitCode(cekBadArgs)
   let verb = opts.cmd[0]
-  # PR-3 FAIL-CLOSED guard, applied BEFORE any backend is resolved or anything
-  # is created. See ``crudCreateGuard`` for why.
-  let guarded = crudCreateGuard(verb, opts)
+  # Resolve the backend up front — BEFORE the fail-closed guard — so the guard
+  # can consult the resolved backend's capability signals (``honorsUserData`` /
+  # ``honorsMounts``). An unregistered/unavailable backend maps to the stable
+  # ``backend-unavailable`` envelope rather than an uncaught exception out of
+  # ``runCli``.
+  var session: CrudSession
+  var backend: VmBackend
+  try:
+    let (_, resolved) = resolveBackend(opts)
+    backend = resolved
+    session = newCrudSession(backend)
+  except BackendUnavailableError as e:
+    echo $(%*{"ok": false, "verb": verb,
+              "error": {"code": exitCode(cekBackendUnavailable),
+                        "kind": $cekBackendUnavailable, "message": e.msg}})
+    return exitCode(cekBackendUnavailable)
+  except ValueError as e:
+    echo $(%*{"ok": false, "verb": verb,
+              "error": {"code": exitCode(cekBadArgs), "kind": $cekBadArgs,
+                        "message": e.msg}})
+    return exitCode(cekBadArgs)
+  # BACKEND-AWARE FAIL-CLOSED guard, applied BEFORE anything is created. It
+  # rejects ``--user-data`` / ``--mount`` only when the resolved backend does
+  # NOT honour them. See ``crudCreateGuard`` for why.
+  let guarded = crudCreateGuard(verb, opts, backend)
   if guarded.isSome:
     echo $guarded.get().json
     return guarded.get().exitCode
@@ -2669,11 +2694,13 @@ proc cmdCrud(opts: CliOpts): int =
     guestArch: gaX86_64,
     env: opts.envPairs,
     force: opts.force,
-    # PR-3: create_vm options (VmCreateOptions forwarding). --user-data is a
-    # host file path; read its CONTENT here so BaselineSpec carries the seed
-    # payload self-contained. A missing file is a bad-args envelope below.
-    # NOTE: guarded above — reaching here with these set is only possible for
-    # non-create verbs, which ignore them.
+    # create_vm options (VmCreateOptions forwarding). --user-data is a host
+    # file path; read its CONTENT here so BaselineSpec carries the seed payload
+    # self-contained. A missing file is a bad-args envelope below. NOTE: the
+    # backend-aware guard above has already rejected these for a backend that
+    # does not honour them — reaching here means either a non-create verb (which
+    # ignores them) or a backend that DOES honour the option (e.g. libvirt for
+    # --user-data), which forwards it into the create path.
     mounts: opts.mounts,
     sshUser: opts.sshUser,
     # PR-3: exec options (ExecOptions forwarding — realised by argv wrapping).
@@ -2701,23 +2728,6 @@ proc cmdCrud(opts: CliOpts): int =
   of "snapshot", "restore_snapshot":
     if opts.cmd.len >= 3: p.snapshot = opts.cmd[2]
   else: discard
-  # Resolve the backend up front so an unregistered/unavailable backend maps
-  # to the stable ``backend-unavailable`` envelope rather than an uncaught
-  # exception out of ``runCli``.
-  var session: CrudSession
-  try:
-    let (_, backend) = resolveBackend(opts)
-    session = newCrudSession(backend)
-  except BackendUnavailableError as e:
-    echo $(%*{"ok": false, "verb": verb,
-              "error": {"code": exitCode(cekBackendUnavailable),
-                        "kind": $cekBackendUnavailable, "message": e.msg}})
-    return exitCode(cekBackendUnavailable)
-  except ValueError as e:
-    echo $(%*{"ok": false, "verb": verb,
-              "error": {"code": exitCode(cekBadArgs), "kind": $cekBadArgs,
-                        "message": e.msg}})
-    return exitCode(cekBadArgs)
   let resp = runCrud(session, verb, p)
   echo $resp.json
   resp.exitCode
