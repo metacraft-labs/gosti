@@ -13,6 +13,11 @@ run_nim r --hints:off tests/unit/t_auto_selection.nim
 # GOSTI2 PR-1: the generic-CRUD façade contract (JSON schema + exit codes),
 # every verb driven through the noop backend in-process. Hermetic.
 run_nim r --hints:off tests/unit/t_crud_facade.nim
+# GOSTI2 PR-2: the same façade driven through the FULL deterministic mock
+# backend (backends/mock.nim) — round-trips every verb and asserts the
+# lifecycle state machine, snapshot persistence + guest-fs restore, and the
+# canned/deterministic VmInfo/SshEndpoint/ExecResult. Hermetic (in-memory).
+run_nim r --hints:off tests/unit/t_crud_facade_mock.nim
 run_nim r --hints:off tests/unit/t_guest_scripts.nim
 run_nim r --hints:off tests/unit/t_cli_probe.nim
 run_nim r --hints:off tests/unit/t_cli_boot.nim
