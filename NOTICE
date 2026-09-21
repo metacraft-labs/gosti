@@ -1,0 +1,9 @@
+gosti (formerly vm-harness)
+Copyright 2026 Metacraft Labs / Schelling Point Labs
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this project except in compliance with the License.
+A copy of the License is in the LICENSE file at the repository root.
+
+Relicensed from MIT to Apache-2.0 by the copyright holder (2026-09-21)
+to add an explicit patent grant for this widely-consumed VM library.
