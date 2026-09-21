@@ -14,6 +14,8 @@
 ## - Boot smoke: ``BootSmokeSpec``, ``BootSmokeStep``, ``runBootSmoke``,
 ##   ``writeSyntheticBootDisk``.
 ## - NoopBackend (test fixture): re-exported from ``backends/noop``.
+## - MockBackend (deterministic in-memory fixture): re-exported from
+##   ``backends/mock`` (GOSTI2 PR-2).
 ##
 ## See ``docs/design.md`` for the canonical design reference and the
 ## per-backend implementation notes.
@@ -29,6 +31,7 @@ import ./vm_harness/serial
 import ./vm_harness/firmware
 import ./vm_harness/cloud_init_seed
 import ./vm_harness/backends/noop
+import ./vm_harness/backends/mock
 import ./vm_harness/backends/process_helpers
 import ./vm_harness/backends/hyperv
 import ./vm_harness/backends/wsl
@@ -59,6 +62,7 @@ export serial
 export firmware
 export cloud_init_seed
 export noop
+export mock
 export process_helpers
 export hyperv
 export wsl
