@@ -138,6 +138,24 @@ type
     srcPath*: string             ## copy source (host for to, guest for from)
     destPath*: string            ## copy destination
     force*: bool                 ## stop_vm / delete_vm advisory force
+    # --- GOSTI2 PR-3: create_vm surface growth (VmCreateOptions forwarding) ---
+    userData*: string            ## ``create_vm --user-data`` — cloud-init
+                                 ## user-data CONTENT (the CLI reads the file;
+                                 ## the gate sets it directly). Flows into
+                                 ## ``BaselineSpec.userData``.
+    mounts*: seq[tuple[host: string, guest: string]]
+                                 ## ``create_vm --mount host:guest`` (repeatable).
+                                 ## Flows into ``BaselineSpec.mounts``.
+    sshUser*: string             ## ``create_vm --ssh-user`` — preferred guest
+                                 ## login. Flows into ``BaselineSpec.sshUser``.
+    # --- GOSTI2 PR-3: exec surface growth (ExecOptions forwarding) ------------
+    # These are realised by CRUD-LAYER argv WRAPPING (see ``wrapExecArgv``); they
+    # need no ``VmBackend`` change — the guest just runs a portable POSIX-sh /
+    # coreutils wrapper around the caller's argv.
+    cwd*: string                 ## ``exec --cwd D`` — run argv with CWD = D.
+    runAs*: string               ## ``exec --run-as U`` — run argv as user U.
+    execTimeoutSec*: int         ## ``exec --timeout N`` — guest-side wall-clock
+                                 ## kill after N seconds (0 ⇒ no limit).
 
   CrudSession* = ref object
     ## Holds the backend and the process-local instance registry. One session
@@ -247,7 +265,42 @@ proc buildSpec(p: CrudParams): BaselineSpec =
     memoryMB: p.memoryMB,
     diskGB: p.diskGB,
     guestOs: p.guestOs,
-    guestArch: p.guestArch)
+    guestArch: p.guestArch,
+    # PR-3: forward the ah-vm ``VmCreateOptions`` a create needs. These are
+    # OPTIONAL — a backend that cannot express them ignores them (documented on
+    # ``BaselineSpec``), so every existing backend still compiles + behaves.
+    userData: p.userData,
+    mounts: p.mounts,
+    sshUser: p.sshUser)
+
+proc wrapExecArgv*(argv: seq[string], cwd, runAs: string,
+                   timeoutSec: int): seq[string] =
+  ## Realise the ``exec`` options as a portable, additive argv WRAP — no
+  ## ``VmBackend`` change: the guest simply runs a POSIX-sh / coreutils wrapper
+  ## around the caller's command. Applied innermost-first so the composition
+  ## nests ``timeout( su-U( cd-D( argv ) ) )``:
+  ##
+  ## - ``--cwd D``  → ``sh -c 'cd "$1" && shift && exec "$@"' sh D <argv…>``
+  ##                  (D is a positional param, never spliced into the script,
+  ##                  so it needs no shell quoting).
+  ## - ``--run-as U`` → ``su U -c 'exec "$@"' sh <argv…>`` (argv is passed as
+  ##                    positional params to the user's login shell).
+  ## - ``--timeout N`` → ``timeout N <argv…>`` (coreutils; kills the whole
+  ##                     wrapped tree on expiry).
+  ##
+  ## Portability note: this targets a POSIX guest (``sh``, ``su``, coreutils
+  ## ``timeout`` — Linux/macOS). A Windows guest has none of these, so the wrap
+  ## is a no-op-safe *contract* the CRUD layer applies uniformly; a Windows
+  ## backend would need its own realisation. Empty ``cwd``/``runAs`` and a
+  ## non-positive ``timeoutSec`` each leave the argv untouched.
+  result = argv
+  if cwd.len > 0:
+    result = @["sh", "-c", "cd \"$1\" && shift && exec \"$@\"", "sh", cwd] &
+      result
+  if runAs.len > 0:
+    result = @["su", runAs, "-c", "exec \"$@\"", "sh"] & result
+  if timeoutSec > 0:
+    result = @["timeout", $timeoutSec] & result
 
 # ---------------------------------------------------------------------------
 # Verb implementations. Each raises ``CrudError`` on a categorised failure
@@ -312,7 +365,10 @@ proc execVm(session: CrudSession, p: CrudParams): JsonNode =
   let handle = requireRunning(rec)
   if p.argv.len == 0:
     raise newCrudError(cekBadArgs, "exec requires a command (argv)")
-  let r = session.backend.execInGuest(handle, p.env, p.argv)
+  # PR-3: fold --cwd/--run-as/--timeout into a portable argv wrap before the
+  # backend ever sees it. No VmBackend change — the guest runs the wrapper.
+  let argv = wrapExecArgv(p.argv, p.cwd, p.runAs, p.execTimeoutSec)
+  let r = session.backend.execInGuest(handle, p.env, argv)
   %*{
     "exit_code": r.exitCode,
     "stdout": r.stdout,

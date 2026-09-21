@@ -123,6 +123,40 @@ type
                                  ## must namespace keys (``libvirt.<x>``,
                                  ## ``hyperv.<x>``, ...). Unrecognised keys MUST
                                  ## be ignored by the backend, not error.
+    userData*: string            ## GOSTI2 PR-3: optional cloud-init *user-data*
+                                 ## CONTENT (not a path) the instance should boot
+                                 ## with — how an agent-sandbox VM brings up its
+                                 ## runner/agent. A backend that supports NoCloud
+                                 ## seeding builds a "cidata" seed ISO from this
+                                 ## (``cloud_init_seed.buildNoCloudIso``) and
+                                 ## attaches it at first boot; a backend that
+                                 ## cannot MUST ignore it rather than error (the
+                                 ## field is optional). Empty ⇒ no seed. The CRUD
+                                 ## façade (``crud create_vm --user-data``) is the
+                                 ## first producer; the ah-vm binding forwards
+                                 ## ``VmCreateOptions.cloud_init`` here.
+                                 ## PLUMBED-BUT-GUARDED (PR-3): NO backend honours
+                                 ## this yet, so ``crud create_vm --user-data``
+                                 ## fails closed (backend-unavailable, exit 4) in
+                                 ## ``cli.cmdCrud`` rather than silently booting
+                                 ## without cloud-init. The guard lifts the moment
+                                 ## a backend builds + attaches a NoCloud seed
+                                 ## from this field (``cloud_init_seed.buildNoCloudIso``).
+    mounts*: seq[tuple[host: string, guest: string]]
+                                 ## GOSTI2 PR-3: optional host→guest directory
+                                 ## share requests (``crud create_vm --mount
+                                 ## host:guest``). Backends that model shared
+                                 ## folders (lima, incus, libvirt virtiofs) may
+                                 ## honour them; backends that cannot MUST ignore
+                                 ## them. Empty ⇒ no extra mounts. PLUMBED-BUT-
+                                 ## GUARDED like ``userData``: ``crud create_vm
+                                 ## --mount`` fails closed (exit 4) until a
+                                 ## backend attaches these shares.
+    sshUser*: string             ## GOSTI2 PR-3: optional preferred SSH login the
+                                 ## caller wants provisioned in the guest (``crud
+                                 ## create_vm --ssh-user``). Advisory: a backend
+                                 ## that fixes its own guest user ignores it.
+                                 ## Empty ⇒ backend default.
 
   VmHandle* = ref object
     ## Live, started VM ready for ``execInGuest``. Backends construct one in
