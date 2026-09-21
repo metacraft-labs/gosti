@@ -91,6 +91,16 @@ type
     envPairs*: Table[string, string]
     copyTo*: seq[tuple[host: string, guest: string]]
     copyFrom*: seq[tuple[guest: string, host: string]]
+    # GOSTI2 PR-3: crud surface-growth flags (ah-vm VmCreateOptions/ExecOptions
+    # forwarding). --user-data/--ssh-user reuse the existing fields above.
+    mounts*: seq[tuple[host: string, guest: string]]
+                                 ## ``crud create_vm --mount host:guest``
+                                 ## (repeatable) — host→guest share requests.
+    cwd*: string                 ## ``crud exec --cwd <dir>`` — guest CWD.
+    runAs*: string               ## ``crud exec --run-as <user>`` — guest user.
+    execTimeout*: int            ## ``crud exec --timeout <sec>`` — guest-side
+                                 ## wall-clock kill (0 ⇒ none). Distinct from
+                                 ## --timeout-sec (the harness/RPC budget).
     shims*: seq[ArgvTraceShim]
     cmd*: seq[string]
     logFormat*: LogFormat
@@ -336,7 +346,13 @@ Subcommands:
                           get_vm, list_vms, exec (-- <argv>), copy_to_vm
                           <src> <dst>, copy_from_vm <src> <dst>, ssh_endpoint,
                           snapshot <snap>, restore_snapshot <snap>,
-                          list_snapshots. ALWAYS prints one stable JSON
+                          list_snapshots.
+                          create_vm also accepts --user-data <path> (cloud-init
+                          user-data — how a sandbox VM boots its runner/agent),
+                          --mount host:guest (repeatable), and --ssh-user <user>.
+                          exec also accepts --cwd <dir>, --run-as <user>, and
+                          --timeout <sec> (a portable guest-side argv wrap).
+                          ALWAYS prints one stable JSON
                           envelope on stdout; exit codes: 0 ok, 2 bad-args,
                           3 not-found, 4 backend-unavailable, 5 backend-error,
                           1 internal. See src/vm_harness/crud.nim for the
@@ -452,6 +468,10 @@ Common flags:
   --env KEY=VAL                   (repeatable)
   --copy-to host:guest            (repeatable)
   --copy-from guest:host          (repeatable)
+  --mount host:guest              crud create_vm (repeatable): host→guest share.
+  --cwd <dir>                     crud exec: run argv with this guest CWD.
+  --run-as <user>                 crud exec: run argv as this guest user.
+  --timeout <sec>                 crud exec: guest-side wall-clock kill (0=none).
   --install-shim binary:logpath   (repeatable)
   --timeout-sec <int>
   --ssh-ready-timeout-sec <int>   Maximum wait for SSH before a boot command.
@@ -766,6 +786,19 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       let p = parsePathPair("--copy-from", args[i])
       result.copyFrom.add((guest: p.a, host: p.b))
       inc i
+    of "--mount":
+      inc i
+      let p = parsePathPair("--mount", args[i])
+      result.mounts.add((host: p.a, guest: p.b))
+      inc i
+    of "--cwd":
+      inc i; result.cwd = args[i]; inc i
+    of "--run-as":
+      inc i; result.runAs = args[i]; inc i
+    of "--timeout":
+      inc i; result.execTimeout = parseInt(args[i]); inc i
+      if result.execTimeout < 0:
+        raise newException(ValueError, "--timeout expects a non-negative integer")
     of "--install-shim":
       inc i
       let p = parsePathPair("--install-shim", args[i])
@@ -2557,6 +2590,43 @@ proc cmdServe(opts: CliOpts): int =
     return 1
   0
 
+proc crudCreateGuard*(verb: string, opts: CliOpts): Option[CrudResponse] =
+  ## GOSTI2 PR-3 FAIL-CLOSED guard for ``crud create_vm``.
+  ##
+  ## ``--user-data`` and ``--mount`` PARSE (the surface is real and tested), but
+  ## NO gosti backend consumes ``BaselineSpec.userData`` / ``.mounts`` yet:
+  ## ``revertToBaseline`` takes only a baseline name, and e.g. incus explicitly
+  ## documents ignoring userData. Reporting ``{"ok":true}`` for a create_vm that
+  ## would boot with NO cloud-init (or without the requested shares) is exactly
+  ## the silent-wrong the ah-vm binding's fail-closed guard exists to prevent —
+  ## so we refuse to LIE ABOUT SUCCESS, returning a ``backend-unavailable``
+  ## (exit 4) envelope the caller emits BEFORE resolving a backend or creating
+  ## anything. ``cmdCrud`` consults this first; the gate drives it directly.
+  ##
+  ## The guard lifts the moment a backend honours ``BaselineSpec.userData`` by
+  ## building + attaching a NoCloud seed (``cloud_init_seed.buildNoCloudIso``
+  ## exists) — the follow-up before the binding forwards ``--user-data``.
+  ## ``--ssh-user`` is genuinely advisory (a backend may ignore it) and is NOT
+  ## guarded — it reaches the spec as accept-advisory.
+  if verb != "create_vm":
+    return none(CrudResponse)
+  proc refuse(flag, detail: string): Option[CrudResponse] =
+    some(CrudResponse(
+      exitCode: exitCode(cekBackendUnavailable),
+      json: %*{"ok": false, "verb": verb,
+               "error": {"code": exitCode(cekBackendUnavailable),
+                         "kind": $cekBackendUnavailable,
+                         "message": flag & " is not yet honored by any gosti " &
+                           "backend (" & detail & "); refusing to report " &
+                           "success for a VM that would boot without it"}}))
+  if opts.userDataFile.len > 0:
+    return refuse("--user-data",
+      "no backend builds a NoCloud seed from BaselineSpec.userData")
+  if opts.mounts.len > 0:
+    return refuse("--mount",
+      "no backend attaches host→guest shares from BaselineSpec.mounts")
+  none(CrudResponse)
+
 proc cmdCrud(opts: CliOpts): int =
   ## GOSTI2 PR-1: the generic-CRUD façade surface (``crud <verb> …``) that the
   ## ah-vm Rust binding drives. ALWAYS emits a single stable JSON envelope on
@@ -2583,6 +2653,12 @@ proc cmdCrud(opts: CliOpts): int =
                           CrudVerbs.join(", ") & ")"}})
     return exitCode(cekBadArgs)
   let verb = opts.cmd[0]
+  # PR-3 FAIL-CLOSED guard, applied BEFORE any backend is resolved or anything
+  # is created. See ``crudCreateGuard`` for why.
+  let guarded = crudCreateGuard(verb, opts)
+  if guarded.isSome:
+    echo $guarded.get().json
+    return guarded.get().exitCode
   var p = CrudParams(
     baseline: opts.baseline,
     sourceImage: opts.sourceImage,
@@ -2592,7 +2668,26 @@ proc cmdCrud(opts: CliOpts): int =
     guestOs: (if opts.guestSet: opts.guest else: goLinux),
     guestArch: gaX86_64,
     env: opts.envPairs,
-    force: opts.force)
+    force: opts.force,
+    # PR-3: create_vm options (VmCreateOptions forwarding). --user-data is a
+    # host file path; read its CONTENT here so BaselineSpec carries the seed
+    # payload self-contained. A missing file is a bad-args envelope below.
+    # NOTE: guarded above — reaching here with these set is only possible for
+    # non-create verbs, which ignore them.
+    mounts: opts.mounts,
+    sshUser: opts.sshUser,
+    # PR-3: exec options (ExecOptions forwarding — realised by argv wrapping).
+    cwd: opts.cwd,
+    runAs: opts.runAs,
+    execTimeoutSec: opts.execTimeout)
+  if opts.userDataFile.len > 0:
+    if not fileExists(opts.userDataFile):
+      echo $(%*{"ok": false, "verb": verb,
+                "error": {"code": exitCode(cekBadArgs), "kind": $cekBadArgs,
+                          "message": "--user-data '" & opts.userDataFile &
+                            "': file not found"}})
+      return exitCode(cekBadArgs)
+    p.userData = readFile(opts.userDataFile)
   if opts.cmd.len >= 2:
     p.name = opts.cmd[1]
   # Verb-specific positional layout. Kept permissive: the façade re-validates

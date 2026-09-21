@@ -91,6 +91,15 @@ type
     baselines: Table[string, BaselineSpec]   ## provisioned templates
     vms: Table[string, MockVm]               ## instance name → instance
     calls*: seq[string]                      ## chronological method-call log
+    provisionSpecs*: seq[BaselineSpec]       ## PR-3: every spec provisionBaseline
+                                             ## received, in order — so a gate can
+                                             ## assert --user-data/--mount/
+                                             ## --ssh-user reached the create path.
+    execArgvLog*: seq[seq[string]]           ## PR-3: the exact argv every
+                                             ## execInGuest received (AFTER the
+                                             ## CRUD-layer --cwd/--run-as/--timeout
+                                             ## wrap) — so a gate can assert the
+                                             ## produced wrapper argv verbatim.
 
 # ---------------------------------------------------------------------------
 # Canned, stable guest-reachability data. These are constants on purpose: the
@@ -118,7 +127,9 @@ proc newMockBackend*(): MockBackend =
     supportedGuests: {goLinux, goWindows, goMacos},
     baselines: initTable[string, BaselineSpec](),
     vms: initTable[string, MockVm](),
-    calls: @[])
+    calls: @[],
+    provisionSpecs: @[],
+    execArgvLog: @[])
 
 # ---------------------------------------------------------------------------
 # Public introspection surface. A hermetic gate asserts the finer state-machine
@@ -169,6 +180,9 @@ method provisionBaseline*(b: MockBackend, spec: BaselineSpec) =
   ## Idempotent: register the template if absent. No instance is created here
   ## (mirrors the real backends — provision builds a template, revert boots it).
   b.calls.add("provisionBaseline:" & spec.name)
+  b.provisionSpecs.add(spec)   ## PR-3: record every spec so a gate can assert
+                               ## the create options (--user-data/--mount/
+                               ## --ssh-user) flowed through unchanged.
   if spec.name notin b.baselines:
     b.baselines[spec.name] = spec
 
@@ -221,6 +235,7 @@ method execInGuest*(b: MockBackend, vm: VmHandle,
   ## Deterministic echo: stdout is a pure function of the command (and any env
   ## keys, sorted for reproducibility). Requires a running instance.
   b.calls.add("execInGuest:" & cmd.join(" "))
+  b.execArgvLog.add(cmd)   ## PR-3: capture the exact (wrapped) argv verbatim.
   if vm.name notin b.vms or b.vms[vm.name].state != mvsRunning:
     raise newVmHarnessError($b.id, lpExec,
       "execInGuest: instance '" & vm.name & "' is not running")
