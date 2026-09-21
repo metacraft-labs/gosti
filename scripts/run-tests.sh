@@ -28,6 +28,7 @@ run_nim r --hints:off tests/unit/t_crud_surface_growth.nim
 # read-only CD-ROM. Pure-function gate (seed round-trip + domain-XML render +
 # capability signal) — no libvirtd, no VM. Live cloud-init boot is a follow-up.
 run_nim r --hints:off tests/unit/t_libvirt_nocloud_seed.nim
+run_nim r --hints:off tests/unit/t_libvirt_baseline_off.nim
 run_nim r --hints:off tests/unit/t_guest_scripts.nim
 run_nim r --hints:off tests/unit/t_cli_probe.nim
 run_nim r --hints:off tests/unit/t_cli_boot.nim

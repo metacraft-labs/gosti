@@ -1419,6 +1419,12 @@ method provisionBaseline*(b: LibvirtBackend, spec: BaselineSpec) =
       # Define the minimal q35 UEFI domain via a per-call virsh
       # define so the firmware path matches the install branch.
       # virt-install --import does this in one shot.
+      #
+      # NB: this qcow2-import path needs ``virt-install`` on PATH (it
+      # ships in the ``virt-manager`` package, present in the deployed
+      # fleet closure). It is NOT threaded through ``b.virtInstallCmd``
+      # here — the literal name is resolved via PATH — because import is
+      # a one-shot define, not the long-running install path.
       let importArgs = @[
         "virt-install",
         "--connect", b.libvirtUri,
@@ -1446,14 +1452,28 @@ method provisionBaseline*(b: LibvirtBackend, spec: BaselineSpec) =
         raise newVmHarnessError($b.id, lpProvisioning,
           "virt-install --import failed (exit " & $importRes.exitCode &
           "): " & importRes.stdout)
-      # Start the domain (--noreboot above keeps it powered off after
-      # the import).
-      let startArgs = b.virshArgs(@["start", spec.name])
-      let startRes = runProcessCapture(startArgs, timeoutSec = 60)
-      if startRes.exitCode != 0:
-        raise newVmHarnessError($b.id, lpProvisioning,
-          "virsh start failed (exit " & $startRes.exitCode &
-          "): " & startRes.stdout)
+      # Leave the baseline domain DEFINED-BUT-OFF. It is a *template*
+      # whose qcow2 disk backs many CoW clones (see
+      # ``provisionEphemeralClone`` / ``revertToBaselineWithUserData``):
+      # each ephemeral clone runs ``qemu-img create -f qcow2 -b
+      # <this-disk>`` and then ``virsh start`` on the overlay, and BOTH
+      # need the backing qcow2 UNLOCKED. A running baseline holds QEMU's
+      # 'write' lock on its disk, so ``crud create_vm`` (which calls
+      # ``provisionBaseline`` and then IMMEDIATELY materialises a clone
+      # via ``revertToBaselineWithUserData``) would fail single-shot with
+      # "Failed to get shared 'write' lock. Is another process using the
+      # image?". We therefore do NOT ``virsh start`` the baseline here.
+      #
+      # ``--noreboot`` above already left it powered off after the
+      # import; ``destroyDomain`` is a defensive, idempotent no-op that
+      # GUARANTEES the template is off even on a ``virt-install`` build
+      # that ignores ``--noreboot``. The single-runner seam (plain
+      # ``revertToBaseline``) does its own ``startDomain(baseline)`` on
+      # demand, and every ``provisionBaseline`` caller either reverts
+      # afterwards (which starts it) or is ``vm-harness provision``
+      # (which wants an off template) — so leaving it off regresses no
+      # caller while unblocking the CoW-clone path.
+      b.destroyDomain(spec.name)
       return
 
     if not fileExists(spec.sourceImage):
