@@ -2,7 +2,7 @@
 version       = "0.1.0"
 author        = "Metacraft Labs"
 description   = "Cross-platform VM lifecycle orchestration (Tart, UTM, Hyper-V, WSL, libvirt, Lima)"
-license       = "MIT"
+license       = "Apache-2.0"
 srcDir        = "src"
 installExt    = @["nim"]
 bin           = @["vm_harness/cli"]
