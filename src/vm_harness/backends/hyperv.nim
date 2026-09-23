@@ -1278,67 +1278,119 @@ if ($configDrive -and $configDrive.Length -gt 0) {{
 Write-Host "EPHEMERAL-CREATED $vmName"
 """
 
-proc destroyEphemeralClone(b: HyperVBackend, vm: VmHandle) =
-  ## Force-stop + `Remove-VM` the per-job ephemeral VM and delete its per-job
-  ## clone disk, leaving NO residue. The golden (differencing parent / copy
-  ## source) is never touched. Safe to call from a `finally` — swallows all
-  ## errors.
-  when defined(windows):
-    let clonePath = vm.extra.getOrDefault("clonePath")
-    let psBlock = &"""try {{
-  Import-Module Hyper-V -ErrorAction Stop
-  $vm = Get-VM -Name '{psQuote(vm.name)}' -ErrorAction SilentlyContinue
-  if ($vm) {{
-    if ($vm.State -ne 'Off') {{ Stop-VM -Name '{psQuote(vm.name)}' -TurnOff -Force -ErrorAction SilentlyContinue | Out-Null }}
-    Remove-VM -Name '{psQuote(vm.name)}' -Force -ErrorAction SilentlyContinue | Out-Null
-  }}
-}} catch {{ Write-Host "destroyEphemeralClone swallowed: $_" }}
-"""
-    let cmd = @[$b.powershellLauncher, "-NoLogo", "-NoProfile",
-                "-ExecutionPolicy", "Bypass", "-Command", psBlock]
-    try:
-      discard runProcessCapture(cmd, timeoutSec = 120)
-    except CatchableError: discard
-    if clonePath.len > 0 and fileExists(clonePath):
-      try: removeFile(clonePath)
-      except CatchableError: discard
-  else:
-    discard
+proc splitWindowsPath*(path: string): tuple[dir, file: string] =
+  ## Split a Windows (or POSIX) path on its LAST separator without `os`, whose
+  ## notion of a separator depends on the host the harness is compiled for.
+  let idx = max(path.rfind('\\'), path.rfind('/'))
+  if idx < 0: ("", path) else: (path[0 ..< idx], path[idx + 1 .. ^1])
 
-proc buildEphemeralDestroyCommand*(name: string): string =
-  ## PowerShell that removes the kept per-job VM ``name`` and its per-job disk,
-  ## and PROVES both are gone. Pure (unit-testable off-Windows).
+proc ephemeralDiskStem*(clonePath: string): string =
+  ## ``D:\golden\garm-x.vhdx`` → ``garm-x``: the name every per-job disk file
+  ## of that clone starts with (the clone itself and any ``_<GUID>.avhdx``
+  ## checkpoint differencing disk Hyper-V creates beside it).
+  let f = splitWindowsPath(clonePath).file
+  let dot = f.rfind('.')
+  if dot > 0: f[0 ..< dot] else: f
+
+proc buildEphemeralDestroyCommand*(name: string, clonePath: string = ""): string =
+  ## PowerShell that removes the kept per-job VM ``name`` and its per-job
+  ## disk(s), and PROVES all of them are gone. Pure (unit-testable off-Windows).
   ##
   ## Why it exists: ``ephemeral-destroy --backend hyperv`` used to fall through
   ## to the libvirt branch and fail on ``virsh`` not being installed — MEASURED
   ## in central GARM's log for win-ci-bare-001 — and the provider treated that
   ## failure as idempotent success, so every per-job Hyper-V VM was leaked.
-  ## ``destroyEphemeralClone`` (the in-process path) cannot be reused: it
-  ## swallows every error, and a remote teardown must fail loudly.
   ##
-  ## The per-job disk is found from the VM itself rather than recomputed from a
-  ## golden path the delete request does not carry. Only a disk named exactly
-  ## ``<name>.vhdx`` (``ephemeralClonePathFor``'s naming) is deleted, so the
-  ## golden a differencing disk points at can never be removed. An absent VM
-  ## is success: GARM retries deletes.
+  ## ``clonePath`` is the per-job disk recorded when the clone was created (the
+  ## KNOWN location — see ``ephemeral_inventory.saveDiskRecord``). Its directory
+  ## is swept for ``<stem>.vhdx`` and ``<stem>_<GUID>.avhdx`` whether or not
+  ## the VM still exists, because a teardown whose Remove-VM succeeded but
+  ## whose disk deletion failed is retried with the VM already gone — deriving
+  ## the disks from the VM, as this used to, made that retry exit 0 and leak
+  ## the disk permanently. The VM's own disk paths are swept too when it still
+  ## exists (a clone created before the record did). The file pattern is
+  ## anchored on the per-job stem, so the golden a differencing disk points at
+  ## can never match. Checkpoints are removed and MERGED before Remove-VM:
+  ## deleting the files of a VM that still has a checkpoint chain would leave
+  ## the chain's merge target behind.
+  ##
+  ## An absent VM with no recorded disk location is success (GARM retries
+  ## deletes, and there is nothing left this call could find).
   let prefix = ephemeralVmNamePrefix()
+  let (diskDir, _) = splitWindowsPath(clonePath)
+  let stem = if clonePath.len > 0: ephemeralDiskStem(clonePath) else: name
   &"""$ErrorActionPreference = 'Stop'
 Import-Module Hyper-V -ErrorAction Stop
 $vmName = '{psQuote(name)}'
+$diskDir = '{psQuote(diskDir)}'
+$diskStem = '{psQuote(stem)}'
 if (-not $vmName.StartsWith('{psQuote(prefix)}')) {{
   throw "SAFETY: refusing to destroy $vmName (not in the ephemeral namespace '{psQuote(prefix)}')"
 }}
+if (-not $diskStem) {{ throw "SAFETY: empty per-job disk stem for $vmName" }}
+$diskRe = '^' + [regex]::Escape($diskStem) + '(_\{{?[0-9A-Fa-f]{{8}}(-[0-9A-Fa-f]{{4}}){{3}}-[0-9A-Fa-f]{{12}}\}}?)?\.a?vhdx$'
+$dirs = New-Object System.Collections.Generic.List[string]
+if ($diskDir) {{ $dirs.Add($diskDir) }}
 $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
-if (-not $vm) {{ Write-Output "vmh-destroy: $vmName absent"; exit 0 }}
-$disks = @(Get-VMHardDiskDrive -VMName $vmName | ForEach-Object {{ $_.Path }} |
-  Where-Object {{ [IO.Path]::GetFileName($_) -ieq ($vmName + '.vhdx') }})
-if ($vm.State -ne 'Off') {{ Stop-VM -Name $vmName -TurnOff -Force }}
-Remove-VM -Name $vmName -Force
-foreach ($d in $disks) {{ if (Test-Path -LiteralPath $d) {{ Remove-Item -LiteralPath $d -Force }} }}
-if (Get-VM -Name $vmName -ErrorAction SilentlyContinue) {{ throw "VM $vmName still exists after Remove-VM" }}
-foreach ($d in $disks) {{ if (Test-Path -LiteralPath $d) {{ throw "per-job disk $d still exists" }} }}
+if ($vm) {{
+  foreach ($p in @(Get-VMHardDiskDrive -VMName $vmName | ForEach-Object {{ $_.Path }})) {{
+    if ($p -and ([IO.Path]::GetFileName($p) -match $diskRe)) {{
+      $d = [IO.Path]::GetDirectoryName($p)
+      if (-not $dirs.Contains($d)) {{ $dirs.Add($d) }}
+    }}
+  }}
+  if ($vm.State -ne 'Off') {{ Stop-VM -Name $vmName -TurnOff -Force }}
+  $snaps = @(Get-VMSnapshot -VMName $vmName)
+  if ($snaps.Count -gt 0) {{
+    $snaps | Remove-VMSnapshot -Confirm:$false
+    $deadline = (Get-Date).AddSeconds(240)
+    while ((@(Get-VMSnapshot -VMName $vmName).Count -gt 0) -or
+           (@(Get-VMHardDiskDrive -VMName $vmName | Where-Object {{ $_.Path -like '*.avhdx' }}).Count -gt 0) -or
+           ("$((Get-VM -Name $vmName).Status)" -match 'merg')) {{
+      if ((Get-Date) -gt $deadline) {{ throw "checkpoint merge for $vmName did not finish within 240s" }}
+      Start-Sleep -Seconds 2
+    }}
+  }}
+  Remove-VM -Name $vmName -Force
+  if (Get-VM -Name $vmName -ErrorAction SilentlyContinue) {{ throw "VM $vmName still exists after Remove-VM" }}
+}} else {{
+  Write-Output "vmh-destroy: VM $vmName absent"
+}}
+if ($dirs.Count -eq 0) {{ Write-Output "vmh-destroy: $vmName absent, no per-job disk recorded"; exit 0 }}
+$left = @()
+foreach ($d in $dirs) {{
+  if (-not (Test-Path -LiteralPath $d)) {{ continue }}
+  foreach ($f in @(Get-ChildItem -LiteralPath $d -File | Where-Object {{ $_.Name -match $diskRe }})) {{
+    # vmms can hold the file for a moment after Remove-VM; retry, then verify.
+    for ($i = 0; $i -lt 15 -and (Test-Path -LiteralPath $f.FullName); $i++) {{
+      try {{ Remove-Item -LiteralPath $f.FullName -Force }} catch {{ Start-Sleep -Seconds 2 }}
+    }}
+  }}
+  $left += @(Get-ChildItem -LiteralPath $d -File | Where-Object {{ $_.Name -match $diskRe }} | ForEach-Object {{ $_.FullName }})
+}}
+if ($left.Count -gt 0) {{ throw "per-job disk(s) of $vmName still exist: $($left -join ', ')" }}
 Write-Output "vmh-destroy: $vmName removed"
 """
+
+proc destroyEphemeralClone(b: HyperVBackend, vm: VmHandle) =
+  ## Force-stop + `Remove-VM` the per-job ephemeral VM and delete its per-job
+  ## disk(s) — the same script `ephemeral-destroy` runs — leaving NO residue.
+  ## The golden (differencing parent / copy source) is never touched. Safe to
+  ## call from a `finally` — swallows all errors.
+  when defined(windows):
+    let psBlock = buildEphemeralDestroyCommand(vm.name,
+                                               vm.extra.getOrDefault("clonePath"))
+    let cmd = @[$b.powershellLauncher, "-NoLogo", "-NoProfile",
+                "-ExecutionPolicy", "Bypass", "-Command", psBlock]
+    try:
+      let r = runProcessCapture(cmd, timeoutSec = 300)
+      if r.exitCode != 0:
+        stderr.writeLine("destroyEphemeralClone: teardown of " & vm.name &
+                         " failed (exit " & $r.exitCode & "): " &
+                         (r.stdout & r.stderr).strip())
+    except CatchableError: discard
+  else:
+    discard
 
 proc buildEphemeralListCommand*(): string =
   ## PowerShell printing ``<name>,<State>`` for every VM in the ephemeral
@@ -1373,10 +1425,12 @@ proc runPowerShellChecked(b: HyperVBackend, script: string,
     raise newException(BackendUnavailableError,
       "the hyperv backend requires a Windows host")
 
-proc destroyEphemeralVmVerified*(b: HyperVBackend, name: string) =
-  ## Remove kept per-job VM ``name`` and its disk; RAISES unless both are
-  ## provably gone (absence is success). See ``buildEphemeralDestroyCommand``.
-  discard b.runPowerShellChecked(buildEphemeralDestroyCommand(name), 300)
+proc destroyEphemeralVmVerified*(b: HyperVBackend, name: string,
+                                 clonePath: string = "") =
+  ## Remove kept per-job VM ``name`` and its disk(s); RAISES unless all are
+  ## provably gone (absence is success). ``clonePath`` is the per-job disk
+  ## recorded at create. See ``buildEphemeralDestroyCommand``.
+  discard b.runPowerShellChecked(buildEphemeralDestroyCommand(name, clonePath), 600)
 
 proc listEphemeralVms*(b: HyperVBackend): seq[tuple[name, state: string]] =
   ## Kept per-job VMs and their GARM state. RAISES when Hyper-V cannot answer.
@@ -1417,13 +1471,11 @@ proc provisionEphemeralClone*(b: HyperVBackend,
     if cr.exitCode != 0:
       # Best-effort teardown of any half-built VM + clone disk.
       try:
-        let psCleanup = &"""try {{ Remove-VM -Name '{psQuote(spec.name)}' -Force -ErrorAction SilentlyContinue | Out-Null }} catch {{}}"""
         discard runProcessCapture(@[$b.powershellLauncher, "-NoLogo",
-          "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCleanup],
-          timeoutSec = 60)
+          "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+          buildEphemeralDestroyCommand(spec.name, clonePath)],
+          timeoutSec = 300)
       except CatchableError: discard
-      if fileExists(clonePath):
-        try: removeFile(clonePath) except CatchableError: discard
       raise newVmHarnessError($b.id, lpProvisioning,
         "HyperVBackend.provisionEphemeralClone: VM creation failed (exit " &
         $cr.exitCode & "): " & cr.stdout)

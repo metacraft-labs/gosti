@@ -77,6 +77,17 @@ suite "buildEphemeralCloneCommand: host-lifecycle ops (New-VHD/New-VM/Remove)":
     check "$useDiff = $false" in ps
     check "Copy-Item -LiteralPath $golden -Destination $clone" in ps
 
+suite "buildEphemeralCloneCommand: a per-job clone never checkpoints":
+  # Client Hyper-V (Windows 11 Pro 26200) enables AUTOMATIC checkpoints on
+  # every New-VM, so the first Start-VM moves the VM onto a
+  # `<name>_<GUID>.avhdx` the teardown did not know about. Untested on a real
+  # Hyper-V host: these pin the emitted script only.
+  test "automatic and manual checkpoints are disabled before the VM can start":
+    let script = render(win11Spec())
+    check "Set-VM -Name $vmName -AutomaticCheckpointsEnabled $false -CheckpointType Disabled" in script
+    check script.find("New-VM -Name $vmName") < script.find("-AutomaticCheckpointsEnabled $false")
+    check "Start-VM" notin script   # started separately, after this script
+
 suite "buildEphemeralCloneCommand: safety guards make teardown/golden safe":
   test "refuses a VM name outside the ephemeral namespace":
     var spec = win11Spec()
@@ -179,25 +190,70 @@ suite "Hyper-V ephemeral teardown + enumeration (remote ephemeral-destroy / ephe
   # win-ci-bare-001); the provider reported that as success and every kept
   # VM leaked. These pin the replacement's safety and fail-loud properties.
   let name = EphemeralVmNamePrefix & "job-77"
-  let script = buildEphemeralDestroyCommand(name)
+  let clonePath = "D:\\golden\\" & name & ".vhdx"
+  let script = buildEphemeralDestroyCommand(name, clonePath)
+  proc code(s: string): string =
+    ## The script without its comment lines, for ordering assertions.
+    var kept: seq[string] = @[]
+    for line in s.splitLines():
+      if not line.strip().startsWith("#"): kept.add(line)
+    kept.join("\n")
+  let body = code(script)
 
   test "refuses to touch a VM outside the ephemeral namespace":
     check "SAFETY: refusing to destroy" in script
     check ("StartsWith('" & EphemeralVmNamePrefix & "')") in script
 
-  test "an absent VM is success (GARM retries deletes)":
-    check "if (-not $vm) { Write-Output \"vmh-destroy: $vmName absent\"; exit 0 }" in script
+  test "the per-job disk location comes from the RECORD, not the VM":
+    check "$diskDir = 'D:\\golden'" in script
+    check ("$diskStem = '" & name & "'") in script
+    check "Get-ChildItem -LiteralPath $d -File" in script
 
-  test "only the per-job <name>.vhdx is deleted, never the golden":
-    check "[IO.Path]::GetFileName($_) -ieq ($vmName + '.vhdx')" in script
-    check "Remove-Item -LiteralPath $d -Force" in script
+  test "an absent VM does NOT short-circuit the disk sweep (retry after a failed delete)":
+    # The old script `exit 0`-ed as soon as Get-VM came back empty, so a
+    # retry after `Remove-VM` succeeded but the disk delete failed reported
+    # success and leaked the disk for good.
+    check "if (-not $vm) { Write-Output \"vmh-destroy: $vmName absent\"; exit 0 }" notin script
+    let absentBranch = body.find("vmh-destroy: VM $vmName absent")
+    check absentBranch > 0
+    check body.find("Get-ChildItem -LiteralPath $d -File", absentBranch) > absentBranch
+    check body.find("per-job disk(s) of $vmName still exist", absentBranch) > absentBranch
+
+  test "the sweep covers checkpoint .avhdx files and is anchored on the per-job stem":
+    check "[regex]::Escape($diskStem)" in script
+    check "\\.a?vhdx$'" in script
+    check "(_\\{?[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\\}?)?" in script
+    check "$diskRe = '^'" in script           # anchored: never the golden
+
+  test "checkpoints are removed and merged BEFORE Remove-VM":
+    check "Get-VMSnapshot -VMName $vmName" in body
+    check "Remove-VMSnapshot -Confirm:$false" in body
+    check body.find("Remove-VMSnapshot") < body.find("Remove-VM -Name")
+    check "checkpoint merge for $vmName did not finish" in body
+    check "$_.Path -like '*.avhdx'" in body
 
   test "teardown is VERIFIED: a surviving VM or disk is an error, not success":
     check "$ErrorActionPreference = 'Stop'" in script
     check "throw \"VM $vmName still exists after Remove-VM\"" in script
-    check "throw \"per-job disk $d still exists\"" in script
+    check "throw \"per-job disk(s) of $vmName still exist: $($left -join ', ')\"" in script
     check "SilentlyContinue | Out-Null" notin script   # nothing swallowed
-    check script.find("Stop-VM") < script.find("Remove-VM")
+    check body.find("Stop-VM") < body.find("Remove-VM -Name")
+    check body.find("Remove-VM -Name") < body.find("Remove-Item -LiteralPath")
+
+  test "the VM's own disk paths are swept too (a clone that predates the record)":
+    check "Get-VMHardDiskDrive -VMName $vmName | ForEach-Object { $_.Path }" in script
+    check "$dirs.Add($d)" in script
+
+  test "no record and no VM is success: nothing is left this call could find":
+    let bare = buildEphemeralDestroyCommand(name)
+    check "$diskDir = ''" in bare
+    check ("$diskStem = '" & name & "'") in bare
+    check "if ($dirs.Count -eq 0) { Write-Output \"vmh-destroy: $vmName absent, no per-job disk recorded\"; exit 0 }" in bare
+
+  test "a recorded clone path splits on its Windows separator on any host":
+    check splitWindowsPath("D:\\golden\\garm-1.vhdx") == (dir: "D:\\golden", file: "garm-1.vhdx")
+    check ephemeralDiskStem("D:\\golden\\garm-1.vhdx") == "garm-1"
+    check splitWindowsPath("garm-1.vhdx").dir == ""
 
   test "enumeration is namespaced and throws rather than printing nothing":
     let list = buildEphemeralListCommand()

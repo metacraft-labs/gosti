@@ -231,6 +231,48 @@ proc forgetLabels*(backend, name: string) =
   except CatchableError:
     discard
 
+# ---------------------------------------------------------------------------
+# Per-job disk records (hyperv).
+#
+# A Hyper-V ``ephemeral-destroy`` request carries only the instance name, not
+# the golden the per-job disk was cloned beside, and the VM — the only other
+# place the disk path could be read from — is gone on exactly the retry that
+# matters (Remove-VM succeeded, the disk delete failed). So the clone path is
+# recorded next to the attribution records BEFORE the disk is created, read by
+# ``ephemeral-destroy``, and removed only after a verified teardown.
+
+proc diskRecordPath*(backend, name: string): string =
+  labelStateRoot() / "disks" / sanitizeKey(backend) / (sanitizeKey(name) & ".json")
+
+proc saveDiskRecord*(backend, name, diskPath: string) =
+  ## Write-then-rename. Raises: a create that cannot record where its disk
+  ## lives must not proceed to make one.
+  let path = diskRecordPath(backend, name)
+  createDir(path.parentDir)
+  let doc = %*{"schema": "vm-harness/ephemeral-disk/1", "backend": backend,
+               "name": name, "diskPath": diskPath}
+  let tmp = path & ".tmp"
+  writeFile(tmp, $doc & "\n")
+  moveFile(tmp, path)
+
+proc loadDiskRecord*(backend, name: string): string =
+  ## The recorded per-job disk path, or "" when there is none.
+  let path = diskRecordPath(backend, name)
+  if not fileExists(path): return ""
+  try:
+    let doc = parseFile(path)
+    if doc{"name"}.getStr("") != name: return ""   # sanitized-key collision
+    doc{"diskPath"}.getStr("")
+  except CatchableError:
+    ""
+
+proc forgetDiskRecord*(backend, name: string) =
+  try:
+    let path = diskRecordPath(backend, name)
+    if fileExists(path): removeFile(path)
+  except CatchableError:
+    discard
+
 proc attachLabels*(backend: string; entries: var seq[EphemeralEntry]) =
   for e in entries.mitems:
     e.labels = loadLabels(backend, e.name)

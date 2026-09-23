@@ -230,6 +230,34 @@ when defined(linux):
           check not fileExists(labelRecordPath("incus", "garm-p1a"))
           check fileExists(labelRecordPath("incus", "garm-p2a"))
 
+    test "a hyperv per-job disk record survives until a VERIFIED teardown":
+      # `ephemeral-destroy --backend hyperv` gets only the name; the recorded
+      # clone path is how a retry after a failed disk delete (VM already gone)
+      # still finds the disk. So a teardown that did not verifiably succeed
+      # must keep the record.
+      let work = createTempDir("vmh-eph-disks", "")
+      defer: removeDir(work)
+      let n = "repro-eph-hyperv-j1"
+      let disk = "D:\\golden\\" & n & ".vhdx"
+      withEnv("VMH_EPHEMERAL_LABEL_DIR", work / "labels"):
+        check loadDiskRecord("hyperv", n) == ""
+        saveDiskRecord("hyperv", n, disk)
+        check loadDiskRecord("hyperv", n) == disk
+        check loadDiskRecord("hyperv", "repro-eph-hyperv-other") == ""
+        when not defined(windows):
+          # This host cannot run the Hyper-V teardown, so the verb fails ...
+          var failed = false
+          try:
+            failed = runCli(@["ephemeral-destroy", "--backend", "hyperv",
+                              "--baseline", n]) != 0
+          except CatchableError:
+            failed = true
+          check failed
+          # ... and the record is still there for the retry.
+          check loadDiskRecord("hyperv", n) == disk
+        forgetDiskRecord("hyperv", n)
+        check loadDiskRecord("hyperv", n) == ""
+
     test "labels are validated as a usage error":
       check runCli(@["ephemeral-label", "--backend", "incus", "--baseline",
                      "x", "--label", "novalue"]) == 2

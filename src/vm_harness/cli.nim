@@ -1592,11 +1592,17 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
            {"backend": $biHyperv, "name": opts.baseline,
             "golden": golden})
   let timeoutSec = if opts.timeoutSec > 0: opts.timeoutSec else: 300
+  # Record where the per-job disk will live BEFORE it exists: a later
+  # `ephemeral-destroy` gets only the name, and must still find (and verify
+  # the removal of) the disk when the VM is already gone.
+  saveDiskRecord(opts.backend, opts.baseline, ephemeralClonePathFor(spec))
   let code = runEphemeralHyperVJob(hb, spec,
     probeArgv = opts.cmd,
     timeoutSec = timeoutSec,
     keep = opts.keepEphemeral)
   if not opts.keepEphemeral:
+    # Torn down in-process (no later `ephemeral-destroy` will ask for it).
+    forgetDiskRecord(opts.backend, opts.baseline)
     logEvent(opts.logFormat, "info", "ephemeral hyperv: destroyed",
              {"name": opts.baseline, "exit": $code})
   code
@@ -2013,7 +2019,9 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
     # being installed on the Windows host — reported by the old provider as
     # idempotent success, i.e. every kept Hyper-V VM leaked. Raises unless the
     # VM and its per-job disk are provably gone; absence is success.
-    HyperVBackend(newBackend(biHyperv)).destroyEphemeralVmVerified(opts.baseline)
+    HyperVBackend(newBackend(biHyperv)).destroyEphemeralVmVerified(
+      opts.baseline, loadDiskRecord(opts.backend, opts.baseline))
+    forgetDiskRecord(opts.backend, opts.baseline)
     forgetLabels(opts.backend, opts.baseline)
     logEvent(opts.logFormat, "info", "ephemeral hyperv: destroyed",
              {"name": opts.baseline})
@@ -2072,10 +2080,10 @@ proc ephemeralInventoryFor*(backend: string): InventoryResult =
   ## Routed exactly like ``run --ephemeral`` / ``ephemeral-destroy`` so the
   ## three verbs agree on what "an ephemeral instance of this backend" is.
   ##
-  ## A backend with no enumerator is a FAILURE, not an empty answer: hyperv
-  ## (whose kept clones have no record to enumerate yet) must make the remote
-  ## provider's ListInstances fail — which GARM treats as "try again later" —
-  ## rather than succeed with nothing, which GARM treats as "all gone".
+  ## A backend that cannot answer is a FAILURE, not an empty answer: an
+  ## unsupported backend, or a hyperv host where `Get-VM` fails, must make the
+  ## remote provider's ListInstances fail — which GARM treats as "try again
+  ## later" — rather than succeed with nothing, which GARM treats as "all gone".
   if backend == "noop":
     # The sanctioned test backend keeps nothing between invocations.
     return inventorySuccess(@[])
