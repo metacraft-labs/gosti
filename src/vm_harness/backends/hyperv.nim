@@ -1442,6 +1442,94 @@ method stopAndCleanup*(b: HyperVBackend, vm: VmHandle, deleteVm: bool = true) =
   else:
     discard
 
+type
+  GuestMetadataTarget* = object
+    ## The controller metadata endpoint a rendered runner bootstrap points at.
+    host*: string                ## as written in the bootstrap (IP or name)
+    port*: int
+
+proc findGuestMetadataTarget*(userData: string): (bool, GuestMetadataTarget) =
+  ## Locate the `http://<host>:<port>` base of the GARM metadata URL in a
+  ## rendered bootstrap (the `.../api/v1/metadata` it fetches its install script
+  ## from). Pure, so the rewrite is unit-testable without a Hyper-V host.
+  let idx = userData.find("/api/v1/metadata")
+  if idx < 0: return (false, GuestMetadataTarget())
+  let start = userData.rfind("http://", last = idx)
+  if start < 0: return (false, GuestMetadataTarget())
+  let hostPort = userData[start + "http://".len ..< idx]
+  if hostPort.len == 0 or hostPort.contains({'/', ' ', '"', '\''}):
+    return (false, GuestMetadataTarget())
+  let colon = hostPort.rfind(':')
+  if colon < 0:
+    return (true, GuestMetadataTarget(host: hostPort, port: 80))
+  try:
+    (true, GuestMetadataTarget(host: hostPort[0 ..< colon],
+                               port: parseInt(hostPort[colon + 1 .. ^1])))
+  except ValueError:
+    (false, GuestMetadataTarget())
+
+proc rewriteGuestMetadataHost*(userData: string, target: GuestMetadataTarget,
+                               proxyHost: string): string =
+  ## Point every `http://<target>` in the bootstrap (metadata AND callback URLs
+  ## share the controller's API base) at `http://<proxyHost>:<port>`.
+  userData.replace("http://" & target.host & ":" & $target.port,
+                   "http://" & proxyHost & ":" & $target.port)
+
+proc ensureGuestMetadataProxy(b: HyperVBackend, switchName: string,
+                              target: GuestMetadataTarget): string =
+  ## Make the controller's runner metadata/callback API reachable from a guest
+  ## on a Hyper-V NAT switch, and return the address the guest should use.
+  ##
+  ## WHY: the bootstrap fetches its install script from, and reports status to,
+  ## the controller (GARM) API — on the central-controller topology that is an
+  ## overlay address (NetBird) which the HOST can reach but a NAT'd guest cannot
+  ## (no route to the overlay). Guests on the controller's own host use
+  ## localhost, which is why only remote Hyper-V pools hit this.
+  ##
+  ## HOW: a host-side `netsh portproxy` (a userspace TCP relay — it terminates
+  ## TCP on each side, so the WireGuard MTU never leaks to the guest) listens on
+  ## the host's address on the guest's switch and relays to the controller;
+  ## plus an inbound firewall allow for that one port, scoped to the switch's
+  ## local subnet. The switch address is discovered per launch because the
+  ## Default Switch renumbers across host reboots, which is why this cannot be a
+  ## static `guest_metadata_url`. Idempotent; concurrent launches share it.
+  ## Disable with VMH_HYPERV_METADATA_PROXY=0.
+  when defined(windows):
+    let q = proc (s: string): string = s.replace("'", "''")
+    let ps =
+      "$ErrorActionPreference='Stop'; " &
+      "$sw='" & q(switchName) & "'; $h='" & q(target.host) & "'; $p=" & $target.port & "; " &
+      "$ip=(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias \"vEthernet ($sw)\" " &
+        "-ErrorAction Stop | Select-Object -First 1).IPAddress; " &
+      "if (-not $ip) { throw \"no IPv4 on vEthernet ($sw)\" }; " &
+      "if ((Get-Service iphlpsvc).Status -ne 'Running') { Start-Service iphlpsvc }; " &
+      "$have = (netsh interface portproxy show v4tov4) -join \"`n\"; " &
+      "$want = [regex]::Escape($ip) + '\\s+' + $p + '\\s+' + [regex]::Escape($h) + '\\s+' + $p; " &
+      "if ($have -notmatch $want) { " &
+        "netsh interface portproxy add v4tov4 listenaddress=$ip listenport=$p " &
+          "connectaddress=$h connectport=$p | Out-Null; " &
+        "if ($LASTEXITCODE -ne 0) { throw \"netsh portproxy add failed ($LASTEXITCODE)\" } }; " &
+      "$rn = 'vmh-guest-metadata-proxy-' + $p; " &
+      "$r = Get-NetFirewallRule -DisplayName $rn -ErrorAction SilentlyContinue; " &
+      "$ok = $false; if ($r) { $ok = @($r | Get-NetFirewallAddressFilter | Where-Object { $_.LocalAddress -eq $ip }).Count -gt 0 }; " &
+      "if (-not $ok) { if ($r) { $r | Remove-NetFirewallRule }; " &
+        "New-NetFirewallRule -DisplayName $rn -Direction Inbound -Action Allow -Protocol TCP " &
+          "-LocalAddress $ip -LocalPort $p -RemoteAddress LocalSubnet | Out-Null }; " &
+      "Write-Output ('VMH_PROXY_IP=' + $ip)"
+    let r = runProcessCapture(@[$b.powershellLauncher, "-NoLogo", "-NoProfile",
+                                "-ExecutionPolicy", "Bypass", "-Command", ps],
+                              timeoutSec = 60)
+    for line in r.stdout.splitLines():
+      let t = line.strip()
+      if t.startsWith("VMH_PROXY_IP="):
+        return t["VMH_PROXY_IP=".len .. ^1]
+    raise newException(IOError,
+      "ensureGuestMetadataProxy: could not set up the guest metadata proxy (exit " &
+      $r.exitCode & "): " & r.stdout & r.stderr)
+  else:
+    raise newException(BackendUnavailableError,
+      "ensureGuestMetadataProxy requires a Windows host")
+
 proc launchGuestRunnerBootstrap(b: HyperVBackend, vm: VmHandle, userData: string) =
   ## Inject the GARM-rendered runner bootstrap into the guest and start it
   ## DETACHED — a one-shot SYSTEM Scheduled Task — so the JIT runner registers
@@ -1503,7 +1591,16 @@ proc runEphemeralHyperVJob*(b: HyperVBackend, spec: HyperVEphemeralCloneSpec,
       if spec.userData.len > 0 and b.credentialCachePath.len > 0:
         try:
           b.startAndAwaitReady(vm, timeoutSec)
-          b.launchGuestRunnerBootstrap(vm, spec.userData)
+          # A guest on a NAT switch cannot reach the controller's metadata
+          # API directly; relay it through the host and point the bootstrap
+          # there. No switch ⇒ isolated guest ⇒ nothing to relay.
+          var bootstrap = spec.userData
+          let (found, target) = findGuestMetadataTarget(bootstrap)
+          if found and spec.switchName.len > 0 and
+             getEnv("VMH_HYPERV_METADATA_PROXY") != "0":
+            let proxyIp = b.ensureGuestMetadataProxy(spec.switchName, target)
+            bootstrap = rewriteGuestMetadataHost(bootstrap, target, proxyIp)
+          b.launchGuestRunnerBootstrap(vm, bootstrap)
         except CatchableError:
           b.stopAndCleanup(vm, deleteVm = true)
           raise

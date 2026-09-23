@@ -134,3 +134,32 @@ suite "buildEphemeralCloneCommand: JIT bootstrap + networking seams":
     let ps = render(win11Spec())
     check "Add-VMDvdDrive -VMName $vmName -Path $configDrive" in ps
     check "configDriveIso not found" in ps
+
+suite "guest metadata proxy: locate + rewrite the controller URL in a bootstrap":
+  const boot = "#ps1_sysnative\n" &
+    "$MetadataUrl = \"http://100.83.180.254:9997/api/v1/metadata\"\n" &
+    "$CallbackUrl = \"http://100.83.180.254:9997/api/v1/callbacks\"\n" &
+    "wget -Uri \"$MetadataUrl/install-script/\"\n"
+
+  test "finds the controller host and port from the metadata URL":
+    let (found, t) = findGuestMetadataTarget(boot)
+    check found
+    check t.host == "100.83.180.254"
+    check t.port == 9997
+
+  test "rewrites BOTH the metadata and the callback URL to the proxy":
+    let (_, t) = findGuestMetadataTarget(boot)
+    let r = rewriteGuestMetadataHost(boot, t, "172.17.208.1")
+    check "http://172.17.208.1:9997/api/v1/metadata" in r
+    check "http://172.17.208.1:9997/api/v1/callbacks" in r
+    check "100.83.180.254" notin r
+
+  test "a bootstrap with no metadata URL is left alone":
+    let (found, _) = findGuestMetadataTarget("echo hello")
+    check not found
+
+  test "a portless metadata URL defaults to port 80":
+    let (found, t) = findGuestMetadataTarget("x=\"http://garm.example/api/v1/metadata\"")
+    check found
+    check t.host == "garm.example"
+    check t.port == 80
