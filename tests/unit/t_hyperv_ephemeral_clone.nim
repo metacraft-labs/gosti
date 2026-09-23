@@ -13,8 +13,14 @@
 ## overlay or ReFS block-clone copy), a fresh Gen-2 VM around it, and safety
 ## guards that make teardown unable to touch a long-lived VM or the golden.
 
-import std/[strutils, unittest]
+import std/[os, strutils, unittest]
 import vm_harness
+
+# The namespace guards read VMH_HYPERV_EPH_PREFIX at call time, and these
+# assertions pin the DEFAULT prefix. A host that sets it machine-wide (the
+# serve box win-ci-bare-001 sets it to `garm-`) would otherwise fail three
+# cases that are correct. Run against the default, whatever the host says.
+delEnv("VMH_HYPERV_EPH_PREFIX")
 
 proc win11Spec(): HyperVEphemeralCloneSpec =
   ## A spec shaped like a per-job clone of the Windows 11 Hyper-V golden.
