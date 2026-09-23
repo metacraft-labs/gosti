@@ -267,21 +267,11 @@ if (-not $done) {
     exit 1
 }
 
-# Shut the guest down ourselves, since it will not do it. Stop-VM is a
-# graceful ACPI shutdown; -TurnOff would be a power cut and risks an unclean
-# image, which is the one thing a golden must not be.
-Log "shutting the guest down cleanly"
-Stop-VM -Name $VmName -Force
-$offDeadline = (Get-Date).AddMinutes(10)
-while ((Get-VM -Name $VmName).State -ne 'Off' -and (Get-Date) -lt $offDeadline) {
-    Start-Sleep -Seconds 10
-}
-if ((Get-VM -Name $VmName).State -ne 'Off') {
-    Log "guest did not stop within 10 min; forcing it off"
-    Stop-VM -Name $VmName -TurnOff -Force
-}
-
 # --- harden the image before capture ----------------------------------------
+#
+# This runs in the LIVE guest over PowerShell Direct, so it must come before
+# the shutdown below. (It used to come after it, and every build then died on
+# "The virtual machine ... is not in running state.")
 #
 # Two properties that are part of the ALGORITHM, not setup taste. Both were
 # learned by shipping a golden without them.
@@ -335,6 +325,20 @@ if (Test-Path -LiteralPath $pwshProvisioner) {
 } else {
     Log "WARNING: ../lib/provision-pwsh.ps1 not found; image will ship WITHOUT pwsh"
     Log "         and any workflow using 'shell: pwsh' will fail on it."
+}
+
+# Shut the guest down ourselves, since it will not do it. Stop-VM is a
+# graceful ACPI shutdown; -TurnOff would be a power cut and risks an unclean
+# image, which is the one thing a golden must not be.
+Log "shutting the guest down cleanly"
+Stop-VM -Name $VmName -Force
+$offDeadline = (Get-Date).AddMinutes(10)
+while ((Get-VM -Name $VmName).State -ne 'Off' -and (Get-Date) -lt $offDeadline) {
+    Start-Sleep -Seconds 10
+}
+if ((Get-VM -Name $VmName).State -ne 'Off') {
+    Log "guest did not stop within 10 min; forcing it off"
+    Stop-VM -Name $VmName -TurnOff -Force
 }
 
 # --- capture ---------------------------------------------------------------
