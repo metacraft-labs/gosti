@@ -505,8 +505,17 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
     except CatchableError:
       discard
     try: p.inputStream.close() except CatchableError: discard
-    try: p.outputStream.close() except CatchableError: discard
-    try: p.errorStream.close() except CatchableError: discard
+    # POSIX ONLY. On Windows `osproc.close` itself closes the stdout/stderr
+    # handles and ASSERTS the caller did not ("You may NOT close outputStream
+    # and errorStream"); with poStdErrToStdOut both streams also wrap the SAME
+    # handle. Closing them here raised an AssertionDefect — a Defect, so the
+    # `except CatchableError` guards did not catch it — and the daemon died
+    # after serving each exec (observed on win-ci-bare-001: crash-looping on
+    # GARM's ephemeral-destroy teardowns). The Windows close path does not leak
+    # the pipes this guards against, so there is nothing to compensate for.
+    when not defined(windows):
+      try: p.outputStream.close() except CatchableError: discard
+      try: p.errorStream.close() except CatchableError: discard
     try: p.close() except CatchableError: discard
     # Delete the user-data seed as soon as the worker exits: the backend has
     # already read it (incus copies it into ``cloud-init.user-data``), so the
