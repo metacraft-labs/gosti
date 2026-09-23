@@ -1971,6 +1971,17 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
     raise newException(ValueError,
       "ephemeral-destroy: --baseline is required")
 
+  # The sanctioned test backend keeps nothing, so there is nothing to destroy.
+  # It used to fall through to the libvirt branch below and fail on a host
+  # without `virsh` — invisible while the GARM provider treated every non-zero
+  # teardown exit as success, and a hard failure now that it (correctly) does
+  # not. Mirrors `ephemeral-list --backend noop`, which lists nothing.
+  if opts.backend == "noop":
+    forgetLabels(opts.backend, opts.baseline)
+    logEvent(opts.logFormat, "info", "ephemeral noop: nothing to destroy",
+             {"baseline": opts.baseline})
+    return 0
+
   # The vm-harness-run backends cannot have their handle RECONSTRUCTED from
   # `--baseline` the way libvirt's and incus's can — `revertToBaseline` mints
   # its own per-job name and `stopAndCleanup` needs pids and a vmDir that only

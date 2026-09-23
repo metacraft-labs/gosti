@@ -192,6 +192,12 @@ when defined(linux):
       check not ephemeralInventoryFor("hyperv").ok
       check ephemeralInventoryFor("noop").ok
 
+    test "noop teardown is a success without touching any hypervisor tool":
+      # It used to fall into the libvirt branch and exit 1 without `virsh`.
+      withEnv("PATH", "/nonexistent"):
+        check runCli(@["ephemeral-destroy", "--backend", "noop",
+                       "--baseline", "garm-noop"]) == 0
+
   suite "attribution labels":
     test "a pool sees only its own instances; stale and unlabelled never match":
       let work = createTempDir("vmh-eph-labels", "")
