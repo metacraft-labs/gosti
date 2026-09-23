@@ -2,7 +2,7 @@
 ## capability deciders against FIXTURE inputs, and the enrollment/identity
 ## sign+verify state machine.
 ##
-## Mock policy (design doc §9.1 / workspace CLAUDE.md — mocks must be justified
+## Mock policy (design doc §9.1 / workspace AGENTS.md — mocks must be justified
 ## in the test header): the ONLY mocks here are FIXTURE STRINGS standing in for
 ## the host-gathered inputs the capability deciders consume — a mock
 ## ``/proc/cpuinfo``, a mock ``/proc/meminfo``, mock ``lspci`` output, mock

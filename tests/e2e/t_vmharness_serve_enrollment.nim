@@ -12,7 +12,7 @@
 ##   (f) the manifest's capability detection (arch-level / gpu / nested-virt /
 ##       rr-hw-counters / …) is asserted against KNOWN FIXTURES.
 ##
-## Mock policy (design doc §9.1 / workspace CLAUDE.md): the ONLY mocks are the
+## Mock policy (design doc §9.1 / workspace AGENTS.md): the ONLY mocks are the
 ## sanctioned ``noop`` backend (so the daemon is hermetic — no real hypervisor)
 ## and, for (f), FIXTURE STRINGS fed to the pure capability deciders (a mock
 ## ``/proc/cpuinfo`` + mock probe outputs). The daemon, the TCP transport, the
