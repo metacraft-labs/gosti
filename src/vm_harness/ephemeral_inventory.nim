@@ -153,16 +153,34 @@ proc parseInventoryLine*(line: string): InventoryResult =
 const LabelStateDirEnv* = "VMH_EPHEMERAL_LABEL_DIR"
 
 proc labelStateRoot*(): string =
-  ## ``$VMH_EPHEMERAL_LABEL_DIR``, else ``$VMH_EPHEMERAL_STATE_DIR/labels``,
-  ## else systemd's ``$STATE_DIRECTORY/ephemeral-labels`` — the serve unit
-  ## runs under ``ProtectSystem=strict`` where only its StateDirectory is
-  ## writable — else ``<ephemeralStateRoot()>/labels``.
+  ## Where attribution records live. The first CONFIGURED location wins (never
+  ## "the first writable one": ``ephemeral-label`` and ``ephemeral-list`` run
+  ## as separate processes and must agree without probing):
+  ##
+  ##   1. ``$VMH_EPHEMERAL_LABEL_DIR``
+  ##   2. ``$VMH_EPHEMERAL_STATE_DIR/labels``
+  ##   3. systemd's ``$STATE_DIRECTORY/ephemeral-labels`` — the Linux serve
+  ##      unit runs under ``ProtectSystem=strict``, where only its
+  ##      StateDirectory is writable
+  ##   4. the user's state dir: ``%LOCALAPPDATA%`` on Windows,
+  ##      ``$XDG_STATE_HOME`` or ``$HOME/.local/state`` elsewhere (a launchd
+  ##      or Windows-service daemon has no ``$STATE_DIRECTORY``)
+  ##   5. ``<ephemeralStateRoot()>/labels``
   let explicit = getEnv(LabelStateDirEnv)
   if explicit.len > 0: return explicit
   if getEnv(EphemeralStateDirEnv).len > 0:
     return getEnv(EphemeralStateDirEnv) / "labels"
   let sd = getEnv("STATE_DIRECTORY").split(':')[0]
   if sd.len > 0: return sd / "ephemeral-labels"
+  when defined(windows):
+    let local = getEnv("LOCALAPPDATA")
+    if local.len > 0: return local / "vm-harness" / "ephemeral-labels"
+  else:
+    let xdg = getEnv("XDG_STATE_HOME")
+    if xdg.len > 0: return xdg / "vm-harness" / "ephemeral-labels"
+    let home = getEnv("HOME")
+    if home.len > 0 and home != "/homeless-shelter":
+      return home / ".local" / "state" / "vm-harness" / "ephemeral-labels"
   ephemeralStateRoot() / "labels"
 
 proc parseLabel*(arg: string): (string, string) =

@@ -156,10 +156,13 @@ domains). The provider records `garm-pool=<id>` / `garm-controller=<id>` with
 `--label garm-pool=<id>`. The result is the JOIN of the backend's enumeration
 with the label records: a record whose instance is gone is never listed, an
 instance without a record never matches a label filter, and a successful
-`ephemeral-destroy` drops the record. Records live under
-`$VMH_EPHEMERAL_LABEL_DIR`, else `$VMH_EPHEMERAL_STATE_DIR/labels`, else
-systemd's `$STATE_DIRECTORY/ephemeral-labels` (the serve unit's only writable
-state under `ProtectSystem=strict`). It is a separate verb, not a `run` flag,
+`ephemeral-destroy` drops the record. Records live under the first configured
+of `$VMH_EPHEMERAL_LABEL_DIR`, `$VMH_EPHEMERAL_STATE_DIR/labels`, systemd's
+`$STATE_DIRECTORY/ephemeral-labels` (the serve unit's only writable state under
+`ProtectSystem=strict`), the user state dir (`%LOCALAPPDATA%`,
+`$XDG_STATE_HOME` or `~/.local/state`, under `vm-harness/ephemeral-labels`),
+and finally `<ephemeral state root>/labels`. Deployments should set
+`VMH_EPHEMERAL_LABEL_DIR` explicitly. It is a separate verb, not a `run` flag,
 so the provider can call it against a daemon of any age.
 
 | backend | enumerates | `running` | `stopped` |
