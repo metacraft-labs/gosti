@@ -1216,6 +1216,12 @@ if ($useDiff) {{
 
 $mem = [int64]$memMB * 1MB
 New-VM -Name $vmName -Generation $gen -MemoryStartupBytes $mem -VHDPath $clone | Out-Null
+# NO CHECKPOINTS on a per-job clone. Client Hyper-V enables AUTOMATIC
+# checkpoints on every New-VM, so Start-VM silently forks an .avhdx that
+# absorbs every guest write. On win-ci-bare-001 that turned a leak of 17
+# clones into 520 GB of checkpoint disk and a full D:. The clone is already
+# a disposable CoW child of the golden; a checkpoint of it has no use.
+Set-VM -Name $vmName -AutomaticCheckpointsEnabled $false -CheckpointType Disabled
 if ($cpus -gt 0) {{ Set-VMProcessor -VMName $vmName -Count $cpus }}
 if ($gen -eq 2) {{
   try {{ Set-VMFirmware -VMName $vmName -EnableSecureBoot $secureBoot }}

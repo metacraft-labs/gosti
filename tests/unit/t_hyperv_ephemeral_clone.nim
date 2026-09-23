@@ -51,6 +51,15 @@ suite "buildEphemeralCloneCommand: host-lifecycle ops (New-VHD/New-VM/Remove)":
     # New-VM binds the CLONE, never the golden directly.
     check "-VHDPath $golden" notin ps
 
+  test "a per-job clone never checkpoints (no .avhdx absorbing guest writes)":
+    let ps = render(win11Spec())
+    check "-AutomaticCheckpointsEnabled $false" in ps
+    check "-CheckpointType Disabled" in ps
+    # ...set straight after New-VM, while the VM is still Off (this script
+    # never starts it), so no checkpoint can exist before the first boot.
+    check ps.find("New-VM -Name $vmName") < ps.find("-CheckpointType Disabled")
+    check "Start-VM" notin ps
+
   test "clone-path defaults next to the golden and is namespaced by VM name":
     let spec = win11Spec()
     let p = ephemeralClonePathFor(spec)
