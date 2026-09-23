@@ -47,6 +47,7 @@ import std/[options, os, osproc, streams, strtabs,
             strutils, tables, times]
 import ../types
 import ../auto
+import ../ephemeral_inventory
 
 # ---------------------------------------------------------------------------
 # Backend type.
@@ -273,11 +274,102 @@ proc storageVolumeExists*(b: IncusBackend, name: string): bool =
       return true
   false
 
+const
+  DefaultDestroyBudgetSec* = 240
+    ## How long ``destroyContainerVerified`` keeps retrying one teardown.
+    ## Bounded on purpose: the caller (GARM, through the provider) retries a
+    ## FAILED delete with its own backoff, so a long ZFS-busy spell costs a few
+    ## failed attempts rather than one request pinning a serve slot for half an
+    ## hour. What must never happen is the old behaviour — reporting success.
+  IncusDeleteTimeoutSec* = 300
+    ## Per-attempt ``incus delete --force`` budget. The previous 60s was below
+    ## what a ZFS ``destroy -r`` takes on a loaded pool, and the timeout path
+    ## TERMINATED the client mid-delete — after the stop, before the destroy —
+    ## which is precisely how a container is left STOPPED.
+
 proc deleteContainer*(b: IncusBackend, name: string): ExecResult =
   ## ``incus delete --force <name>`` — force-stop + delete in one shot.
   ## Idempotent-ish: incus returns non-zero for a missing container, which
   ## the caller treats as already-clean.
-  b.runIncus(@["delete", "--force", name], timeoutSec = 60)
+  b.runIncus(@["delete", "--force", name], timeoutSec = IncusDeleteTimeoutSec)
+
+proc tryListContainers*(b: IncusBackend): InventoryResult =
+  ## Every instance the incus daemon knows about, with its state — or
+  ## ``ok = false`` when incus could not answer.
+  ##
+  ## Unlike ``listContainerNames`` (empty-on-error, fine for a no-residue
+  ## ASSERTION) this is safe to act on: a daemon that is down, a socket this
+  ## user cannot reach, or a missing ``incus`` binary is "I do not know", and
+  ## is reported as such rather than as an empty host.
+  var r: ExecResult
+  try:
+    r = b.runIncus(@["list", "--format", "csv", "-c", "ns"], timeoutSec = 60)
+  except CatchableError as err:
+    return inventoryFailure("could not run incus: " & err.msg)
+  if r.exitCode != 0:
+    return inventoryFailure("incus list exited " & $r.exitCode & ": " &
+                            r.stdout.strip() & r.stderr.strip())
+  try:
+    inventorySuccess(parseIncusListCsv(r.stdout))
+  except ValueError as err:
+    inventoryFailure(err.msg)
+
+proc containerPresent(b: IncusBackend, name: string): bool =
+  ## Exact-name presence check that RAISES when incus cannot answer. (``incus
+  ## info`` would conflate "absent" with "daemon unreachable", and ``incus list
+  ## <name>`` is a prefix filter.)
+  let inv = b.tryListContainers()
+  if not inv.ok:
+    raise newVmHarnessError($b.id, lpCleanup,
+      "cannot determine whether container " & name & " exists: " & inv.message)
+  for e in inv.entries:
+    if e.name == name: return true
+  false
+
+proc destroyContainerVerified*(b: IncusBackend, name: string;
+                               budgetSec = DefaultDestroyBudgetSec;
+                               sleeper: proc (ms: int) = nil) =
+  ## Delete ``name`` and PROVE it is gone, retrying transient failures with
+  ## backoff. Absence (before or after) is success; anything else that
+  ## outlives ``budgetSec`` RAISES, so ``ephemeral-destroy`` exits non-zero and
+  ## the caller keeps the instance on its retry list instead of forgetting a
+  ## container that still exists.
+  ##
+  ## ``sleeper`` is injectable so the unit gate can run the backoff schedule
+  ## without waiting it out.
+  let injected = sleeper != nil
+  let doSleep = if injected: sleeper else: (proc (ms: int) = sleep(ms))
+  let started = epochTime()
+  var sleptMs = 0
+  # Time spent = wall clock, plus the backoff an injected sleeper did not
+  # really wait (so a test's schedule consumes the budget like production's).
+  proc spentSec(): float =
+    epochTime() - started + (if injected: sleptMs.float / 1000.0 else: 0.0)
+  var delayMs = 2000
+  var attempt = 0
+  var lastOutput = ""
+  while true:
+    if not b.containerPresent(name):
+      return
+    inc attempt
+    let r = b.runIncus(@["delete", "--force", name],
+                       timeoutSec = IncusDeleteTimeoutSec)
+    lastOutput = (r.stdout & r.stderr).strip()
+    if r.exitCode == 0 and not b.containerPresent(name):
+      return
+    let transient = isTransientIncusDeleteError(lastOutput) or r.exitCode == -1
+    stderr.writeLine("[vm-harness] incus delete " & name & " attempt " &
+      $attempt & " failed (exit " & $r.exitCode & ", " &
+      (if transient: "transient" else: "unexpected") & "): " & lastOutput)
+    if spentSec() + (delayMs.float / 1000.0) > budgetSec.float:
+      break
+    doSleep(delayMs)
+    sleptMs += delayMs
+    delayMs = min(delayMs * 2, 30_000)
+  raise newVmHarnessError($b.id, lpCleanup,
+    "incus delete " & name & " did not complete after " & $attempt &
+    " attempt(s) in " & $budgetSec & "s; the container still exists " &
+    "(last output: " & lastOutput & ")")
 
 proc startContainer*(b: IncusBackend, name: string) =
   ## Start an existing container without replacing it. Already-running is a

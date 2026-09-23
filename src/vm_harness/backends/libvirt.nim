@@ -85,6 +85,7 @@ import ../firmware
 import ../serial
 import ../ssh
 import ../cloud_init_seed
+import ../ephemeral_inventory
 when defined(posix):
   import ../process_capture
 export ssh
@@ -367,6 +368,25 @@ proc tryListAllDomainNames*(b: LibvirtBackend):
     let s = line.strip()
     if s.len > 0: names.add(s)
   (true, names, "")
+
+proc tryListDomains*(b: LibvirtBackend): InventoryResult =
+  ## Every defined domain with a GARM-shaped state, or ``ok = false`` when
+  ## libvirt could not answer. This is what ``ephemeral-list`` serves to the
+  ## remote GARM provider, which FORGETS instances that are absent from it —
+  ## so, exactly as for ``tryListAllDomainNames``, a failure to enumerate must
+  ## never read as "no domains".
+  let all = b.tryListAllDomainNames()
+  if not all.ok:
+    return inventoryFailure(all.message)
+  var r: ExecResult
+  try:
+    r = b.runVirsh(@["list", "--name"], timeoutSec = 30)
+  except CatchableError as err:
+    return inventoryFailure("could not run " & b.virshCmd & ": " & err.msg)
+  if r.exitCode != 0:
+    return inventoryFailure(b.virshCmd & " list --name exited " &
+                            $r.exitCode & ": " & r.stdout.strip())
+  inventorySuccess(libvirtEntries(all.names, splitNames(r.stdout)))
 
 proc listAllDomainNames*(b: LibvirtBackend): seq[string] =
   ## ``virsh list --all --name`` — every defined domain (running or

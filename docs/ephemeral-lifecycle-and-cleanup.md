@@ -119,6 +119,73 @@ their own Delete could fire, so leaks do not accumulate across the fleet
 without a separate daemon. Because prune is lock-guarded, running it while
 other instances are live is safe.
 
+### 5.1 Remote driving: `ephemeral-list` and the verified teardown
+
+When GARM drives a host through `vm-harness serve` (the provider's `remote`
+backend), the provider holds no state, so the host must be able to answer
+"which per-job instances exist". That is `ephemeral-list`:
+
+```
+vm-harness ephemeral-list  --backend <libvirt|incus|tart-*|qemu-windows-arm|utm-windows-arm|noop>
+                           [--name <instance>] [--ephemeral-prefix <p>] [--label k=v]...
+vm-harness ephemeral-label --backend <b> --baseline <instance> --label k=v [--label k=v]...
+```
+
+It prints exactly one line —
+`{"vmhEphemeralList":1,"backend":"…","instances":[{"name":"…","state":"…"}]}` —
+where `state` is GARM's vocabulary (`running` / `stopped` / `error` /
+`unknown`). The marker key exists because a serve worker's stdout and stderr
+are merged into one log stream.
+
+**Contract (fail closed).** The line is printed, and the exit status is 0,
+only after the backend was actually enumerated. If libvirt/incus cannot answer
+(daemon down, socket unreachable, binary missing) or the backend has no
+enumerator, the verb exits non-zero and prints no list. GARM
+treats an instance missing from `ListInstances` as "already gone" and deletes
+its record *without* calling DeleteInstance, so an empty answer produced by a
+failure leaks every instance on the host — which is exactly what happened
+before this verb existed (the provider answered every `ListInstances` with an
+empty list; ~210 Windows domains leaked on high-mem-server in a day).
+
+**Attribution (labels).** GARM's scale-set worker deletes every instance a
+`ListInstances` returns that it has no record of, so a pool must be given only
+*its* instances — a host-wide list would let one pool destroy another's runners
+(high-mem-server's libvirt carries three GARM pools and durable non-GARM
+domains). The provider records `garm-pool=<id>` / `garm-controller=<id>` with
+`ephemeral-label` right after a successful create and lists with
+`--label garm-pool=<id>`. The result is the JOIN of the backend's enumeration
+with the label records: a record whose instance is gone is never listed, an
+instance without a record never matches a label filter, and a successful
+`ephemeral-destroy` drops the record. Records live under the first configured
+of `$VMH_EPHEMERAL_LABEL_DIR`, `$VMH_EPHEMERAL_STATE_DIR/labels`, systemd's
+`$STATE_DIRECTORY/ephemeral-labels` (the serve unit's only writable state under
+`ProtectSystem=strict`), the user state dir (`%LOCALAPPDATA%`,
+`$XDG_STATE_HOME` or `~/.local/state`, under `vm-harness/ephemeral-labels`),
+and finally `<ephemeral state root>/labels`. Deployments should set
+`VMH_EPHEMERAL_LABEL_DIR` explicitly. It is a separate verb, not a `run` flag,
+so the provider can call it against a daemon of any age.
+
+| backend | enumerates | `running` | `stopped` |
+|---|---|---|---|
+| libvirt | `virsh list --all --name` ∪ `virsh list --name` | active domain | defined, inactive |
+| incus | `incus list --format csv -c ns` | RUNNING, FROZEN | STOPPED |
+| hyperv | `Get-VM` in the ephemeral name namespace | any state but Off | Off |
+| tart-*, qemu/utm-windows-arm | kept-instance records (`ephemeral_handle`) | record present | — |
+
+**Verified Hyper-V teardown.** `ephemeral-destroy --backend hyperv` used to
+fall through to the libvirt branch and fail on the missing `virsh`, which the
+provider reported as success — every kept Hyper-V VM leaked. It now removes
+the VM and its per-job `<name>.vhdx` (found from the VM, never the golden) and
+throws unless both are gone; an absent VM is success.
+
+**Verified incus teardown.** `ephemeral-destroy --backend incus` no longer
+uses the never-raising `stopAndCleanup`. It deletes, then re-lists to prove the
+container is gone; a failure (notably ZFS `dataset is busy`, which clears on
+its own under load) is retried with exponential backoff (2s → 30s cap) within
+a budget (`--timeout-sec`, default 240s), after which the verb exits non-zero
+so the caller keeps the instance on its retry list. An absent container is
+success; an incus that cannot be asked is a failure, not "already gone".
+
 ## 6. Follow-ups
 
 - The transient SSH-password and socket files still live in the global system

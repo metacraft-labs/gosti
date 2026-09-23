@@ -70,9 +70,18 @@ suite "CLI Incus lifecycle":
       defer: removeDir(work)
       let logPath = work / "incus.log"
       let fakeIncus = work / "incus"
+      # Stateful: ephemeral-destroy now re-lists to PROVE the container is
+      # gone (see t_ephemeral_inventory), so the fake must model existence.
+      let rowsPath = work / "rows"
+      writeFile(rowsPath, "reproos-only-this,RUNNING\nreproos-other,RUNNING\n")
       writeFile(fakeIncus,
         "#!/bin/sh\n" &
-        "printf '%s\\n' \"$*\" >> '" & logPath & "'\n")
+        "printf '%s\\n' \"$*\" >> '" & logPath & "'\n" &
+        "case \"$1\" in\n" &
+        "  list) cat '" & rowsPath & "' ;;\n" &
+        "  delete) grep -v \"^$3,\" '" & rowsPath & "' > '" & rowsPath &
+          ".t'; mv '" & rowsPath & ".t' '" & rowsPath & "' ;;\n" &
+        "esac\n")
       setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
 
       let previous = getEnv("VMH_INCUS_CMD")
@@ -84,8 +93,11 @@ suite "CLI Incus lifecycle":
         "--backend", "incus",
         "--baseline", "reproos-only-this",
       ]) == 0
-      check readFile(logPath).strip() ==
-        "delete --force reproos-only-this"
+      var deletes: seq[string]
+      for l in readFile(logPath).splitLines():
+        if l.startsWith("delete"): deletes.add(l)
+      check deletes == @["delete --force reproos-only-this"]
+      check readFile(rowsPath) == "reproos-other,RUNNING\n"
     else:
       skip()
 

@@ -44,7 +44,7 @@ proc ephemeralStateRoot*(): string =
   let configured = getEnv(EphemeralStateDirEnv)
   if configured.len > 0: configured else: DefaultEphemeralStateDir
 
-proc sanitizeKey(s: string): string =
+proc sanitizeKey*(s: string): string =
   ## `--baseline` is a GARM instance name (`garm-xxxxxxxxxxxx`), but nothing
   ## enforces that, and this value becomes a FILENAME. Keep it to a safe set
   ## rather than trusting the caller: a `--baseline` of `../../etc/x` must not
@@ -173,3 +173,34 @@ proc forgetEphemeralHandle*(backendId, baseline: string) =
     if fileExists(path): removeFile(path)
   except CatchableError:
     discard
+
+proc listEphemeralHandles*(backendId: string): seq[string] =
+  ## The ``--baseline`` of every kept instance recorded for ``backendId`` —
+  ## the vm-harness-run half of ``ephemeral-list``. A record exists from a
+  ## successful ``run --ephemeral --keep`` until a successful
+  ## ``ephemeral-destroy``, which is exactly the lifetime GARM must see.
+  ##
+  ## A MISSING directory is a legitimate "none kept yet". An UNREADABLE one
+  ## raises (``walkDir`` on a permission-denied directory would otherwise
+  ## silently yield nothing), because the caller forgets instances that are
+  ## absent from this answer. A record that no longer parses is still listed,
+  ## under its file stem: it is a kept instance nothing can describe, which is
+  ## the last thing that should disappear from view.
+  let dir = ephemeralStateRoot() / sanitizeKey(backendId)
+  if not dirExists(dir):
+    return @[]
+  when defined(posix):
+    if not (fpUserRead in getFilePermissions(dir) or
+            fpGroupRead in getFilePermissions(dir) or
+            fpOthersRead in getFilePermissions(dir)):
+      raise newException(IOError, "ephemeral state dir is not readable: " & dir)
+  for kind, path in walkDir(dir):
+    if kind != pcFile or not path.endsWith(".json"): continue
+    var name = path.extractFilename()
+    name.setLen(name.len - ".json".len)
+    try:
+      let b = parseFile(path){"baseline"}.getStr("")
+      if b.len > 0: name = b
+    except CatchableError:
+      discard
+    result.add(name)
