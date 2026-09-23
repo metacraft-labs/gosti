@@ -37,6 +37,7 @@ import ./backends/incus
 {.pop.}
 import ./prune
 import ./ephemeral_handle
+import ./ephemeral_inventory
 import ./layer_gc
 import ./instances
 import ./crud
@@ -268,6 +269,13 @@ Subcommands:
                           running by `run --ephemeral --keep` (destroy +
                           undefine --nvram + remove overlay/config-drive/
                           nvram — no residue). Requires --baseline.
+                          incus: retries a busy delete and exits non-zero
+                          if the container still exists afterwards.
+  ephemeral-list          List the per-job instances `run --ephemeral --keep`
+                          left on --backend (libvirt/incus/tart/qemu/utm) as
+                          one JSON line; --name selects one, --ephemeral-prefix
+                          narrows. Exits non-zero, printing no list, when the
+                          backend cannot be enumerated.
   instance wait <name>    Wait for an existing Incus container to accept exec.
   instance exec <name> -- <command...>
                           Execute argv in an existing Incus container.
@@ -1981,21 +1989,17 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
 
   if opts.backend.toLowerAscii() == "incus":
     let ib = IncusBackend(newBackend(biIncus))
-    var extra = initTable[string, string]()
-    extra["container"] = opts.baseline
-    extra["ephemeral"] = "true"
-    extra["baseImage"] = opts.baseImage
-    extra["storagePool"] = ib.storagePool
-    let vm = VmHandle(
-      backend: ib,
-      name: opts.baseline,
-      baseline: opts.baseImage,
-      ipAddress: none(string),
-      sshPort: 0,
-      sshUser: ib.execUser,
-      sshAuth: SshAuth(kind: saNone),
-      extra: extra)
-    ib.stopAndCleanup(vm, deleteVm = true)
+    # NOT `stopAndCleanup`: that is the never-raises `finally` teardown, and it
+    # discarded `incus delete`'s result — so a delete that failed (ZFS
+    # `dataset is busy`) or was killed at its 60s timeout after the stop but
+    # before the destroy exited 0 here, and GARM forgot a container that was
+    # still on disk, STOPPED. ~100 of those filled gpu-server-001/002's 200 GiB
+    # pool. The verified teardown retries transient failures and RAISES if the
+    # container outlives its budget, so this exits non-zero and the instance
+    # stays on GARM's delete-retry list. Absence is still success.
+    let budget = if opts.timeoutSec > 0: opts.timeoutSec
+                 else: DefaultDestroyBudgetSec
+    ib.destroyContainerVerified(opts.baseline, budgetSec = budget)
     logEvent(opts.logFormat, "info", "ephemeral container: destroyed",
              {"name": opts.baseline})
     return 0
@@ -2027,6 +2031,58 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
       "ephemeral-destroy could not remove domain " & opts.baseline)
   logEvent(opts.logFormat, "info", "ephemeral clone: destroyed",
            {"name": opts.baseline})
+  0
+
+proc ephemeralInventoryFor*(backend: string): InventoryResult =
+  ## Enumerate the per-job instances ``backend``'s ephemeral path creates.
+  ## Routed exactly like ``run --ephemeral`` / ``ephemeral-destroy`` so the
+  ## three verbs agree on what "an ephemeral instance of this backend" is.
+  ##
+  ## A backend with no enumerator is a FAILURE, not an empty answer: hyperv
+  ## (whose kept clones have no record to enumerate yet) must make the remote
+  ## provider's ListInstances fail — which GARM treats as "try again later" —
+  ## rather than succeed with nothing, which GARM treats as "all gone".
+  if backend == "noop":
+    # The sanctioned test backend keeps nothing between invocations.
+    return inventorySuccess(@[])
+  case ephemeralPathFor(backend)
+  of epIncus:
+    IncusBackend(newBackend(biIncus)).tryListContainers()
+  of epVmRun:
+    let id = parseBackendId(backend)
+    try:
+      var entries: seq[EphemeralEntry]
+      for n in listEphemeralHandles($id):
+        entries.add(EphemeralEntry(name: n, state: "running"))
+      inventorySuccess(entries)
+    except CatchableError as err:
+      inventoryFailure(err.msg)
+  of epHyperV:
+    inventoryFailure("ephemeral-list is not implemented for backend hyperv")
+  of epLibvirt:
+    if backend != $biLibvirt:
+      inventoryFailure("ephemeral-list: unsupported backend '" & backend & "'")
+    else:
+      LibvirtBackend(newBackend(biLibvirt)).tryListDomains()
+
+proc cmdEphemeralList(opts: CliOpts): int =
+  ## ``ephemeral-list --backend <b> [--name <n>] [--ephemeral-prefix <p>]``:
+  ## print ONE result line (see ``ephemeral_inventory``) naming the kept
+  ## per-job instances and their state. Exit 0 only after a successful
+  ## enumeration; exit 1 — with no result line — when the backend could not
+  ## answer. The remote GARM provider depends on that distinction: it turns a
+  ## missing result line into a ListInstances ERROR, never an empty list.
+  if opts.backend.len == 0 or opts.backend == "auto":
+    raise newException(ValueError,
+      "ephemeral-list: --backend is required (auto is not meaningful here)")
+  let inv = ephemeralInventoryFor(opts.backend)
+  if not inv.ok:
+    logEvent(opts.logFormat, "error", "ephemeral-list: enumeration failed",
+             {"backend": opts.backend, "error": inv.message})
+    return 1
+  let entries = filterEntries(inv.entries, name = opts.baseline,
+                              prefix = opts.ephemeralPrefix)
+  echo inventoryLine(opts.backend, entries)
   0
 
 proc cmdRun(opts: CliOpts): int =
@@ -2754,6 +2810,7 @@ proc dispatch*(opts: CliOpts): int =
   of "install":   cmdBoot(opts, installMode = true)
   of "run":       cmdRun(opts)
   of "ephemeral-destroy": cmdEphemeralDestroy(opts)
+  of "ephemeral-list": cmdEphemeralList(opts)
   of "probe":     cmdProbe(opts)
   of "backends":  cmdBackends(opts)
   of "shell":     cmdShell(opts)

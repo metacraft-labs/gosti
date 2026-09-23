@@ -33,6 +33,11 @@ run_nim r --hints:off tests/unit/t_guest_scripts.nim
 run_nim r --hints:off tests/unit/t_cli_probe.nim
 run_nim r --hints:off tests/unit/t_cli_boot.nim
 run_nim r --hints:off tests/unit/t_cli_incus.nim
+# GARM instance-lifecycle gate: `ephemeral-list` makes kept ephemeral
+# instances visible and fails CLOSED (an unenumerable backend is an error,
+# never an empty list), and incus `ephemeral-destroy` retries a transiently
+# busy ZFS delete and exits non-zero while the container still exists.
+run_nim r --hints:off tests/unit/t_ephemeral_inventory.nim
 run_nim r --hints:off tests/unit/t_ssh_serialization.nim
 run_nim r --hints:off tests/unit/t_hyperv_parsers.nim
 run_nim r --hints:off tests/unit/t_hyperv_boot_media.nim
@@ -102,6 +107,9 @@ run_nim r --hints:off tests/e2e/t_vmharness_serve_roundtrip.nim
 # old serial accept loop, passes against the thread-pool loop. Hermetic (the
 # worker is a trivial self-exec sleep/quick role — no backend).
 run_nim r --hints:off tests/e2e/t_vmharness_serve_concurrency.nim
+# A teardown whose client vanishes (GARM SIGKILLs/cancels its provider) must
+# still run to completion on the daemon host. Hermetic (self-exec worker).
+run_nim r --hints:off tests/e2e/t_vmharness_serve_teardown_survives_disconnect.nim
 # Runner-Fleet-M3-ARM-Wave MA12 gate:
 # t_vmharness_serve_survives_a_hung_request — the daemon must survive a HUNG
 # request, not merely a slow one. Three layers: one hung /v1/exec does not

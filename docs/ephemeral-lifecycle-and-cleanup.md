@@ -119,6 +119,47 @@ their own Delete could fire, so leaks do not accumulate across the fleet
 without a separate daemon. Because prune is lock-guarded, running it while
 other instances are live is safe.
 
+### 5.1 Remote driving: `ephemeral-list` and the verified teardown
+
+When GARM drives a host through `vm-harness serve` (the provider's `remote`
+backend), the provider holds no state, so the host must be able to answer
+"which per-job instances exist". That is `ephemeral-list`:
+
+```
+vm-harness ephemeral-list --backend <libvirt|incus|tart-*|qemu-windows-arm|utm-windows-arm|noop>
+                          [--name <instance>] [--ephemeral-prefix <p>]
+```
+
+It prints exactly one line —
+`{"vmhEphemeralList":1,"backend":"…","instances":[{"name":"…","state":"…"}]}` —
+where `state` is GARM's vocabulary (`running` / `stopped` / `error` /
+`unknown`). The marker key exists because a serve worker's stdout and stderr
+are merged into one log stream.
+
+**Contract (fail closed).** The line is printed, and the exit status is 0,
+only after the backend was actually enumerated. If libvirt/incus cannot answer
+(daemon down, socket unreachable, binary missing) or the backend has no
+enumerator (hyperv today), the verb exits non-zero and prints no list. GARM
+treats an instance missing from `ListInstances` as "already gone" and deletes
+its record *without* calling DeleteInstance, so an empty answer produced by a
+failure leaks every instance on the host — which is exactly what happened
+before this verb existed (the provider answered every `ListInstances` with an
+empty list; ~210 Windows domains leaked on high-mem-server in a day).
+
+| backend | enumerates | `running` | `stopped` |
+|---|---|---|---|
+| libvirt | `virsh list --all --name` ∪ `virsh list --name` | active domain | defined, inactive |
+| incus | `incus list --format csv -c ns` | RUNNING, FROZEN | STOPPED |
+| tart-*, qemu/utm-windows-arm | kept-instance records (`ephemeral_handle`) | record present | — |
+
+**Verified incus teardown.** `ephemeral-destroy --backend incus` no longer
+uses the never-raising `stopAndCleanup`. It deletes, then re-lists to prove the
+container is gone; a failure (notably ZFS `dataset is busy`, which clears on
+its own under load) is retried with exponential backoff (2s → 30s cap) within
+a budget (`--timeout-sec`, default 240s), after which the verb exits non-zero
+so the caller keeps the instance on its retry list. An absent container is
+success; an incus that cannot be asked is a failure, not "already gone".
+
 ## 6. Follow-ups
 
 - The transient SSH-password and socket files still live in the global system
