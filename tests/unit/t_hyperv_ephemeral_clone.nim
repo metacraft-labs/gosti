@@ -172,3 +172,40 @@ suite "guest metadata proxy: locate + rewrite the controller URL in a bootstrap"
     check found
     check t.host == "garm.example"
     check t.port == 80
+
+suite "Hyper-V ephemeral teardown + enumeration (remote ephemeral-destroy / ephemeral-list)":
+  # `ephemeral-destroy --backend hyperv` used to fall through to the libvirt
+  # branch and fail on a missing `virsh` (measured in central GARM's log for
+  # win-ci-bare-001); the provider reported that as success and every kept
+  # VM leaked. These pin the replacement's safety and fail-loud properties.
+  let name = EphemeralVmNamePrefix & "job-77"
+  let script = buildEphemeralDestroyCommand(name)
+
+  test "refuses to touch a VM outside the ephemeral namespace":
+    check "SAFETY: refusing to destroy" in script
+    check ("StartsWith('" & EphemeralVmNamePrefix & "')") in script
+
+  test "an absent VM is success (GARM retries deletes)":
+    check "if (-not $vm) { Write-Output \"vmh-destroy: $vmName absent\"; exit 0 }" in script
+
+  test "only the per-job <name>.vhdx is deleted, never the golden":
+    check "[IO.Path]::GetFileName($_) -ieq ($vmName + '.vhdx')" in script
+    check "Remove-Item -LiteralPath $d -Force" in script
+
+  test "teardown is VERIFIED: a surviving VM or disk is an error, not success":
+    check "$ErrorActionPreference = 'Stop'" in script
+    check "throw \"VM $vmName still exists after Remove-VM\"" in script
+    check "throw \"per-job disk $d still exists\"" in script
+    check "SilentlyContinue | Out-Null" notin script   # nothing swallowed
+    check script.find("Stop-VM") < script.find("Remove-VM")
+
+  test "enumeration is namespaced and throws rather than printing nothing":
+    let list = buildEphemeralListCommand()
+    check "$ErrorActionPreference = 'Stop'" in list
+    check ("StartsWith('" & EphemeralVmNamePrefix & "')") in list
+
+  test "Hyper-V states map onto GARM states":
+    check normalizeHyperVState("Off") == "stopped"
+    check normalizeHyperVState("Running") == "running"
+    check normalizeHyperVState("Saved") == "running"
+    check normalizeHyperVState("") == "unknown"

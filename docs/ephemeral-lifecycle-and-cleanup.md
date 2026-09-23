@@ -140,7 +140,7 @@ are merged into one log stream.
 **Contract (fail closed).** The line is printed, and the exit status is 0,
 only after the backend was actually enumerated. If libvirt/incus cannot answer
 (daemon down, socket unreachable, binary missing) or the backend has no
-enumerator (hyperv today), the verb exits non-zero and prints no list. GARM
+enumerator, the verb exits non-zero and prints no list. GARM
 treats an instance missing from `ListInstances` as "already gone" and deletes
 its record *without* calling DeleteInstance, so an empty answer produced by a
 failure leaks every instance on the host — which is exactly what happened
@@ -169,7 +169,14 @@ so the provider can call it against a daemon of any age.
 |---|---|---|---|
 | libvirt | `virsh list --all --name` ∪ `virsh list --name` | active domain | defined, inactive |
 | incus | `incus list --format csv -c ns` | RUNNING, FROZEN | STOPPED |
+| hyperv | `Get-VM` in the ephemeral name namespace | any state but Off | Off |
 | tart-*, qemu/utm-windows-arm | kept-instance records (`ephemeral_handle`) | record present | — |
+
+**Verified Hyper-V teardown.** `ephemeral-destroy --backend hyperv` used to
+fall through to the libvirt branch and fail on the missing `virsh`, which the
+provider reported as success — every kept Hyper-V VM leaked. It now removes
+the VM and its per-job `<name>.vhdx` (found from the VM, never the golden) and
+throws unless both are gone; an absent VM is success.
 
 **Verified incus teardown.** `ephemeral-destroy --backend incus` no longer
 uses the never-raising `stopAndCleanup`. It deletes, then re-lists to prove the

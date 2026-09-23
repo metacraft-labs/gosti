@@ -188,8 +188,8 @@ when defined(linux):
         check inv.entries == @[EphemeralEntry(name: "garm-t1", state: "running")]
         check ephemeralInventoryFor("qemu-windows-arm").entries.len == 0
 
-    test "a backend with no enumerator fails rather than answering empty":
-      check not ephemeralInventoryFor("hyperv").ok
+    test "a backend that cannot be enumerated here fails rather than answering empty":
+      check not ephemeralInventoryFor("hyperv").ok   # no Hyper-V on this host
       check ephemeralInventoryFor("noop").ok
 
     test "noop teardown is a success without touching any hypervisor tool":

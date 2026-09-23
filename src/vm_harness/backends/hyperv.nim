@@ -1305,6 +1305,89 @@ proc destroyEphemeralClone(b: HyperVBackend, vm: VmHandle) =
   else:
     discard
 
+proc buildEphemeralDestroyCommand*(name: string): string =
+  ## PowerShell that removes the kept per-job VM ``name`` and its per-job disk,
+  ## and PROVES both are gone. Pure (unit-testable off-Windows).
+  ##
+  ## Why it exists: ``ephemeral-destroy --backend hyperv`` used to fall through
+  ## to the libvirt branch and fail on ``virsh`` not being installed — MEASURED
+  ## in central GARM's log for win-ci-bare-001 — and the provider treated that
+  ## failure as idempotent success, so every per-job Hyper-V VM was leaked.
+  ## ``destroyEphemeralClone`` (the in-process path) cannot be reused: it
+  ## swallows every error, and a remote teardown must fail loudly.
+  ##
+  ## The per-job disk is found from the VM itself rather than recomputed from a
+  ## golden path the delete request does not carry. Only a disk named exactly
+  ## ``<name>.vhdx`` (``ephemeralClonePathFor``'s naming) is deleted, so the
+  ## golden a differencing disk points at can never be removed. An absent VM
+  ## is success: GARM retries deletes.
+  let prefix = ephemeralVmNamePrefix()
+  &"""$ErrorActionPreference = 'Stop'
+Import-Module Hyper-V -ErrorAction Stop
+$vmName = '{psQuote(name)}'
+if (-not $vmName.StartsWith('{psQuote(prefix)}')) {{
+  throw "SAFETY: refusing to destroy $vmName (not in the ephemeral namespace '{psQuote(prefix)}')"
+}}
+$vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
+if (-not $vm) {{ Write-Output "vmh-destroy: $vmName absent"; exit 0 }}
+$disks = @(Get-VMHardDiskDrive -VMName $vmName | ForEach-Object {{ $_.Path }} |
+  Where-Object {{ [IO.Path]::GetFileName($_) -ieq ($vmName + '.vhdx') }})
+if ($vm.State -ne 'Off') {{ Stop-VM -Name $vmName -TurnOff -Force }}
+Remove-VM -Name $vmName -Force
+foreach ($d in $disks) {{ if (Test-Path -LiteralPath $d) {{ Remove-Item -LiteralPath $d -Force }} }}
+if (Get-VM -Name $vmName -ErrorAction SilentlyContinue) {{ throw "VM $vmName still exists after Remove-VM" }}
+foreach ($d in $disks) {{ if (Test-Path -LiteralPath $d) {{ throw "per-job disk $d still exists" }} }}
+Write-Output "vmh-destroy: $vmName removed"
+"""
+
+proc buildEphemeralListCommand*(): string =
+  ## PowerShell printing ``<name>,<State>`` for every VM in the ephemeral
+  ## namespace (the kept per-job VMs). Pure. A failure throws (non-zero exit),
+  ## which ``ephemeral-list`` reports as "cannot enumerate", never as empty.
+  let prefix = ephemeralVmNamePrefix()
+  &"""$ErrorActionPreference = 'Stop'
+Import-Module Hyper-V -ErrorAction Stop
+Get-VM | Where-Object {{ $_.Name.StartsWith('{psQuote(prefix)}') }} |
+  ForEach-Object {{ Write-Output ($_.Name + ',' + $_.State) }}
+"""
+
+proc normalizeHyperVState*(raw: string): string =
+  ## Hyper-V ``VMState`` → GARM state. Only ``Off`` means the guest is not
+  ## running; Saved/Paused/Starting/… still hold the runner.
+  let s = raw.strip()
+  if s.len == 0: "unknown"
+  elif s.cmpIgnoreCase("Off") == 0: "stopped"
+  else: "running"
+
+proc runPowerShellChecked(b: HyperVBackend, script: string,
+                          timeoutSec: int): string =
+  when defined(windows):
+    let cmd = @[$b.powershellLauncher, "-NoLogo", "-NoProfile",
+                "-ExecutionPolicy", "Bypass", "-Command", script]
+    let r = runProcessCapture(cmd, timeoutSec = timeoutSec)
+    if r.exitCode != 0:
+      raise newVmHarnessError($b.id, lpCleanup,
+        "PowerShell exited " & $r.exitCode & ": " & (r.stdout & r.stderr).strip())
+    r.stdout
+  else:
+    raise newException(BackendUnavailableError,
+      "the hyperv backend requires a Windows host")
+
+proc destroyEphemeralVmVerified*(b: HyperVBackend, name: string) =
+  ## Remove kept per-job VM ``name`` and its disk; RAISES unless both are
+  ## provably gone (absence is success). See ``buildEphemeralDestroyCommand``.
+  discard b.runPowerShellChecked(buildEphemeralDestroyCommand(name), 300)
+
+proc listEphemeralVms*(b: HyperVBackend): seq[tuple[name, state: string]] =
+  ## Kept per-job VMs and their GARM state. RAISES when Hyper-V cannot answer.
+  for line in b.runPowerShellChecked(buildEphemeralListCommand(), 120).splitLines():
+    let l = line.strip()
+    if l.len == 0: continue
+    let comma = l.rfind(',')
+    if comma <= 0:
+      raise newVmHarnessError($b.id, lpCleanup, "unexpected Get-VM row: " & l)
+    result.add((name: l[0 ..< comma], state: normalizeHyperVState(l[comma + 1 .. ^1])))
+
 proc provisionEphemeralClone*(b: HyperVBackend,
                               spec: HyperVEphemeralCloneSpec): VmHandle =
   ## Materialise ONE fresh per-job VM: CoW-clone (or copy) the golden into a

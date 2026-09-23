@@ -2008,6 +2008,17 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
               "baseline": opts.baseline})
     return 0
 
+  if ephemeralPathFor(opts.backend) == epHyperV:
+    # Used to fall through to the libvirt branch below and fail on `virsh` not
+    # being installed on the Windows host — reported by the old provider as
+    # idempotent success, i.e. every kept Hyper-V VM leaked. Raises unless the
+    # VM and its per-job disk are provably gone; absence is success.
+    HyperVBackend(newBackend(biHyperv)).destroyEphemeralVmVerified(opts.baseline)
+    forgetLabels(opts.backend, opts.baseline)
+    logEvent(opts.logFormat, "info", "ephemeral hyperv: destroyed",
+             {"name": opts.baseline})
+    return 0
+
   if opts.backend.toLowerAscii() == "incus":
     let ib = IncusBackend(newBackend(biIncus))
     # NOT `stopAndCleanup`: that is the never-raises `finally` teardown, and it
@@ -2081,7 +2092,13 @@ proc ephemeralInventoryFor*(backend: string): InventoryResult =
     except CatchableError as err:
       inventoryFailure(err.msg)
   of epHyperV:
-    inventoryFailure("ephemeral-list is not implemented for backend hyperv")
+    try:
+      var entries: seq[EphemeralEntry]
+      for vm in HyperVBackend(newBackend(biHyperv)).listEphemeralVms():
+        entries.add(EphemeralEntry(name: vm.name, state: vm.state))
+      inventorySuccess(entries)
+    except CatchableError as err:
+      inventoryFailure(err.msg)
   of epLibvirt:
     if backend != $biLibvirt:
       inventoryFailure("ephemeral-list: unsupported backend '" & backend & "'")
