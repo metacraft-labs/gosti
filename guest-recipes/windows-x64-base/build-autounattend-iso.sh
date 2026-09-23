@@ -204,7 +204,11 @@ xml_ok=""
 if command -v xmllint >/dev/null 2>&1; then
   xmllint --noout "${STAGE_DIR}/autounattend.xml" || exit 1
   xml_ok="xmllint"
-elif command -v python3 >/dev/null 2>&1; then
+# Probe that python3 RUNS, not just that it resolves: on Windows hosts
+# `python3` is often the App Execution Alias stub in WindowsApps, which
+# resolves on PATH but only prints "install from the Microsoft Store" and
+# exits non-zero — selecting it failed every build on win-ci-bare-001.
+elif python3 -c '' >/dev/null 2>&1; then
   python3 -c 'import sys,xml.dom.minidom as m; m.parse(sys.argv[1])' \
     "${STAGE_DIR}/autounattend.xml" || exit 1
   xml_ok="python3"
