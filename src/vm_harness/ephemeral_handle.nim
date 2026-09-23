@@ -44,7 +44,7 @@ proc ephemeralStateRoot*(): string =
   let configured = getEnv(EphemeralStateDirEnv)
   if configured.len > 0: configured else: DefaultEphemeralStateDir
 
-proc sanitizeKey(s: string): string =
+proc sanitizeKey*(s: string): string =
   ## `--baseline` is a GARM instance name (`garm-xxxxxxxxxxxx`), but nothing
   ## enforces that, and this value becomes a FILENAME. Keep it to a safe set
   ## rather than trusting the caller: a `--baseline` of `../../etc/x` must not

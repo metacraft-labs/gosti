@@ -11,6 +11,13 @@
 ##       listed with its state, AND a backend that cannot be enumerated yields
 ##       a non-zero exit with no result line — never an empty list.
 ##
+##   (A') a pool's list contains ONLY that pool's instances. GARM's scale-set
+##       worker DELETES every listed instance it has no record of, so a
+##       host-wide answer would let one pool destroy another's runners. The
+##       `ephemeral-label` record + `--label` filter is gated here: attributed
+##       instances match, unattributed ones and stale records never do, and a
+##       successful destroy drops the record.
+##
 ##   (B) `ephemeral-destroy --backend incus` no longer reports success for a
 ##       container that still exists. `incus delete` failing transiently with
 ##       ZFS `dataset is busy` (measured on gpu-server-001) is retried with
@@ -30,7 +37,7 @@
 ## STATEFUL (a file of existing containers) so "the container is really gone
 ## afterwards" is checked, not assumed.
 
-import std/[os, strutils, tempfiles, unittest]
+import std/[os, strutils, tables, tempfiles, unittest]
 import vm_harness/cli
 import vm_harness/ephemeral_inventory
 import vm_harness/backends/incus
@@ -184,6 +191,45 @@ when defined(linux):
     test "a backend with no enumerator fails rather than answering empty":
       check not ephemeralInventoryFor("hyperv").ok
       check ephemeralInventoryFor("noop").ok
+
+  suite "attribution labels":
+    test "a pool sees only its own instances; stale and unlabelled never match":
+      let work = createTempDir("vmh-eph-labels", "")
+      defer: removeDir(work)
+      writeFile(work / "containers",
+        "garm-p1a,RUNNING\ngarm-p2a,RUNNING\ngarm-legacy,RUNNING\ndurable-vm,RUNNING\n")
+      withEnv("VMH_EPHEMERAL_LABEL_DIR", work / "labels"):
+        withEnv("VMH_INCUS_CMD", fakeIncus(work, 0)):
+          check runCli(@["ephemeral-label", "--backend", "incus", "--baseline",
+            "garm-p1a", "--label", "garm-pool=P1", "--label", "garm-controller=C"]) == 0
+          check runCli(@["ephemeral-label", "--backend", "incus", "--baseline",
+            "garm-p2a", "--label", "garm-pool=P2", "--label", "garm-controller=C"]) == 0
+          # A record whose instance no longer exists must not resurrect it.
+          check runCli(@["ephemeral-label", "--backend", "incus", "--baseline",
+            "garm-gone", "--label", "garm-pool=P1"]) == 0
+
+          var all = ephemeralInventoryFor("incus").entries
+          attachLabels("incus", all)
+          let p1 = filterEntries(all, labels = @["garm-pool=P1"])
+          check p1.len == 1
+          check p1[0].name == "garm-p1a"
+          check p1[0].labels["garm-controller"] == "C"
+          check filterEntries(all, labels = @["garm-controller=C"]).len == 2
+          check filterEntries(all, labels = @["garm-pool=P3"]).len == 0
+          # the list line carries the labels to the provider
+          check "garm-pool" in inventoryLine("incus", p1)
+
+          check runCli(@["ephemeral-destroy", "--backend", "incus",
+                         "--baseline", "garm-p1a"]) == 0
+          check not fileExists(labelRecordPath("incus", "garm-p1a"))
+          check fileExists(labelRecordPath("incus", "garm-p2a"))
+
+    test "labels are validated as a usage error":
+      check runCli(@["ephemeral-label", "--backend", "incus", "--baseline",
+                     "x", "--label", "novalue"]) == 2
+      expect ValueError:   # no --label: dispatch raises; the binary exits 2
+        discard runCli(@["ephemeral-label", "--backend", "incus",
+                         "--baseline", "x"])
 
   suite "ephemeral-destroy --backend incus (verified teardown)":
     test "a transiently busy delete is retried until the container is gone":

@@ -126,8 +126,9 @@ backend), the provider holds no state, so the host must be able to answer
 "which per-job instances exist". That is `ephemeral-list`:
 
 ```
-vm-harness ephemeral-list --backend <libvirt|incus|tart-*|qemu-windows-arm|utm-windows-arm|noop>
-                          [--name <instance>] [--ephemeral-prefix <p>]
+vm-harness ephemeral-list  --backend <libvirt|incus|tart-*|qemu-windows-arm|utm-windows-arm|noop>
+                           [--name <instance>] [--ephemeral-prefix <p>] [--label k=v]...
+vm-harness ephemeral-label --backend <b> --baseline <instance> --label k=v [--label k=v]...
 ```
 
 It prints exactly one line —
@@ -145,6 +146,21 @@ its record *without* calling DeleteInstance, so an empty answer produced by a
 failure leaks every instance on the host — which is exactly what happened
 before this verb existed (the provider answered every `ListInstances` with an
 empty list; ~210 Windows domains leaked on high-mem-server in a day).
+
+**Attribution (labels).** GARM's scale-set worker deletes every instance a
+`ListInstances` returns that it has no record of, so a pool must be given only
+*its* instances — a host-wide list would let one pool destroy another's runners
+(high-mem-server's libvirt carries three GARM pools and durable non-GARM
+domains). The provider records `garm-pool=<id>` / `garm-controller=<id>` with
+`ephemeral-label` right after a successful create and lists with
+`--label garm-pool=<id>`. The result is the JOIN of the backend's enumeration
+with the label records: a record whose instance is gone is never listed, an
+instance without a record never matches a label filter, and a successful
+`ephemeral-destroy` drops the record. Records live under
+`$VMH_EPHEMERAL_LABEL_DIR`, else `$VMH_EPHEMERAL_STATE_DIR/labels`, else
+systemd's `$STATE_DIRECTORY/ephemeral-labels` (the serve unit's only writable
+state under `ProtectSystem=strict`). It is a separate verb, not a `run` flag,
+so the provider can call it against a daemon of any age.
 
 | backend | enumerates | `running` | `stopped` |
 |---|---|---|---|

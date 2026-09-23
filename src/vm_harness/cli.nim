@@ -89,6 +89,9 @@ type
     diskGB*: int
     outputDir*: string
     ephemeralPrefix*: string
+    labels*: seq[string]
+      ## ``--label key=value`` (repeatable): attribution recorded by
+      ## ``ephemeral-label`` and matched (all must hold) by ``ephemeral-list``.
     envPairs*: Table[string, string]
     copyTo*: seq[tuple[host: string, guest: string]]
     copyFrom*: seq[tuple[guest: string, host: string]]
@@ -274,8 +277,10 @@ Subcommands:
   ephemeral-list          List the per-job instances `run --ephemeral --keep`
                           left on --backend (libvirt/incus/tart/qemu/utm) as
                           one JSON line; --name selects one, --ephemeral-prefix
-                          narrows. Exits non-zero, printing no list, when the
-                          backend cannot be enumerated.
+                          and --label k=v narrow. Exits non-zero, printing no
+                          list, when the backend cannot be enumerated.
+  ephemeral-label         Record --label k=v attribution for a kept instance
+                          (--backend, --baseline); removed by ephemeral-destroy.
   instance wait <name>    Wait for an existing Incus container to accept exec.
   instance exec <name> -- <command...>
                           Execute argv in an existing Incus container.
@@ -767,6 +772,10 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       inc i; result.outputDir = args[i]; inc i
     of "--ephemeral-prefix":
       inc i; result.ephemeralPrefix = args[i]; inc i
+    of "--label":
+      inc i
+      discard parseLabel(args[i])   # validate eagerly: a usage error, exit 2
+      result.labels.add(args[i]); inc i
     of "--timeout-sec":
       inc i; result.timeoutSec = parseInt(args[i]); inc i
     of "--ssh-ready-timeout-sec":
@@ -1982,6 +1991,7 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
     # Only forget the record AFTER a teardown that did not raise, so a
     # failure leaves the instance reclaimable instead of orphaning it.
     forgetEphemeralHandle($vmRunId, opts.baseline)
+    forgetLabels(opts.backend, opts.baseline)
     logEvent(opts.logFormat, "info", "ephemeral vm: destroyed",
              {"backend": $vmRunId, "name": vm.name,
               "baseline": opts.baseline})
@@ -2000,6 +2010,7 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
     let budget = if opts.timeoutSec > 0: opts.timeoutSec
                  else: DefaultDestroyBudgetSec
     ib.destroyContainerVerified(opts.baseline, budgetSec = budget)
+    forgetLabels(opts.backend, opts.baseline)
     logEvent(opts.logFormat, "info", "ephemeral container: destroyed",
              {"name": opts.baseline})
     return 0
@@ -2029,6 +2040,7 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
   if lb.domainExists(opts.baseline):
     raise newVmHarnessError($biLibvirt, lpCleanup,
       "ephemeral-destroy could not remove domain " & opts.baseline)
+  forgetLabels(opts.backend, opts.baseline)
   logEvent(opts.logFormat, "info", "ephemeral clone: destroyed",
            {"name": opts.baseline})
   0
@@ -2080,9 +2092,26 @@ proc cmdEphemeralList(opts: CliOpts): int =
     logEvent(opts.logFormat, "error", "ephemeral-list: enumeration failed",
              {"backend": opts.backend, "error": inv.message})
     return 1
-  let entries = filterEntries(inv.entries, name = opts.baseline,
-                              prefix = opts.ephemeralPrefix)
+  var all = inv.entries
+  attachLabels(opts.backend, all)
+  let entries = filterEntries(all, name = opts.baseline,
+                              prefix = opts.ephemeralPrefix,
+                              labels = opts.labels)
   echo inventoryLine(opts.backend, entries)
+  0
+
+proc cmdEphemeralLabel(opts: CliOpts): int =
+  ## ``ephemeral-label --backend <b> --baseline <n> --label k=v…``: record who
+  ## owns a kept instance so ``ephemeral-list --label`` can return exactly one
+  ## pool's instances. See the "Attribution labels" section of
+  ## ``ephemeral_inventory`` for why a host-wide list is unsafe.
+  if opts.backend.len == 0 or opts.baseline.len == 0 or opts.labels.len == 0:
+    raise newException(ValueError,
+      "ephemeral-label: --backend, --baseline and at least one --label are required")
+  saveLabels(opts.backend, opts.baseline, opts.labels)
+  logEvent(opts.logFormat, "info", "ephemeral instance labelled",
+           {"backend": opts.backend, "name": opts.baseline,
+            "labels": opts.labels.join(",")})
   0
 
 proc cmdRun(opts: CliOpts): int =
@@ -2811,6 +2840,7 @@ proc dispatch*(opts: CliOpts): int =
   of "run":       cmdRun(opts)
   of "ephemeral-destroy": cmdEphemeralDestroy(opts)
   of "ephemeral-list": cmdEphemeralList(opts)
+  of "ephemeral-label": cmdEphemeralLabel(opts)
   of "probe":     cmdProbe(opts)
   of "backends":  cmdBackends(opts)
   of "shell":     cmdShell(opts)

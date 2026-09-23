@@ -21,12 +21,13 @@
 ## and stderr are MERGED into one ``log`` stream, so the result cannot simply
 ## be "stdout". It is one line carrying a marker key the provider scans for:
 ##
-##   {"vmhEphemeralList":1,"backend":"libvirt","instances":[{"name":"garm-x","state":"running"}]}
+##   {"vmhEphemeralList":1,"backend":"libvirt","instances":[{"name":"garm-x","state":"running","labels":{"garm-pool":"…"}}]}
 ##
 ## ``state`` is normalized to GARM's own vocabulary (``running`` / ``stopped``
 ## / ``error`` / ``unknown``) so the provider forwards it verbatim.
 
-import std/[json, strutils]
+import std/[json, os, strutils, tables]
+import ./ephemeral_handle
 
 const
   InventoryMarker* = "vmhEphemeralList"
@@ -37,6 +38,8 @@ type
   EphemeralEntry* = object
     name*: string
     state*: string   ## running | stopped | error | unknown
+    labels*: Table[string, string]
+      ## Attribution recorded by ``ephemeral-label`` (empty when none).
 
   InventoryResult* = object
     ok*: bool
@@ -88,20 +91,27 @@ proc libvirtEntries*(allNames, activeNames: seq[string]): seq[EphemeralEntry] =
     result.add(EphemeralEntry(name: n,
       state: (if n in activeNames: "running" else: "stopped")))
 
+proc matchesLabels*(e: EphemeralEntry; want: seq[string]): bool
+
 proc filterEntries*(entries: seq[EphemeralEntry];
-                    name = ""; prefix = ""): seq[EphemeralEntry] =
+                    name = ""; prefix = "";
+                    labels: seq[string] = @[]): seq[EphemeralEntry] =
   ## ``--name`` selects exactly one instance (the provider's GetInstance);
-  ## ``--ephemeral-prefix`` narrows to one naming convention (``garm-``).
+  ## ``--ephemeral-prefix`` narrows to one naming convention (``garm-``);
+  ## ``--label`` keeps only instances attributed with every given label.
   for e in entries:
     if name.len > 0 and e.name != name: continue
     if prefix.len > 0 and not e.name.startsWith(prefix): continue
+    if not e.matchesLabels(labels): continue
     result.add(e)
 
 proc inventoryLine*(backend: string; entries: seq[EphemeralEntry]): string =
   ## The single result line (no trailing newline).
   var arr = newJArray()
   for e in entries:
-    arr.add(%*{"name": e.name, "state": e.state})
+    var labels = newJObject()
+    for k, v in e.labels: labels[k] = %v
+    arr.add(%*{"name": e.name, "state": e.state, "labels": labels})
   $(%*{InventoryMarker: InventoryVersion, "backend": backend,
        "instances": arr})
 
@@ -112,9 +122,107 @@ proc parseInventoryLine*(line: string): InventoryResult =
     raise newException(ValueError, "not an ephemeral-list result line")
   var entries: seq[EphemeralEntry]
   for it in node{"instances"}.getElems():
-    entries.add(EphemeralEntry(name: it{"name"}.getStr(""),
-                               state: it{"state"}.getStr("unknown")))
+    var e = EphemeralEntry(name: it{"name"}.getStr(""),
+                           state: it{"state"}.getStr("unknown"))
+    if it{"labels"} != nil and it{"labels"}.kind == JObject:
+      for k, v in it{"labels"}: e.labels[k] = v.getStr("")
+    entries.add(e)
   inventorySuccess(entries)
+
+# ---------------------------------------------------------------------------
+# Attribution labels.
+#
+# WHY. GARM consumes a pool's ListInstances in two ways, and one of them is
+# destructive: the scale-set worker DELETES every provider instance whose name
+# is not in its own database set. A host-wide list would therefore let one
+# pool (or scale set) destroy another's runners — three GARM pools share
+# high-mem-server's libvirt alone, next to durable non-GARM domains. So the
+# list a pool gets must contain exactly that pool's instances, and nothing a
+# backend natively tracks says which pool an instance belongs to.
+#
+# HOW. A small per-instance record on the daemon host, keyed by backend and
+# instance name, written by ``ephemeral-label`` right after a successful
+# ``run --ephemeral --keep`` and removed by a successful ``ephemeral-destroy``.
+# ``ephemeral-list --label k=v`` is then the JOIN of the backend's own
+# enumeration (the truth about what exists) with these records (the truth
+# about whose it is): a stale record with no instance is never listed, and an
+# instance with no record never matches a label filter. It is a separate verb
+# rather than a ``run`` flag so a provider can use it against any daemon
+# version: an old daemon rejects the unknown verb, the create still stands.
+
+const LabelStateDirEnv* = "VMH_EPHEMERAL_LABEL_DIR"
+
+proc labelStateRoot*(): string =
+  ## ``$VMH_EPHEMERAL_LABEL_DIR``, else ``$VMH_EPHEMERAL_STATE_DIR/labels``,
+  ## else systemd's ``$STATE_DIRECTORY/ephemeral-labels`` — the serve unit
+  ## runs under ``ProtectSystem=strict`` where only its StateDirectory is
+  ## writable — else ``<ephemeralStateRoot()>/labels``.
+  let explicit = getEnv(LabelStateDirEnv)
+  if explicit.len > 0: return explicit
+  if getEnv(EphemeralStateDirEnv).len > 0:
+    return getEnv(EphemeralStateDirEnv) / "labels"
+  let sd = getEnv("STATE_DIRECTORY").split(':')[0]
+  if sd.len > 0: return sd / "ephemeral-labels"
+  ephemeralStateRoot() / "labels"
+
+proc parseLabel*(arg: string): (string, string) =
+  ## ``key=value``. Keys are restricted so they stay readable in the record
+  ## and unambiguous on the command line; values are free-form but non-empty.
+  let eq = arg.find('=')
+  if eq <= 0 or eq == arg.len - 1:
+    raise newException(ValueError, "--label expects key=value, got '" & arg & "'")
+  let k = arg[0 ..< eq]
+  for c in k:
+    if c notin {'a'..'z', 'A'..'Z', '0'..'9', '-', '_', '.'}:
+      raise newException(ValueError, "--label key has invalid characters: " & k)
+  (k, arg[eq + 1 .. ^1])
+
+proc labelRecordPath*(backend, name: string): string =
+  labelStateRoot() / sanitizeKey(backend) / (sanitizeKey(name) & ".json")
+
+proc saveLabels*(backend, name: string; labels: seq[string]) =
+  ## Write-then-rename, like the handle store. Raises on failure: a caller
+  ## that asked for attribution must learn it did not get it.
+  let path = labelRecordPath(backend, name)
+  createDir(path.parentDir)
+  var obj = newJObject()
+  for l in labels:
+    let (k, v) = parseLabel(l)
+    obj[k] = %v
+  let doc = %*{"schema": "vm-harness/ephemeral-labels/1", "backend": backend,
+               "name": name, "labels": obj}
+  let tmp = path & ".tmp"
+  writeFile(tmp, $doc & "\n")
+  moveFile(tmp, path)
+
+proc loadLabels*(backend, name: string): Table[string, string] =
+  let path = labelRecordPath(backend, name)
+  if not fileExists(path): return
+  try:
+    let doc = parseFile(path)
+    if doc{"name"}.getStr("") != name: return   # sanitized-key collision
+    for k, v in doc{"labels"}:
+      result[k] = v.getStr("")
+  except CatchableError:
+    discard
+
+proc forgetLabels*(backend, name: string) =
+  try:
+    let path = labelRecordPath(backend, name)
+    if fileExists(path): removeFile(path)
+  except CatchableError:
+    discard
+
+proc attachLabels*(backend: string; entries: var seq[EphemeralEntry]) =
+  for e in entries.mitems:
+    e.labels = loadLabels(backend, e.name)
+
+proc matchesLabels*(e: EphemeralEntry; want: seq[string]): bool =
+  ## Every wanted ``key=value`` must be present. No filter matches everything.
+  for w in want:
+    let (k, v) = parseLabel(w)
+    if e.labels.getOrDefault(k, "\0") != v: return false
+  true
 
 # ---------------------------------------------------------------------------
 # Teardown classification (``ephemeral-destroy`` on incus).
