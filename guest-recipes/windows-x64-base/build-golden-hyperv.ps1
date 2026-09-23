@@ -194,11 +194,18 @@ for ($i = 0; $i -lt 20 -and -not $kbd; $i++) {
 if ($kbd) {
     # Spam rather than time it: the prompt appears a few seconds in and lasts
     # only about five, and a missed window costs a whole boot cycle.
+    #
+    # The key must be one Windows Setup ignores, because the spam outlives the
+    # prompt: Setup's progress page can come up inside the 30s window with its
+    # Cancel button focused. Enter (the old key) pressed Cancel and parked a
+    # build on "Are you sure you want to quit?" at 11% until the timeout.
+    # Enter, Space and Escape act on that page and C/Y/N are its mnemonics;
+    # X is inert there, and the firmware prompt accepts any key.
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $sent = 0
     while ($sw.Elapsed.TotalSeconds -lt 30) {
         try {
-            Invoke-CimMethod -InputObject $kbd -MethodName TypeKey -Arguments @{ keyCode = [uint32]0x0D } | Out-Null
+            Invoke-CimMethod -InputObject $kbd -MethodName TypeKey -Arguments @{ keyCode = [uint32]0x58 } | Out-Null  # VK_X
             $sent++
         } catch { }
         Start-Sleep -Milliseconds 400
