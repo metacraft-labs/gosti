@@ -1126,3 +1126,29 @@ method importBaseline*(b: IncusBackend, srcDir: string): seq[string] =
 
 registerBackend(biIncus,
   proc(): VmBackend = newIncusBackend())
+
+# ---------------------------------------------------------------------------
+# Crud-store reconciliation (design doc §8.6).
+
+proc incusPresenceFrom*(exitCode: int, csvNameState, name: string): InstancePresence =
+  ## ``incus list <name> --format csv -c ns``. The name argument is a FILTER
+  ## (it also matches ``<name>2``), so the exact row is looked up. A failed
+  ## listing is "could not ask" (``ipUnknown``), never absence.
+  if exitCode != 0: return ipUnknown
+  var rows: seq[EphemeralEntry]
+  try:
+    rows = parseIncusListCsv(csvNameState)
+  except ValueError:
+    return ipUnknown
+  for r in rows:
+    if r.name == name:
+      return (case r.state
+              of "running": ipRunning
+              of "stopped": ipStopped
+              else: ipUnknown)
+  ipGone
+
+method instancePresence*(b: IncusBackend, vm: VmHandle): InstancePresence =
+  let r = b.runIncus(@["list", vm.name, "--format", "csv", "-c", "ns"],
+                     timeoutSec = 30)
+  incusPresenceFrom(r.exitCode, r.stdout, vm.name)

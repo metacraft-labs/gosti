@@ -49,16 +49,20 @@
 ## home without a type change. This is documented rather than faked.
 ##
 ## Registration: MockBackend deliberately does NOT register itself in
-## ``auto.factoryRegistry``. The only ``BackendId`` that fits a pure in-memory
-## backend is ``biNoop``, and registering under it would silently displace the
-## real ``NoopBackend`` factory for every ``newBackend(biNoop)`` caller (the
-## e2e auto-selection gates). Instead — exactly like ``t_crud_facade`` constructs
-## ``newNoopBackend()`` directly — hermetic tests construct ``newMockBackend()``
-## and wrap it in a ``CrudSession``. The ``id`` field is tagged ``biNoop`` (the
-## enum value that means "no real hypervisor"); the CRUD envelope therefore
-## reports ``"backend": "noop"`` for a mock VM, which is accurate.
+## ``auto.factoryRegistry``, so it is never advertised (serve ``/v1/info``, the
+## capability manifest) and never auto-selected. It is reachable two ways:
+##
+## - in-process, as the PR-2 gates do: ``newMockBackend()`` wrapped in a
+##   ``CrudSession``. Its ``id`` defaults to ``biNoop`` there, so those
+##   envelopes report ``"backend": "noop"`` as they always have;
+## - from the CLI, only when a caller names ``--backend mock``: the CLI builds
+##   it as ``newMockBackend(biMock)`` and, for ``crud`` verbs, switches it to
+##   FILE-BACKED mode (``attachStateFile``) so the fleet persists across
+##   invocations. That is the hermetic-consumer fixture of design doc §8.6,
+##   together with its fault injection (``VMH_MOCK_FAIL`` /
+##   ``VMH_MOCK_UNAVAILABLE``).
 
-import std/[algorithm, options, os, strutils, tables]
+import std/[algorithm, json, options, os, strutils, tables]
 import ../types
 
 type
@@ -102,6 +106,11 @@ type
                                              ## CRUD-layer --cwd/--run-as/--timeout
                                              ## wrap) — so a gate can assert the
                                              ## produced wrapper argv verbatim.
+    stateFile*: string                       ## file-backed mode (design doc §8.6):
+                                             ## when non-empty, the whole fleet is
+                                             ## loaded from / saved to this file so
+                                             ## one ``vm-harness crud`` process per
+                                             ## verb sees one consistent fleet.
 
 # ---------------------------------------------------------------------------
 # Canned, stable guest-reachability data. These are constants on purpose: the
@@ -120,11 +129,15 @@ proc instanceName*(baseline: string): string =
   ## having to capture the name returned by ``revertToBaseline``.
   "mock-vm-" & baseline
 
-proc newMockBackend*(): MockBackend =
+proc newMockBackend*(id = biNoop): MockBackend =
   ## Construct a fresh, empty mock backend. No temp dirs, no I/O — a MockBackend
-  ## is self-contained in-memory state.
+  ## is self-contained in-memory state until ``attachStateFile`` is called.
+  ##
+  ## ``id`` defaults to ``biNoop`` (the in-process gates' historical tag, see
+  ## the module header). The CLI constructs it as ``biMock`` for
+  ## ``--backend mock`` so the envelope and the crud store say ``"mock"``.
   MockBackend(
-    id: biNoop,
+    id: id,
     hostPlatform: detectHostPlatform(),
     supportedGuests: {goLinux, goWindows, goMacos},
     baselines: initTable[string, BaselineSpec](),
@@ -172,11 +185,110 @@ proc transitionTo(vm: MockVm, s: MockVmState) =
   vm.transitions.add(s)
 
 # ---------------------------------------------------------------------------
+# File-backed mode (design doc §8.6). The fleet is one JSON document; every
+# mutating method rewrites it (write-then-rename). The CLI holds a
+# backend-wide crud-store lock around each invocation, so read-modify-write
+# is not racy between concurrent ``vm-harness crud`` processes.
+
+const MockFleetSchema* = "vm-harness/mock-fleet/1"
+
+proc fsToJson(fs: Table[string, string]): JsonNode =
+  result = newJObject()
+  var keys: seq[string]
+  for k in fs.keys: keys.add(k)
+  keys.sort()
+  for k in keys: result[k] = %fs[k]
+
+proc fsFromJson(n: JsonNode): Table[string, string] =
+  result = initTable[string, string]()
+  if n != nil and n.kind == JObject:
+    for k, v in n: result[k] = v.getStr("")
+
+proc fleetToJson(b: MockBackend): JsonNode =
+  var baselines: seq[string]
+  for name in b.baselines.keys: baselines.add(name)
+  baselines.sort()
+  var names: seq[string]
+  for name in b.vms.keys: names.add(name)
+  names.sort()
+  var vms = newJArray()
+  for name in names:
+    let vm = b.vms[name]
+    var snaps = newJArray()
+    for sname, snap in vm.snapshots:
+      snaps.add(%*{"name": sname, "id": snap.id, "guestFs": fsToJson(snap.guestFs)})
+    var trans = newJArray()
+    for t in vm.transitions: trans.add(%($t))
+    vms.add(%*{"name": vm.name, "baseline": vm.baseline, "state": $vm.state,
+                "guestFs": fsToJson(vm.guestFs), "snapshots": snaps,
+                "transitions": trans})
+  %*{"schema": MockFleetSchema, "baselines": baselines, "vms": vms}
+
+proc parseMockState(s: string): MockVmState =
+  for st in MockVmState:
+    if $st == s: return st
+  mvsError
+
+proc loadFleet(b: MockBackend, doc: JsonNode) =
+  b.baselines = initTable[string, BaselineSpec]()
+  for n in doc{"baselines"}.getElems():
+    b.baselines[n.getStr] = BaselineSpec(name: n.getStr)
+  b.vms = initTable[string, MockVm]()
+  for v in doc{"vms"}.getElems():
+    var vm = MockVm(name: v{"name"}.getStr, baseline: v{"baseline"}.getStr,
+                    state: parseMockState(v{"state"}.getStr),
+                    guestFs: fsFromJson(v{"guestFs"}),
+                    snapshots: initOrderedTable[string, MockSnapshot](),
+                    transitions: @[])
+    for sn in v{"snapshots"}.getElems():
+      vm.snapshots[sn{"name"}.getStr] =
+        MockSnapshot(id: sn{"id"}.getStr, guestFs: fsFromJson(sn{"guestFs"}))
+    for t in v{"transitions"}.getElems():
+      vm.transitions.add(parseMockState(t.getStr))
+    b.vms[vm.name] = vm
+
+proc persist(b: MockBackend) =
+  ## No-op in in-memory mode.
+  if b.stateFile.len == 0: return
+  createDir(b.stateFile.parentDir)
+  let tmp = b.stateFile & ".tmp." & $getCurrentProcessId()
+  writeFile(tmp, b.fleetToJson.pretty & "\n")
+  moveFile(tmp, b.stateFile)
+
+proc attachStateFile*(b: MockBackend, path: string) =
+  ## Switch to file-backed mode: load the fleet from ``path`` if it exists
+  ## (an empty fleet otherwise) and save every later mutation there.
+  b.stateFile = path
+  if fileExists(path):
+    b.loadFleet(parseFile(path))
+
+# ---------------------------------------------------------------------------
+# Fault injection, for consumers testing their error mapping (design doc
+# §8.6): ``VMH_MOCK_FAIL=<op>[,<op>…]`` makes the named operations raise a
+# categorised backend failure (→ ``backend-error``, exit 5), and
+# ``VMH_MOCK_UNAVAILABLE=1`` makes the backend unavailable (→ exit 4).
+
+const
+  MockFailEnv* = "VMH_MOCK_FAIL"
+  MockUnavailableEnv* = "VMH_MOCK_UNAVAILABLE"
+
+proc mockUnavailable*(): bool =
+  getEnv(MockUnavailableEnv).len > 0 and getEnv(MockUnavailableEnv) != "0"
+
+proc injectFault(b: MockBackend, op: string, phase: LifecyclePhase) =
+  let spec = getEnv(MockFailEnv)
+  if spec.len == 0: return
+  for want in spec.split(','):
+    if want.strip() == op:
+      raise newVmHarnessError($b.id, phase,
+        "injected failure (" & MockFailEnv & "=" & op & ")")
+
+# ---------------------------------------------------------------------------
 # Lifecycle methods.
 
 method probeAvailability*(b: MockBackend): bool =
   b.calls.add("probeAvailability")
-  true
+  not mockUnavailable()
 
 method provisionBaseline*(b: MockBackend, spec: BaselineSpec) =
   ## Idempotent: register the template if absent. No instance is created here
@@ -185,13 +297,16 @@ method provisionBaseline*(b: MockBackend, spec: BaselineSpec) =
   b.provisionSpecs.add(spec)   ## PR-3: record every spec so a gate can assert
                                ## the create options (--user-data/--mount/
                                ## --ssh-user) flowed through unchanged.
+  b.injectFault("provision", lpProvisioning)
   if spec.name notin b.baselines:
     b.baselines[spec.name] = spec
+  b.persist()
 
 method revertToBaseline*(b: MockBackend, baselineName: string): VmHandle =
   ## Materialise (or re-materialise) the instance for ``baselineName`` and boot
   ## it: Stopped → Starting → Running. Requires a provisioned baseline.
   b.calls.add("revertToBaseline:" & baselineName)
+  b.injectFault("revert", lpRevert)
   if baselineName notin b.baselines:
     raise newVmHarnessError($b.id, lpRevert,
       "Baseline '" & baselineName & "' was never provisioned")
@@ -207,6 +322,7 @@ method revertToBaseline*(b: MockBackend, baselineName: string): VmHandle =
   transitionTo(vm, mvsStarting)
   transitionTo(vm, mvsRunning)
   b.vms[name] = vm
+  b.persist()
   VmHandle(
     backend: b,
     name: name,
@@ -224,10 +340,12 @@ method startAndAwaitReady*(b: MockBackend, vm: VmHandle, timeoutSec: int = 120) 
   if vm.name notin b.vms:
     raise newVmHarnessError($b.id, lpStartup,
       "startAndAwaitReady: unknown instance '" & vm.name & "'")
+  b.injectFault("start", lpStartup)
   let inst = b.vms[vm.name]
   if inst.state != mvsRunning:
     transitionTo(inst, mvsStarting)
     transitionTo(inst, mvsRunning)
+  b.persist()
 
 method execInGuest*(b: MockBackend, vm: VmHandle,
                    env: Table[string, string],
@@ -238,6 +356,7 @@ method execInGuest*(b: MockBackend, vm: VmHandle,
   ## keys, sorted for reproducibility). Requires a running instance.
   b.calls.add("execInGuest:" & cmd.join(" "))
   b.execArgvLog.add(cmd)   ## PR-3: capture the exact (wrapped) argv verbatim.
+  b.injectFault("exec", lpExec)
   if vm.name notin b.vms or b.vms[vm.name].state != mvsRunning:
     raise newVmHarnessError($b.id, lpExec,
       "execInGuest: instance '" & vm.name & "' is not running")
@@ -261,17 +380,20 @@ method copyToGuest*(b: MockBackend, vm: VmHandle,
   ## is pure memory; the host side is a genuine read so a gate can round-trip a
   ## real file (matching how ``t_crud_facade`` exercises copy).
   b.calls.add("copyToGuest:" & hostPath & "->" & guestPath)
+  b.injectFault("copy", lpCopy)
   if vm.name notin b.vms or b.vms[vm.name].state != mvsRunning:
     raise newVmHarnessError($b.id, lpCopy,
       "copyToGuest: instance '" & vm.name & "' is not running")
   if not fileExists(hostPath):
     raise newVmHarnessError($b.id, lpCopy, "Source path not found: " & hostPath)
   b.vms[vm.name].guestFs[guestPath] = readFile(hostPath)
+  b.persist()
 
 method copyFromGuest*(b: MockBackend, vm: VmHandle,
                      guestPath: string, hostPath: string) =
   ## Write an in-memory guest file back out to a real host path.
   b.calls.add("copyFromGuest:" & guestPath & "->" & hostPath)
+  b.injectFault("copy", lpCopy)
   if vm.name notin b.vms or b.vms[vm.name].state != mvsRunning:
     raise newVmHarnessError($b.id, lpCopy,
       "copyFromGuest: instance '" & vm.name & "' is not running")
@@ -284,6 +406,7 @@ method installArgvTraceShim*(b: MockBackend, vm: VmHandle, shim: ArgvTraceShim) 
   b.calls.add("installArgvTraceShim:" & shim.wrappedBinaryName)
   if vm.name in b.vms:
     b.vms[vm.name].guestFs[shim.traceLogPath] = ""
+    b.persist()
 
 method uninstallArgvTraceShim*(b: MockBackend, vm: VmHandle,
                               wrappedBinaryName: string) =
@@ -300,6 +423,7 @@ method stopAndCleanup*(b: MockBackend, vm: VmHandle, deleteVm: bool = true) =
         transitionTo(inst, mvsStopped)
       if deleteVm:
         b.vms.del(vm.name)
+    b.persist()
   except CatchableError:
     discard
 
@@ -316,6 +440,7 @@ proc requireInstance(b: MockBackend, vmName, op: string): MockVm =
 
 method snapshot*(b: MockBackend, vmName: string, snapshotName: string): string =
   b.calls.add("snapshot:" & vmName & ":" & snapshotName)
+  b.injectFault("snapshot", lpProvisioning)
   let inst = requireInstance(b, vmName, "snapshot")
   if snapshotName in inst.snapshots:
     raise newVmHarnessError($b.id, lpProvisioning,
@@ -327,10 +452,12 @@ method snapshot*(b: MockBackend, vmName: string, snapshotName: string): string =
     captured[path] = content
   let id = vmName & "@" & snapshotName
   inst.snapshots[snapshotName] = MockSnapshot(id: id, guestFs: captured)
+  b.persist()
   id
 
 method restoreSnapshot*(b: MockBackend, vmName: string, snapshotName: string) =
   b.calls.add("restoreSnapshot:" & vmName & ":" & snapshotName)
+  b.injectFault("restore", lpRevert)
   let inst = requireInstance(b, vmName, "restoreSnapshot")
   if snapshotName notin inst.snapshots:
     raise newVmHarnessError($b.id, lpRevert,
@@ -340,6 +467,7 @@ method restoreSnapshot*(b: MockBackend, vmName: string, snapshotName: string) =
   for path, content in inst.snapshots[snapshotName].guestFs:
     restored[path] = content
   inst.guestFs = restored
+  b.persist()
 
 method listSnapshots*(b: MockBackend, vmName: string): seq[string] =
   b.calls.add("listSnapshots:" & vmName)
@@ -352,6 +480,7 @@ method removeSnapshot*(b: MockBackend, vmName, snapshotName: string) =
   b.calls.add("removeSnapshot:" & vmName & ":" & snapshotName)
   if vmName in b.vms and snapshotName in b.vms[vmName].snapshots:
     b.vms[vmName].snapshots.del(snapshotName)
+    b.persist()
 
 method snapshotRunning*(b: MockBackend, vmName, snapshotName: string): string =
   ## Memory-state variant. For the mock there is no distinct RAM image to
@@ -367,4 +496,14 @@ method snapshotRunning*(b: MockBackend, vmName, snapshotName: string): string =
     captured[path] = content
   let id = vmName & "@" & snapshotName
   inst.snapshots[snapshotName] = MockSnapshot(id: id, guestFs: captured)
+  b.persist()
   id
+
+method instancePresence*(b: MockBackend, vm: VmHandle): InstancePresence =
+  ## The mock's own fleet is the "hypervisor": an instance absent from it is
+  ## gone (e.g. deleted from the fleet file behind the crud store's back).
+  if vm.name notin b.vms: return ipGone
+  case b.vms[vm.name].state
+  of mvsRunning, mvsStarting, mvsPaused: ipRunning
+  of mvsStopped: ipStopped
+  of mvsError: ipUnknown

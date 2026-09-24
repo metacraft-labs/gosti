@@ -246,6 +246,34 @@ explicit UUID-checked `destroy --purge` permits replacement. See the
 [durable media contract](docs/user-guide/durable-media.md) for JSON fields,
 failure recovery, ownership and platform limits.
 
+### Generic CRUD (`vm-harness crud`)
+
+`vm-harness crud <verb> [<name>] … --backend <id>` is gosti's canonical public
+API for programs that drive VMs, such as the ah-vm `GostiOrchestrator`
+binding. The verbs are `create_vm`, `start_vm`, `stop_vm`, `delete_vm`,
+`get_vm`, `list_vms`, `exec`, `copy_to_vm`, `copy_from_vm`, `ssh_endpoint`,
+`snapshot`, `restore_snapshot` and `list_snapshots`. Each call prints one JSON
+envelope and returns a documented exit code
+([design doc §8.1](docs/design.md)). The same argv works remotely through
+`vm-harness serve`'s `POST /v1/exec`.
+
+VMs persist across invocations in a crud store (`--state-dir ROOT`, otherwise
+`$VMH_CRUD_STATE_DIR`, the service's `$STATE_DIRECTORY` or the user state dir).
+Their live state is re-derived from the hypervisor on every call
+([§8.6](docs/design.md)).
+
+For hermetic consumer tests, `--backend mock` is a deterministic,
+file-backed stand-in for a hypervisor. The `vm-harness-fixture` wrapper
+(`scripts/vm-harness-fixture.sh`, installed next to `vm-harness`) runs it
+against a per-test state dir:
+
+```sh
+export VMH_FIXTURE_STATE_DIR=$(mktemp -d)
+vm-harness-fixture create_vm vm1
+vm-harness-fixture exec vm1 -- echo hi     # exit_code 0, stdout "mock-exec: echo hi\n"
+VMH_MOCK_FAIL=exec vm-harness-fixture exec vm1 -- true   # exit 5 (backend-error)
+```
+
 `--backend auto` picks per the dispatch table (design doc §6):
 
 | Host                  | Guest    | Backend              |

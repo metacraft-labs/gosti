@@ -2813,3 +2813,23 @@ registerBackend(biLibvirt,
       newLibvirtBackend(imagePoolDir = poolDir)
     else:
       newLibvirtBackend())
+
+# ---------------------------------------------------------------------------
+# Crud-store reconciliation (design doc §8.6).
+
+proc libvirtPresenceFrom*(listOk: bool, allNames: seq[string],
+                          domstate, name: string): InstancePresence =
+  ## ``virsh list --all --name`` decides existence (a failed listing is "could
+  ## not ask"); ``virsh domstate`` then decides running vs stopped.
+  if not listOk: return ipUnknown
+  if name notin allNames: return ipGone
+  case domstate.strip().toLowerAscii()
+  of "running", "paused", "in shutdown", "blocked", "pmsuspended": ipRunning
+  of "shut off", "crashed": ipStopped
+  else: ipUnknown
+
+method instancePresence*(b: LibvirtBackend, vm: VmHandle): InstancePresence =
+  let listing = b.tryListAllDomainNames()
+  if not listing.ok: return ipUnknown
+  let st = if vm.name in listing.names: b.domainState(vm.name) else: ""
+  libvirtPresenceFrom(true, listing.names, st, vm.name)

@@ -46,7 +46,7 @@ proc parseBackendId*(s: string): BackendId =
                      ([$biNoop, $biHyperv, $biWsl, $biTartMacos,
                        $biTartLinuxArm, $biUtmWindowsArm, $biQemuWindowsArm,
                        $biQemuBoot, $biLibvirt, $biLima,
-                       $biIncus]).join(", "))
+                       $biIncus, $biMock]).join(", "))
 
 proc autoSelectBackendId*(host: HostPlatform, guest: GuestOs): BackendId =
   ## Thin pass-through to ``types.selectBackendId``. Centralized here so
