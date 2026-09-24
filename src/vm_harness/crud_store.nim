@@ -23,7 +23,7 @@
 ## portable per-name lock.
 
 import std/[algorithm, json, options, os, strutils, times]
-import ./types, ./ephemeral_handle
+import ./ephemeral_handle
 when defined(posix):
   import std/posix
 
