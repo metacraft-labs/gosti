@@ -46,7 +46,7 @@ suite "Incus ephemeral operator capabilities":
     check lines.join("\n").find("security.nesting") < 0
     check lines.join("\n").find("/dev/kvm") < 0
 
-  test "default launch keeps legacy option and user-data argv ordering":
+  test "default launch keeps legacy option ordering; user-data never reaches incus config":
     let work = createTempDir("vmh-incus-default-options", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
@@ -60,12 +60,17 @@ suite "Incus ephemeral operator capabilities":
       profiles: @["runner", "network"],
       userData: "cloud-payload"))
     let lines = readFile(logPath).strip().splitLines()
+    # The bootstrap payload is NOT written to ``cloud-init.user-data``: on
+    # incus the golden's cloud-init never sees its datasource, so the payload
+    # is delivered over ``incus exec`` instead (``injectAndRunBootstrap``),
+    # which also keeps the registration token out of ``incus config show``.
     check lines == @[
       "info plain-options",
       "launch vmh-base plain-options --ephemeral --profile runner " &
         "--profile network",
-      "config set plain-options cloud-init.user-data cloud-payload",
     ]
+    check lines.join("\n").find("cloud-init.user-data") < 0
+    check lines.join("\n").find("cloud-payload") < 0
     check lines.join("\n").find("security.nesting") < 0
     check lines.join("\n").find("/dev/kvm") < 0
 
@@ -185,8 +190,6 @@ suite "Incus ephemeral operator capabilities":
   test "every capability lifecycle command failure targets exact cleanup":
     let failures = @[
       (suffix: "init", command: "init runner-base fail-init"),
-      (suffix: "user-data", command:
-        "config set fail-user-data cloud-init.user-data cloud-payload"),
       (suffix: "raw-config", command:
         "config set fail-raw-config limits.cpu 2"),
       (suffix: "nesting", command:
@@ -216,7 +219,6 @@ suite "Incus ephemeral operator capabilities":
       try:
         discard b.provisionEphemeralClone(EphemeralIncusSpec(
           name: name,
-          userData: (if failure.suffix == "user-data": "cloud-payload" else: ""),
           config: rawConfig,
           securityNesting: true,
           nestedKvm: true))
