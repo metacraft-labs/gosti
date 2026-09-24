@@ -104,6 +104,10 @@ run_nim r --hints:off tests/e2e/t_vm_harness_auto_backend_selection.nim
 # RA1 remoting: a remote client drives provision->run->destroy against a
 # `vm-harness serve` daemon over the authenticated endpoint (noop backend).
 run_nim r --hints:off tests/e2e/t_vmharness_serve_roundtrip.nim
+# GOSTI2 PR-1 follow-up: the generic-CRUD `--json` envelope and exit code are
+# byte-identical over the local CLI (child process, stdout only) and over
+# serve's POST /v1/exec (one `log` line + matching `exit`). Hermetic (noop).
+run_nim r --hints:off tests/e2e/t_crud_serve_parity.nim
 # Concurrency gate: a slow /v1/exec must NOT serialize other connections
 # (the central-GARM driver fires many simultaneous calls). Fails against the
 # old serial accept loop, passes against the thread-pool loop. Hermetic (the

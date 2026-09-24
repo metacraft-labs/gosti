@@ -610,6 +610,31 @@ Over the remote path the same envelope and exit code are relayed by the serve
 worker (which re-invokes this exact CLI), so local and remote behaviour are
 byte-for-byte identical.
 
+**Framing — where the envelope is on each path:**
+
+- **Local** (`vm-harness crud <verb> …` as a child process): stdout carries
+  exactly one line, the envelope, and nothing else. Backend diagnostics, if
+  any, go to stderr. The process exit code is the code in the table above.
+- **Remote** (`POST /v1/exec` with `argv = ["crud", "<verb>", …]`): serve
+  merges the worker's stdout and stderr into NDJSON `log` events, followed by
+  a terminal `exit` event that carries the same exit code. The envelope is
+  the **last** `log` line, because the CLI prints it after the verb has
+  finished. Any earlier `log` lines are backend diagnostics, which the
+  consumer should ignore or surface as logs. An `error` event means serve
+  itself failed to run the worker (e.g. it could not spawn it, or the exec
+  deadline killed it), not that a verb failed, and it carries no envelope.
+
+`tests/e2e/t_crud_serve_parity.nim` pins this: for each case, the local
+stdout line and the remote `log` line are byte-identical, and the two exit
+codes match.
+
+**Scope of one invocation:** the façade's VM registry is process-local, so
+each CLI or `/v1/exec` call is a fresh session. A VM created in one
+invocation is **not** visible to the next (`get_vm` returns `not-found`,
+exit 3). Persisting instance state across invocations is the open follow-up
+recorded in §8.2. Until it lands, a subprocess consumer can use the contract
+for single-shot verbs only.
+
 ### 8.2 Verb → VmBackend mapping
 
 gosti has no *defined-but-stopped instance* at the `VmBackend` layer —
