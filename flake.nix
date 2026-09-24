@@ -112,6 +112,10 @@
                 $out/share/vm-harness/guest-scripts \
                 $out/share/vm-harness/guest-recipes
               install -m755 vm-harness $out/bin/vm-harness
+              # Hermetic-consumer fixture (docs/design.md §8.6): the real CLI
+              # against the file-backed mock backend.
+              install -m755 scripts/vm-harness-fixture.sh \
+                $out/bin/vm-harness-fixture
               cp -R guest-scripts/* $out/share/vm-harness/guest-scripts/
               cp -R guest-recipes/* $out/share/vm-harness/guest-recipes/
               runHook postInstall

@@ -78,17 +78,12 @@ proc sanitizeKey*(s: string): string =
 proc handlePath*(backendId, baseline: string): string =
   ephemeralStateRoot() / sanitizeKey(backendId) / (sanitizeKey(baseline) & ".json")
 
-proc saveEphemeralHandle*(backendId, baseline: string, vm: VmHandle) =
-  ## Record everything `stopAndCleanup` will need. `backend` is deliberately
-  ## NOT stored — it is a live ref, and the destroy side constructs a fresh one
-  ## from `--backend` anyway.
-  ##
-  ## Mode 0600: `sshAuth` may carry the guest provisioning password, and while
-  ## that is a well-known credential for a throwaway guest rather than a real
-  ## secret, a world-readable file containing a password is not worth the
-  ## convenience.
-  let path = handlePath(backendId, baseline)
-  createDir(path.parentDir)
+proc handleToJson*(vm: VmHandle): JsonNode =
+  ## The backend-agnostic serialization of a ``VmHandle``: everything
+  ## ``stopAndCleanup`` and the guest verbs need, and nothing a particular
+  ## backend knows. Shared by the ephemeral handle store (below) and the crud
+  ## store (``crud_store.nim``). ``backend`` is deliberately NOT stored — it is
+  ## a live ref, and the reader constructs a fresh one.
   var extra = newJObject()
   for k, v in vm.extra:
     extra[k] = %v
@@ -102,10 +97,7 @@ proc saveEphemeralHandle*(backendId, baseline: string, vm: VmHandle) =
   of saKeyFile:
     auth["kind"] = %"keyFile"
     auth["keyPath"] = %vm.sshAuth.keyPath
-  let doc = %*{
-    "schema": "vm-harness/ephemeral-handle/1",
-    "backend": backendId,
-    "baseline": baseline,
+  %*{
     "name": vm.name,
     "clonedFrom": vm.baseline,
     "ipAddress": (if vm.ipAddress.isSome: %vm.ipAddress.get else: newJNull()),
@@ -114,6 +106,55 @@ proc saveEphemeralHandle*(backendId, baseline: string, vm: VmHandle) =
     "sshAuth": auth,
     "extra": extra,
   }
+
+proc handleFromJson*(doc: JsonNode, backend: VmBackend): VmHandle =
+  ## Inverse of ``handleToJson``. Tolerant of missing keys (a record written by
+  ## an older gosti still rebuilds).
+  var extra = initTable[string, string]()
+  if doc.hasKey("extra") and doc["extra"].kind == JObject:
+    for k, v in doc["extra"]:
+      if v.kind == JString: extra[k] = v.getStr
+  var auth = SshAuth(kind: saNone)
+  if doc.hasKey("sshAuth") and doc["sshAuth"].kind == JObject:
+    let a = doc["sshAuth"]
+    case a{"kind"}.getStr("none")
+    of "password": auth = SshAuth(kind: saPassword,
+                                  password: a{"password"}.getStr(""))
+    of "keyFile": auth = SshAuth(kind: saKeyFile,
+                                 keyPath: a{"keyPath"}.getStr(""))
+    else: auth = SshAuth(kind: saNone)
+  let ipNode = doc{"ipAddress"}
+  let ip =
+    if ipNode != nil and ipNode.kind == JString and ipNode.getStr.len > 0:
+      some(ipNode.getStr)
+    else:
+      none(string)
+  VmHandle(
+    backend: backend,
+    name: doc{"name"}.getStr(""),
+    baseline: doc{"clonedFrom"}.getStr(""),
+    ipAddress: ip,
+    sshPort: doc{"sshPort"}.getInt(0),
+    sshUser: doc{"sshUser"}.getStr(""),
+    sshAuth: auth,
+    extra: extra)
+
+proc saveEphemeralHandle*(backendId, baseline: string, vm: VmHandle) =
+  ## Record everything `stopAndCleanup` will need.
+  ##
+  ## Mode 0600: `sshAuth` may carry the guest provisioning password, and while
+  ## that is a well-known credential for a throwaway guest rather than a real
+  ## secret, a world-readable file containing a password is not worth the
+  ## convenience.
+  let path = handlePath(backendId, baseline)
+  createDir(path.parentDir)
+  let doc = %*{
+    "schema": "vm-harness/ephemeral-handle/1",
+    "backend": backendId,
+    "baseline": baseline,
+  }
+  for k, v in handleToJson(vm):
+    doc[k] = v
   # Write-then-rename so a crashed writer cannot leave a half-parsed record
   # that makes a live guest look unreclaimable.
   let tmp = path & ".tmp"
@@ -137,34 +178,7 @@ proc loadEphemeralHandle*(backendId, baseline: string,
     doc = parseFile(path)
   except CatchableError:
     return none(VmHandle)
-  var extra = initTable[string, string]()
-  if doc.hasKey("extra") and doc["extra"].kind == JObject:
-    for k, v in doc["extra"]:
-      if v.kind == JString: extra[k] = v.getStr
-  var auth = SshAuth(kind: saNone)
-  if doc.hasKey("sshAuth") and doc["sshAuth"].kind == JObject:
-    let a = doc["sshAuth"]
-    case a{"kind"}.getStr("none")
-    of "password": auth = SshAuth(kind: saPassword,
-                                  password: a{"password"}.getStr(""))
-    of "keyFile": auth = SshAuth(kind: saKeyFile,
-                                 keyPath: a{"keyPath"}.getStr(""))
-    else: auth = SshAuth(kind: saNone)
-  let ipNode = doc{"ipAddress"}
-  let ip =
-    if ipNode != nil and ipNode.kind == JString and ipNode.getStr.len > 0:
-      some(ipNode.getStr)
-    else:
-      none(string)
-  some(VmHandle(
-    backend: backend,
-    name: doc{"name"}.getStr(""),
-    baseline: doc{"clonedFrom"}.getStr(""),
-    ipAddress: ip,
-    sshPort: doc{"sshPort"}.getInt(0),
-    sshUser: doc{"sshUser"}.getStr(""),
-    sshAuth: auth,
-    extra: extra))
+  some(handleFromJson(doc, backend))
 
 proc forgetEphemeralHandle*(backendId, baseline: string) =
   ## Drop the record. Called AFTER a successful teardown, so a failed teardown

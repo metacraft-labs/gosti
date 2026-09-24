@@ -1860,3 +1860,35 @@ proc runViaReproScript*(b: HyperVBackend, gate: string,
 # own ``newHyperVBackend(...)`` instance.
 
 registerBackend(biHyperv, proc(): VmBackend = newHyperVBackend())
+
+# ---------------------------------------------------------------------------
+# Crud-store reconciliation (design doc §8.6).
+
+const HyperVGoneMarker* = "VMH_GONE"
+
+proc buildPresenceCommand*(name: string): string =
+  ## Enumerate with ``Get-VM`` and filter, rather than ``Get-VM -Name``, so a
+  ## Hyper-V that cannot be asked FAILS (non-zero exit) instead of looking
+  ## like "no such VM".
+  "$ErrorActionPreference = 'Stop'; " &
+  "$v = Get-VM | Where-Object { $_.Name -eq '" & psQuote(name) & "' }; " &
+  "if ($null -eq $v) { '" & HyperVGoneMarker & "' } else { [string]$v.State }"
+
+proc hypervPresenceFrom*(exitCode: int, stdout: string): InstancePresence =
+  if exitCode != 0: return ipUnknown
+  let s = stdout.strip()
+  if s == HyperVGoneMarker: return ipGone
+  case normalizeHyperVState(s)
+  of "stopped": ipStopped
+  of "running": ipRunning
+  else: ipUnknown
+
+method instancePresence*(b: HyperVBackend, vm: VmHandle): InstancePresence =
+  when defined(windows):
+    let cmd = @[$b.powershellLauncher, "-NoLogo", "-NoProfile",
+                "-ExecutionPolicy", "Bypass", "-Command",
+                buildPresenceCommand(vm.name)]
+    let r = runProcessCapture(cmd, timeoutSec = 60)
+    hypervPresenceFrom(r.exitCode, r.stdout)
+  else:
+    ipUnknown

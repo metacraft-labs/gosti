@@ -62,17 +62,15 @@
 ## (``VmHandle.name``, e.g. libvirt's domain), not the caller's logical name,
 ## so they line up with what the hypervisor actually stores.
 ##
-## Scope caveat (documented, deliberately NOT solved in PR-1): the registry
-## is process-local. A real Rust binding that invokes the CLI once per verb
-## needs the running-instance set to survive across invocations — that is a
-## persistence follow-up (handle reconstruction from hypervisor state, as
-## ``instances.nim`` already does for durable libvirt instances). PR-1 is
-## additive and hermetic: the gate drives a single long-lived session
-## in-process through the ``noop`` backend, which is all the CONTRACT
-## (JSON schema + exit codes + verb dispatch) needs to be pinned down.
+## Cross-invocation state (design doc §8.6): a session built with a
+## ``CrudStore`` (the CLI always does) persists the registry in the crud store
+## and reconciles every loaded handle against the hypervisor via
+## ``VmBackend.instancePresence``, so one process per verb sees one consistent
+## set of VMs. A session with no store keeps the registry in-process, which is
+## what the in-process gates (``t_crud_facade*``) drive.
 
 import std/[json, options, tables]
-import ./types
+import ./types, ./crud_store, ./ephemeral_handle
 
 type
   VmState* = enum
@@ -160,11 +158,13 @@ type
                                  ## kill after N seconds (0 ⇒ no limit).
 
   CrudSession* = ref object
-    ## Holds the backend and the process-local instance registry. One session
-    ## drives many verbs; the gate reuses a single session for a full
-    ## lifecycle so in-memory state (which VMs are running) persists.
+    ## Holds the backend and the instance registry. With ``store`` nil the
+    ## registry is process-local (one session drives many verbs in-process);
+    ## with a store it is the persisted crud store (design doc §8.6).
     backend*: VmBackend
     registry: Table[string, VmRecord]
+    store*: CrudStore
+    lockTimeoutSec*: int         ## per-VM lock wait (store mode only)
 
   CrudResponse* = object
     ## The single value ``runCrud`` returns: the JSON the CLI echoes on
@@ -194,9 +194,12 @@ proc newCrudError(kind: CrudErrorKind, msg: string): ref CrudError =
   result = newException(CrudError, msg)
   result.kind = kind
 
-proc newCrudSession*(backend: VmBackend): CrudSession =
-  ## Construct a façade session around an already-resolved backend.
-  CrudSession(backend: backend, registry: initTable[string, VmRecord]())
+proc newCrudSession*(backend: VmBackend, store: CrudStore = nil,
+                     lockTimeoutSec = 10): CrudSession =
+  ## Construct a façade session around an already-resolved backend. Pass a
+  ## ``store`` to persist the registry across invocations (§8.6).
+  CrudSession(backend: backend, registry: initTable[string, VmRecord](),
+              store: store, lockTimeoutSec: lockTimeoutSec)
 
 # ---------------------------------------------------------------------------
 # Marshalling helpers. All JSON keys are part of the stable schema.
@@ -233,24 +236,88 @@ proc toVmInfo(session: CrudSession, rec: VmRecord): VmInfo =
     backend: $session.backend.id,
     baseline: rec.baseline,
     state: rec.state,
-    ssh: (if rec.handle != nil: some(toSshEndpoint(rec.handle))
+    ssh: (if rec.handle != nil and rec.state == vsRunning:
+            some(toSshEndpoint(rec.handle))
           else: none(SshEndpoint)))
 
 # ---------------------------------------------------------------------------
 # Internal lookups.
 
+# ---------------------------------------------------------------------------
+# Registry access. Every verb goes through these four procs, so the verbs are
+# identical in process-local and crud-store mode.
+
+proc reconcile(session: CrudSession, stored: CrudStoredVm): VmRecord =
+  ## Rebuild a record from disk and derive its state from the hypervisor
+  ## (§8.6): running/stopped follow the backend, a vanished instance is
+  ## ``error``, and "could not ask" (``ipUnknown``, or a probe that raised)
+  ## leaves the recorded state standing — never read as absence.
+  result = VmRecord(name: stored.name, baseline: stored.baseline,
+                    state: (if stored.state == $vsRunning: vsRunning
+                            else: vsStopped))
+  if stored.handle.isSome:
+    result.handle = handleFromJson(stored.handle.get(), session.backend)
+    var presence = ipUnknown
+    try:
+      presence = session.backend.instancePresence(result.handle)
+    except CatchableError:
+      presence = ipUnknown
+    case presence
+    of ipRunning: result.state = vsRunning
+    of ipStopped: result.state = vsStopped
+    of ipGone: result.state = vsError
+    of ipUnknown: discard
+
+proc fetch(session: CrudSession, name: string): Option[VmRecord] =
+  if session.store == nil:
+    if name in session.registry: return some(session.registry[name])
+    return none(VmRecord)
+  let stored = session.store.load($session.backend.id, name)
+  if stored.isNone: return none(VmRecord)
+  some(session.reconcile(stored.get()))
+
+proc put(session: CrudSession, rec: VmRecord) =
+  if session.store == nil:
+    session.registry[rec.name] = rec
+    return
+  # ``error`` is derived, never stored: persist what the façade last did.
+  session.store.save(CrudStoredVm(
+    name: rec.name, backend: $session.backend.id, baseline: rec.baseline,
+    state: (if rec.state == vsStopped: $vsStopped else: $vsRunning),
+    handle: (if rec.handle != nil: some(handleToJson(rec.handle))
+             else: none(JsonNode))))
+
+proc drop(session: CrudSession, name: string) =
+  if session.store == nil:
+    session.registry.del(name)
+  else:
+    session.store.remove($session.backend.id, name)
+
+proc allRecords(session: CrudSession): seq[VmRecord] =
+  if session.store == nil:
+    for rec in session.registry.values: result.add(rec)
+  else:
+    for stored in session.store.list($session.backend.id):
+      result.add(session.reconcile(stored))
+
 proc requireRecord(session: CrudSession, name: string): VmRecord =
   ## Registry lookup that maps a miss to the stable ``not-found`` failure.
   if name.len == 0:
     raise newCrudError(cekBadArgs, "vm name is required")
-  if name notin session.registry:
+  let rec = session.fetch(name)
+  if rec.isNone:
     raise newCrudError(cekNotFound, "vm '" & name & "' not found")
-  session.registry[name]
+  rec.get()
 
 proc requireRunning(rec: VmRecord): VmHandle =
   ## The verbs that touch the guest (exec/copy/ssh/snapshot) need a live
-  ## handle. A stopped instance is a precondition failure, not a miss.
-  if rec.handle == nil:
+  ## instance. A stopped or vanished instance is a precondition failure, not a
+  ## miss.
+  if rec.state == vsError:
+    raise newCrudError(cekBackendError,
+      "vm '" & rec.name & "' no longer exists on the hypervisor " &
+      "(state error); delete_vm or start_vm it")
+  if rec.handle == nil or rec.state != vsRunning:
     raise newCrudError(cekBackendError,
       "vm '" & rec.name & "' is not running")
   rec.handle
@@ -311,7 +378,7 @@ proc wrapExecArgv*(argv: seq[string], cwd, runAs: string,
 proc createVm(session: CrudSession, p: CrudParams): JsonNode =
   if p.name.len == 0:
     raise newCrudError(cekBadArgs, "create_vm requires a vm name")
-  if p.name in session.registry:
+  if session.fetch(p.name).isSome:
     raise newCrudError(cekBadArgs, "vm '" & p.name & "' already exists")
   let spec = buildSpec(p)
   let baseline = spec.name
@@ -327,19 +394,21 @@ proc createVm(session: CrudSession, p: CrudParams): JsonNode =
     session.backend.revertToBaselineWithUserData(baseline, spec.userData)
   let rec = VmRecord(name: p.name, baseline: baseline,
                      handle: handle, state: vsRunning)
-  session.registry[p.name] = rec
+  session.put(rec)
   %*{"vm": toJson(toVmInfo(session, rec))}
 
 proc startVm(session: CrudSession, p: CrudParams): JsonNode =
   var rec = requireRecord(session, p.name)
-  if rec.handle != nil:
-    # Already running: gosti folds start into revert, so this is idempotent.
+  if rec.handle != nil and rec.state != vsError:
+    # Running (idempotent) or stopped by the hypervisor with the instance
+    # still defined: ask the backend to (re)start it and wait for readiness.
     session.backend.startAndAwaitReady(rec.handle)
   else:
-    # Re-materialise an instance the caller previously stopped.
+    # Stopped via stop_vm (handle released), or the instance vanished behind
+    # our back (state error): re-materialise it from the template.
     rec.handle = session.backend.revertToBaseline(rec.baseline)
   rec.state = vsRunning
-  session.registry[p.name] = rec
+  session.put(rec)
   %*{"vm": toJson(toVmInfo(session, rec))}
 
 proc stopVm(session: CrudSession, p: CrudParams): JsonNode =
@@ -348,14 +417,14 @@ proc stopVm(session: CrudSession, p: CrudParams): JsonNode =
     session.backend.stopAndCleanup(rec.handle, deleteVm = false)
     rec.handle = nil
   rec.state = vsStopped
-  session.registry[p.name] = rec
+  session.put(rec)
   %*{"vm": toJson(toVmInfo(session, rec))}
 
 proc deleteVm(session: CrudSession, p: CrudParams): JsonNode =
   let rec = requireRecord(session, p.name)
   if rec.handle != nil:
     session.backend.stopAndCleanup(rec.handle, deleteVm = true)
-  session.registry.del(p.name)
+  session.drop(p.name)
   %*{"name": p.name, "deleted": true, "state": $vsStopped}
 
 proc getVm(session: CrudSession, p: CrudParams): JsonNode =
@@ -364,7 +433,7 @@ proc getVm(session: CrudSession, p: CrudParams): JsonNode =
 
 proc listVms(session: CrudSession, p: CrudParams): JsonNode =
   var arr = newJArray()
-  for rec in session.registry.values:
+  for rec in session.allRecords():
     arr.add(toJson(toVmInfo(session, rec)))
   %*{"vms": arr}
 
@@ -450,7 +519,14 @@ proc runCrud*(session: CrudSession, verb: string, p: CrudParams): CrudResponse =
   ##
   ## The exit code is 0 on success, else ``exitCode(error.kind)``.
   var data: JsonNode
+  var lock: CrudLock
   try:
+    if session.store != nil and verb != "list_vms" and verb in CrudVerbs and
+       p.name.len > 0:
+      # One writer per VM across processes (§8.6). list_vms reads the
+      # atomically-replaced records without a lock.
+      lock = session.store.lockVm($session.backend.id, p.name,
+                                  session.lockTimeoutSec)
     data =
       case verb
       of "create_vm": createVm(session, p)
@@ -468,6 +544,18 @@ proc runCrud*(session: CrudSession, verb: string, p: CrudParams): CrudResponse =
       of "list_snapshots": listSnapshotsVm(session, p)
       else:
         raise newCrudError(cekBadArgs, "unknown crud verb '" & verb & "'")
+  except CrudNameError as e:
+    return CrudResponse(
+      exitCode: exitCode(cekBadArgs),
+      json: %*{"ok": false, "verb": verb,
+               "error": {"code": exitCode(cekBadArgs), "kind": $cekBadArgs,
+                         "message": e.msg}})
+  except CrudBusyError as e:
+    return CrudResponse(
+      exitCode: exitCode(cekBackendError),
+      json: %*{"ok": false, "verb": verb,
+               "error": {"code": exitCode(cekBackendError),
+                         "kind": $cekBackendError, "message": e.msg}})
   except CrudError as e:
     return CrudResponse(
       exitCode: exitCode(e.kind),
@@ -494,6 +582,8 @@ proc runCrud*(session: CrudSession, verb: string, p: CrudParams): CrudResponse =
       json: %*{"ok": false, "verb": verb,
                "error": {"code": exitCode(cekInternal),
                          "kind": $cekInternal, "message": e.msg}})
+  finally:
+    release(lock)
   CrudResponse(
     exitCode: 0,
     json: %*{"ok": true, "verb": verb, "data": data})

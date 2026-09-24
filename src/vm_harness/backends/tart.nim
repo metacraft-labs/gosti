@@ -1040,3 +1040,17 @@ registerBackend(biTartMacos,
   proc(): VmBackend = newTartBackend(goMacos, useDefaultGolden = false))
 registerBackend(biTartLinuxArm,
   proc(): VmBackend = newTartBackend(goLinux, useDefaultGolden = false))
+
+# ---------------------------------------------------------------------------
+# Crud-store reconciliation (design doc §8.6).
+
+proc tartPresenceFrom*(rows: Option[seq[TartVmListing]], name: string): InstancePresence =
+  ## ``tart list`` rows. An unreadable listing is "could not ask".
+  if rows.isNone: return ipUnknown
+  for row in rows.get():
+    if row.name == name:
+      return (if row.isRunning: ipRunning else: ipStopped)
+  ipGone
+
+method instancePresence*(b: TartBackend, vm: VmHandle): InstancePresence =
+  tartPresenceFrom(b.tryListTartVmsDetailed(), vm.name)

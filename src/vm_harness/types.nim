@@ -47,6 +47,11 @@ type
     biLibvirt = "libvirt"
     biLima = "lima"
     biIncus = "incus"
+    biMock = "mock"
+      ## The deterministic in-memory/file-backed test fixture
+      ## (``backends/mock.nim``). NEVER registered in the backend registry, so
+      ## it is never advertised or auto-selected; the CLI builds it only when a
+      ## caller names ``--backend mock`` (design doc §8.6).
 
   SshAuthKind* = enum
     saNone, saPassword, saKeyFile
@@ -395,6 +400,24 @@ method honorsMounts*(b: VmBackend): bool {.base.} =
   ## ``BaselineSpec.mounts``? Defaults false — no gosti backend attaches them
   ## yet, so ``crud create_vm --mount`` stays fail-closed everywhere.
   false
+
+type
+  InstancePresence* = enum
+    ## What the hypervisor itself says about one instance (design doc §8.6).
+    ## ``ipUnknown`` means "not asked or could not be asked" and must never be
+    ## read as absence: callers that forget instances on ``ipGone`` rely on
+    ## that.
+    ipUnknown = "unknown"
+    ipRunning = "running"
+    ipStopped = "stopped"
+    ipGone = "gone"
+
+method instancePresence*(b: VmBackend, vm: VmHandle): InstancePresence {.base.} =
+  ## Ask the hypervisor whether ``vm`` still exists and whether it is running.
+  ## Used by the crud store to derive state across invocations. The default
+  ## answers ``ipUnknown`` (trust the persisted record); a backend overrides it
+  ## only with a probe that distinguishes "gone" from "could not ask".
+  ipUnknown
 
 method startAndAwaitReady*(b: VmBackend, vm: VmHandle, timeoutSec: int = 120) {.base.} =
   ## Many backends fold start-and-wait into ``revertToBaseline``; this hook

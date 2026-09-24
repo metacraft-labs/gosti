@@ -36,6 +36,7 @@ import ./backends/qemu_boot
 import ./backends/lima
 import ./backends/libvirt
 import ./backends/incus
+import ./backends/mock
 {.pop.}
 import ./prune
 import ./ephemeral_handle
@@ -43,6 +44,7 @@ import ./ephemeral_inventory
 import ./layer_gc
 import ./instances
 import ./crud
+import ./crud_store
 import ./serve/server
 import ./serve/client
 
@@ -372,6 +374,12 @@ Subcommands:
                           3 not-found, 4 backend-unavailable, 5 backend-error,
                           1 internal. See src/vm_harness/crud.nim for the
                           verb→backend mapping and the JSON schema.
+                          VMs persist across invocations in the crud store
+                          (--state-dir <root> ⇒ <root>/crud; else
+                          $VMH_CRUD_STATE_DIR, $STATE_DIRECTORY/crud, or the
+                          user state dir). --backend mock is a deterministic
+                          file-backed fixture for hermetic consumers
+                          (docs/design.md §8.6).
 
 Common flags:
   --backend <auto|noop|hyperv|wsl|tart-macos|tart-linux-arm|
@@ -994,6 +1002,13 @@ proc resolveBackend(opts: CliOpts): tuple[id: BackendId, backend: VmBackend] =
     (id: id, backend: b)
   else:
     let id = parseBackendId(opts.backend)
+    if id == biMock:
+      # The test fixture is deliberately NOT in the registry (never advertised
+      # or auto-selected); it exists only when a caller names it (§8.6).
+      if mockUnavailable():
+        raise newException(BackendUnavailableError,
+          "backend 'mock' is unavailable (" & MockUnavailableEnv & " is set)")
+      return (id: id, backend: VmBackend(newMockBackend(biMock)))
     let b = newBackend(id, noopFallback = opts.allowNoopFallback)
     (id: id, backend: b)
 
@@ -2219,6 +2234,7 @@ proc cmdBackends(opts: CliOpts): int =
                   biQemuWindowsArm: "macos-arm"
                of biLibvirt, biLima, biQemuBoot: "linux/macos"
                of biIncus: "linux"
+               of biMock: "any"
     let guests = case id
                  of biNoop: "any"
                  of biHyperv: "linux,windows"
@@ -2229,6 +2245,7 @@ proc cmdBackends(opts: CliOpts): int =
                  of biLibvirt, biQemuBoot: "linux,windows"
                  of biLima: "linux"
                  of biIncus: "linux"
+                 of biMock: "any"
     let marker = if registered: "*" else: " "
     echo($id & marker & " ".repeat(max(1, 20 - len($id) - 1)) & host &
          " ".repeat(max(1, 14 - host.len)) & guests)
@@ -2786,10 +2803,27 @@ proc cmdCrud(opts: CliOpts): int =
   # ``runCli``.
   var session: CrudSession
   var backend: VmBackend
+  var backendLock: CrudLock
+  defer: release(backendLock)
   try:
     let (_, resolved) = resolveBackend(opts)
     backend = resolved
-    session = newCrudSession(backend)
+    # Cross-invocation state (docs/design.md §8.6): every CLI crud call runs
+    # against the persisted crud store.
+    let store = newCrudStore(crudStateRoot(opts.stateDir))
+    if backend of MockBackend:
+      # The file-backed mock keeps its whole fleet in one file; hold a
+      # backend-wide lock for this invocation so concurrent calls do not
+      # clobber each other's read-modify-write.
+      try:
+        backendLock = store.lockBackend($backend.id, opts.lockTimeoutSec)
+      except CrudBusyError as e:
+        echo $(%*{"ok": false, "verb": verb,
+                  "error": {"code": exitCode(cekBackendError),
+                            "kind": $cekBackendError, "message": e.msg}})
+        return exitCode(cekBackendError)
+      MockBackend(backend).attachStateFile(store.mockFleetPath())
+    session = newCrudSession(backend, store, opts.lockTimeoutSec)
   except BackendUnavailableError as e:
     echo $(%*{"ok": false, "verb": verb,
               "error": {"code": exitCode(cekBackendUnavailable),

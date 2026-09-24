@@ -85,10 +85,28 @@ suite "t_crud_serve_parity":
   let port = waitForPort(portFile)
   let client = newServeClient("127.0.0.1:" & $port, token)
 
-  proc checkParity(argv: seq[string], wantCode: int): JsonNode =
+  var caseNo = 0
+
+  proc withState(argv: seq[string], dir: string): seq[string] =
+    ## Splice ``--state-dir`` in before ``--`` (after it is the guest argv).
+    let dd = argv.find("--")
+    if dd < 0: argv & @["--state-dir", dir]
+    else: argv[0 ..< dd] & @["--state-dir", dir] & argv[dd .. ^1]
+
+  proc checkParity(argv: seq[string], wantCode: int,
+                   sharedDir = ""): JsonNode =
     ## Run ``crud <argv>`` both ways, assert the contract, return the
-    ## parsed envelope for per-verb shape checks.
-    let local = runLocal(@["crud"] & argv)
+    ## parsed envelope for per-verb shape checks. Each path gets its own
+    ## fresh crud store (design doc §8.6) so a mutating verb starts from the
+    ## same empty state on both sides — unless ``sharedDir`` is given, in
+    ## which case both paths address the same store (a read-only verb then
+    ## proves the two paths SEE the same VMs).
+    inc caseNo
+    let localDir = if sharedDir.len > 0: sharedDir
+                   else: work / ("local-" & $caseNo)
+    let remoteDir = if sharedDir.len > 0: sharedDir
+                    else: work / ("remote-" & $caseNo)
+    let local = runLocal(@["crud"] & withState(argv, localDir))
     check local.code == wantCode
     check local.stderr == ""
     let lines = local.stdout.strip(leading = false).splitLines()
@@ -96,7 +114,7 @@ suite "t_crud_serve_parity":
 
     var remoteLines: seq[string]
     var sawError = false
-    let remoteCode = client.execStream(@["crud"] & argv,
+    let remoteCode = client.execStream(@["crud"] & withState(argv, remoteDir),
       proc(ev: ExecEvent) =
         case ev.kind
         of ekLog: remoteLines.add(ev.line)
@@ -145,6 +163,43 @@ suite "t_crud_serve_parity":
 
   test "missing verb: bad-args (2)":
     discard checkParity(@[], 2)
+
+  test "multi-invocation: local and serve calls share one crud store":
+    # §8.6: a VM created by one call is visible to later calls, whichever
+    # path each call takes. Both paths resolve the same --state-dir here
+    # (loopback: the daemon host is this host).
+    let shared = work / "shared"
+    proc remote(argv: seq[string]): (int, JsonNode) =
+      var lines: seq[string]
+      let code = client.execStream(@["crud"] & withState(argv, shared),
+        proc(ev: ExecEvent) =
+          if ev.kind == ekLog: lines.add(ev.line))
+      (code, parseJson(lines[^1]))
+    proc local(argv: seq[string]): (int, JsonNode) =
+      let r = runLocal(@["crud"] & withState(argv, shared))
+      (r.code, parseJson(r.stdout.strip()))
+
+    # created locally …
+    check local(@["create_vm", "m1", "--backend", "mock"])[0] == 0
+    # … seen identically by both paths (byte-identical envelope + code)
+    let got = checkParity(@["get_vm", "m1", "--backend", "mock"], 0,
+                          sharedDir = shared)
+    check got["data"]["vm"]["state"].getStr == "running"
+    # … driven over serve
+    let (ec, ex) = remote(@["exec", "m1", "--backend", "mock", "--",
+                            "echo", "hi"])
+    check ec == 0
+    check ex["data"]["stdout"].getStr == "mock-exec: echo hi\n"
+    check remote(@["stop_vm", "m1", "--backend", "mock"])[0] == 0
+    # … and the stop is visible locally
+    let (gc, g) = local(@["get_vm", "m1", "--backend", "mock"])
+    check gc == 0
+    check g["data"]["vm"]["state"].getStr == "stopped"
+    # created over serve, deleted locally, gone for serve
+    check remote(@["create_vm", "m2", "--backend", "mock"])[0] == 0
+    check local(@["list_vms", "--backend", "mock"])[1]["data"]["vms"].len == 2
+    check local(@["delete_vm", "m2", "--backend", "mock"])[0] == 0
+    check remote(@["get_vm", "m2", "--backend", "mock"])[0] == 3
 
   client.shutdown()
   discard daemon.waitForExit(timeout = 5000)

@@ -25,6 +25,16 @@ run_nim r --hints:off tests/unit/t_crud_facade_mock.nim
 # BACKEND-AWARE fail-closed guard (--user-data allowed only for a backend whose
 # honorsUserData() is true; libvirt honors it, the mock does not). Hermetic.
 run_nim r --hints:off tests/unit/t_crud_surface_growth.nim
+# Cross-invocation crud state (design doc §8.6): the store's location chain,
+# name validation, record round-trip, locks (busy + stale-owner break), and
+# each real backend's instancePresence decision ("gone" only on a successful
+# answer). Hermetic (temp dir + pure functions).
+run_nim r --hints:off tests/unit/t_crud_store.nim
+# ... and end to end: every verb as a SEPARATE CLI process against the
+# file-backed mock — lifecycle, vanished-instance reconciliation, fault
+# injection, lock-busy, store isolation, noop persistence, and the
+# consumer fixture script. Hermetic.
+run_nim r --hints:off tests/e2e/t_crud_store_roundtrip.nim
 # GOSTI2 honor-userdata: libvirt BUILDS a NoCloud "cidata" seed from the
 # caller's cloud-init user-data and ATTACHES it to the domain XML as a
 # read-only CD-ROM. Pure-function gate (seed round-trip + domain-XML render +

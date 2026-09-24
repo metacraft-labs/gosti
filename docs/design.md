@@ -628,12 +628,11 @@ byte-for-byte identical.
 stdout line and the remote `log` line are byte-identical, and the two exit
 codes match.
 
-**Scope of one invocation:** the façade's VM registry is process-local, so
-each CLI or `/v1/exec` call is a fresh session. A VM created in one
-invocation is **not** visible to the next (`get_vm` returns `not-found`,
-exit 3). Persisting instance state across invocations is the open follow-up
-recorded in §8.2. Until it lands, a subprocess consumer can use the contract
-for single-shot verbs only.
+**Scope of one invocation:** VM state persists across invocations (§8.6).
+A VM created by one `vm-harness crud` call, whether local or forwarded over
+`/v1/exec`, is visible to `get_vm`/`list_vms`/`start_vm`/`stop_vm`/`exec`/
+`copy_*`/`snapshot*`/`delete_vm` in any later call on the same host that
+resolves the same crud state directory.
 
 ### 8.2 Verb → VmBackend mapping
 
@@ -648,9 +647,8 @@ instance. The façade adapts accordingly:
 - `exec` / `copy_*` / `ssh_endpoint` ⇒ `execInGuest` / `copyTo|FromGuest` / project the `VmHandle`.
 - `snapshot` / `restore_snapshot` / `list_snapshots` ⇒ the matching `VmBackend` snapshot methods.
 
-See `crud.nim`'s module header for the full table and the process-local-registry
-caveat (cross-invocation instance state is a persistence follow-up, not part of
-the wire contract).
+See `crud.nim`'s module header for the full table. §8.6 covers how the
+instance registry persists across invocations.
 
 ### 8.3 Crate layout
 
@@ -682,6 +680,139 @@ old byte-identical `diff -r` gate is moot and is removed.
   Windows/macOS/Linux hypervisor cells this repo owns.
 - Higher-level AH test-isolation harnesses compose that orchestrator's
   lifecycle with AH's own Tier-3 scripts (sync, test, harvest) unchanged.
+
+### 8.6 Cross-invocation state (the crud store)
+
+A subprocess or serve consumer runs one `vm-harness crud` process per verb. So
+the façade's instance registry is persisted in a **crud store** on the host
+that runs the verb, and the running instance is re-attached on every call.
+The §8.1 envelope, verbs and exit codes are unchanged by this.
+
+**Location.** The first *configured* location wins. The chain is never
+"first writable", because separate processes must agree without probing.
+It mirrors the label store that `ephemeral-label` uses:
+
+1. `--state-dir <root>` on the `crud` command line, giving `<root>/crud`
+2. `$VMH_CRUD_STATE_DIR`
+3. `$VMH_EPHEMERAL_STATE_DIR/crud`
+4. systemd's `$STATE_DIRECTORY/crud`. This is the serve unit's writable state
+   directory, the same one that holds `ephemeral-labels`.
+5. the user state dir: `%LOCALAPPDATA%\vm-harness\crud` on Windows,
+   otherwise `$XDG_STATE_HOME/vm-harness/crud` or
+   `$HOME/.local/state/vm-harness/crud`
+6. `/var/lib/vm-harness/ephemeral/crud`
+
+A serve daemon's worker re-runs the CLI with the daemon's environment. So
+remote calls to one daemon share one store, and a `--state-dir` in the
+forwarded argv names a path on the **daemon** host.
+
+**Records.** There is one JSON file per VM,
+`<store>/<backend-id>/<name>.json`, written with write-then-rename and mode
+0600:
+
+```jsonc
+{"schema": "vm-harness/crud-vm/1",
+ "name": "<logical name>", "backend": "<backend id>", "baseline": "<template>",
+ "state": "running" | "stopped",          // last state the façade set
+ "handle": <VmHandle as ephemeral_handle.nim serializes it> | null}
+```
+
+`handle` is exactly the record `run --ephemeral --keep` already persists for
+`ephemeral-destroy`: instance name, IP, SSH port/user/auth, and the backend's
+`extra` (pids, overlay paths, …). Backends therefore need no crud-specific
+serialization. `handle` is `null` after `stop_vm`, which releases the
+instance; `start_vm` re-materializes it from `baseline`.
+
+Because the logical name becomes a filename, a crud-store name must match
+`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Anything else is `bad-args` (exit 2).
+It is not silently sanitized, because two different names must never map to
+one record.
+
+**Deriving state from the hypervisor.** On every call, each loaded record
+that holds a handle is reconciled against the backend with the base method
+`instancePresence(vm)`:
+
+| backend | how it answers |
+|---|---|
+| incus | `incus list <name> -c s` (`RUNNING`/`FROZEN` count as running; empty means gone) |
+| libvirt | `virsh domstate <name>` (`running`/`paused` count as running; `shut off` is stopped; failure means gone) |
+| tart | `tart list` row for the instance (a missing row means gone) |
+| hyperv | `Get-VM -Name <name>` (`Off` is stopped; anything else counts as running; missing means gone) |
+| mock | its own persisted fleet |
+| others (noop, qemu-*, lima, utm, wsl) | `unknown`: the record is trusted |
+
+The reported `VmState` then follows the hypervisor:
+
+- **running**: `running`.
+- **stopped**: `stopped`. The handle is kept, and `start_vm` calls
+  `startAndAwaitReady` on it.
+- **gone**: `error`, with `ssh: null`. The record is **kept**, not
+  forgotten, so the consumer learns that the VM vanished outside gosti.
+  Guest verbs (`exec`, `copy_*`, `ssh_endpoint`, `snapshot*`) fail with
+  `backend-error` (5). `start_vm` re-materializes the VM from `baseline`.
+  `delete_vm` runs the never-raising `stopAndCleanup(deleteVm=true)` and
+  removes the record.
+- **unknown**: the recorded state stands.
+
+If the probe itself fails (the hypervisor cannot be asked), the answer is
+`unknown`, never `gone`. Failing to ask must not look like proof of absence.
+That is the same fail-closed rule `ephemeral-list` follows.
+
+`list_vms` lists the records of the **resolved backend** only. A store
+directory that exists but cannot be read is an error (`internal`, exit 1),
+never an empty list.
+
+**Concurrency.** Each verb that names a VM holds a per-VM lock while it runs.
+The lock is the directory `<store>/<backend-id>/<name>.lock`, because
+`mkdir` is atomic on every supported OS. It contains an `owner` file with the
+holder's pid. A lock whose owner pid is no longer alive (POSIX) is broken.
+Otherwise the caller waits up to `--lock-timeout-sec` (the existing flag:
+default 10 s, at most 300) and then fails with `backend-error` (5) and a
+"busy" message. A consumer that issues calls on one VM concurrently should
+expect this and retry; the ah-vm binding serializes calls per VM. `list_vms` takes no
+lock; it reads the atomically-replaced records.
+
+**The file-backed mock, and the fixture for consumers.** The `mock` backend
+(`--backend mock`) is the deterministic `MockBackend` (§9, PR-2). When a
+crud-store call drives it, its whole fleet (templates, instances, in-memory
+guest filesystems, snapshots) is loaded from and saved to
+`<store>/mock/.fleet.json`, under a backend-wide lock. So a multi-invocation
+lifecycle behaves like a real hypervisor with no hypervisor present. `mock`
+is **never registered** in the backend registry. It is not advertised by
+`backends`-style listings, serve `/v1/info` or the capability manifest, and
+it is never auto-selected. It exists only when a caller names it.
+
+This is the **fixture mode for hermetic consumers** (the ah-vm
+`GostiOrchestrator` tests). Point the binding at the real `vm-harness` binary
+with `--backend mock --state-dir <tmp>`:
+
+```sh
+vm-harness crud create_vm vm1 --backend mock --state-dir "$T"   # → running
+vm-harness crud exec vm1 --backend mock --state-dir "$T" -- echo hi
+#   → {"ok":true,"verb":"exec","data":{"exit_code":0,"stdout":"mock-exec: echo hi\n",…}}
+vm-harness crud delete_vm vm1 --backend mock --state-dir "$T"
+```
+
+Deterministic data: `ssh_endpoint` is `{"host":"10.0.2.15","port":22,
+"user":"mock","auth":"keyfile"}`. `exec` returns exit 0 with stdout
+`mock-exec: [K=V …] <argv>\n` and `elapsed_ms` 5. A snapshot id is
+`mock-vm-<baseline>@<snapshot>`. Failures can be injected so a consumer can
+test its error mapping:
+
+- `VMH_MOCK_UNAVAILABLE=1` makes the backend unavailable (`backend-unavailable`, exit 4).
+- `VMH_MOCK_FAIL=<op>[,<op>…]` makes the named backend operations raise
+  (`backend-error`, exit 5). `<op>` is one of `provision`, `revert`, `start`,
+  `exec`, `copy`, `snapshot`, `restore`.
+
+`scripts/vm-harness-fixture.sh` wraps the binary with a per-test state dir.
+
+**Gates.** `tests/e2e/t_crud_store_roundtrip.nim` drives every verb as a
+**separate CLI process** against the file-backed mock. It also covers
+reconciliation (a record whose instance vanished reports `error`, then
+`delete_vm` clears it), name validation, fault injection, and lock-busy
+behavior. `tests/e2e/t_crud_serve_parity.nim` adds a multi-invocation case:
+a VM created by a local call is visible over serve `/v1/exec`, and the
+reverse, with byte-identical envelopes.
 
 ## 9. Test methodology
 
