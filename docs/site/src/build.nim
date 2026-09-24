@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness docs -- thin SSG entry.
 ##
 ## Calls the framework's own `buildSite` with this site's `content/` dir and its

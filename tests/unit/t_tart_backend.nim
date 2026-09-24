@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Tart backend command construction and SSH/SCP retry behaviour.
 ##
 ## Golden-image SELECTION is not here: it is the MA0 gate

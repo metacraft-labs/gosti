@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## e2e_vm_harness_utm_windows_arm_smoke (M3 verification).
 ##
 ## Drives a complete ``vm-harness run`` lifecycle against a UTM-managed

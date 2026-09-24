@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # fetch-windows-iso.sh — obtain a Microsoft Windows install ISO without a
 # browser, by driving Microsoft's own download API through Fido.
 #

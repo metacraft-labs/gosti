@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_vmharness_serve_concurrency — the concurrent-serve gate.
 ##
 ## Proves that ``vm-harness serve`` handles connections CONCURRENTLY: a single

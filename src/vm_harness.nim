@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness — cross-platform VM lifecycle orchestration for test
 ## harnesses and dev workflows.
 ##

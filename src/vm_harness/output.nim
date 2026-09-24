@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness output envelope writer
 ##
 ## Implements the *mandatory envelope* defined in design doc §3.5:

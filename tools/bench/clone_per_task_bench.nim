@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Backend-agnostic clone-per-task benchmark.
 ##
 ## The counterpart to ``snapshot_revert_bench.nim``. That one measures the

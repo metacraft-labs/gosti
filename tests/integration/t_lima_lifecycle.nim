@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## integration_vm_harness_lima_lifecycle (M5 verification).
 ##
 ## Exercises every ``LimaBackend`` method against a real Lima-managed

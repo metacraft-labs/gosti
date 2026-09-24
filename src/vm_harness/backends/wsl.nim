@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## WslBackend — vm-harness adapter for WSL2 on Windows hosts. Per
 ## design doc §4.2.
 ##

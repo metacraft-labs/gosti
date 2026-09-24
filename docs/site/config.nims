@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # vm-harness docs site -- Nim path/define switching for the isonim-docs SSG.
 #
 # This consumer builds the vm-harness documentation site on top of the

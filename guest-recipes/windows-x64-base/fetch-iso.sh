@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # fetch-iso.sh — fetch the two ISOs the libvirt Windows-x64 baseline
 # needs:
 #

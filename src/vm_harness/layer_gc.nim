@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness layer GC — deleting a base image, snapshot or backing file is
 ## refused while anything still references it, and per-job overlays that
 ## nothing references any more are swept.

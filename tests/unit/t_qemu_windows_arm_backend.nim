@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Pure/unit tests for the direct QEMU Windows ARM backend.
 ##
 ## These do not boot QEMU. They assert the filesystem validation,

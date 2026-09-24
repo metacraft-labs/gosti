@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Shared helpers for backends that drive external processes
 ## (Hyper-V via PowerShell, WSL via ``wsl.exe``, or by invoking
 ## reprobuild's existing PowerShell harness scripts).

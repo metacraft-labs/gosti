@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Runner-Fleet-M3-ARM-Wave MA3 gate: ``t_qemu_windows_arm_golden_build``
 ## — UNIT TIER. Runs anywhere; needs no hypervisor, no Windows and no ISO.
 ##

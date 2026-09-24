@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_incus_layered_base_image — the "install-once, reuse-everywhere" gate.
 ##
 ## Proves the "install-once, reuse-everywhere" layered base-image chain on

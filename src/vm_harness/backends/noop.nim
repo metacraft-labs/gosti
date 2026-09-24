@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## NoopBackend — the one allowed mock per the test methodology in design
 ## doc §9.1.
 ##

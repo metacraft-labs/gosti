@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_ephemeral_inventory — `ephemeral-list` and the verified incus teardown.
 ##
 ## Gates the two vm-harness halves of the GARM instance-lifecycle fix:

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Hermetic gate for the generic-CRUD façade (GOSTI2 PR-1).
 ##
 ## Drives EVERY CRUD verb through the ``noop`` backend — the one allowed mock

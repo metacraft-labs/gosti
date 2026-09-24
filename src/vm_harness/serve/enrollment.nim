@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness serve — ENROLLMENT + signed IDENTITY (RA6).
 ##
 ## Each serve host presents a **signed identity** carrying its capability

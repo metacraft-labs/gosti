@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## TartBackend — vm-harness adapter for Tart on Apple Silicon Mac hosts.
 ## Per design doc §4.3.
 ##

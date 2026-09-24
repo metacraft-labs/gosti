@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Gate: the virtual-TPM device is emitted when ``tpmEnabled`` is set and
 ## is ABSENT when it is not — on both backends that claim to honour the
 ## field.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # run-windows-jit-gate.sh — the M3 gate driver (t_windows_golden_jit_boot).
 #
 # Proves the ephemeral Windows JIT-injection MECHANISM end-to-end against a

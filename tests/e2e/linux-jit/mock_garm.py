@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 """Mock GARM metadata + actions-runner endpoint for the IM2 Linux gate.
 
 The Linux/container analog of ``windows-jit/mock_garm.py`` (the M3 Windows

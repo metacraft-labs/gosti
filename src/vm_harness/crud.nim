@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Generic-CRUD façade over the ``VmBackend`` lifecycle (GOSTI2 PR-1).
 ##
 ## gosti's native contract is the baseline/gate model: a backend

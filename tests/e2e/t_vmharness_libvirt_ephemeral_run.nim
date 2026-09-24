@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_vmharness_libvirt_ephemeral_run (campaign M2 gate).
 ##
 ## Proves the libvirt per-job EPHEMERAL CoW-clone reset against REAL

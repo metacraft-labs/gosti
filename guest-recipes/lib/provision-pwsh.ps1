@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # provision-pwsh.ps1 -- install PowerShell 7 (`pwsh`) into a Windows golden
 # image and put it on the MACHINE PATH.
 #

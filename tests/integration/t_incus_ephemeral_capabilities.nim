@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Deterministic Incus capability lifecycle contract.
 ##
 ## A real subprocess shim records the exact Incus argv. This is deliberately

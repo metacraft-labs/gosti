@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Runner-Fleet-M3-ARM-Wave MA8 gate:
 ## ``t_qemu_windows_arm_dead_guest_is_named`` — HOST TIER. Boots a REAL
 ## Windows-ARM golden with the KNOWN REPRODUCER on the argv and requires the

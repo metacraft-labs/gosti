@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_windows_golden_jit_boot (campaign M3 gate).
 ##
 ## Proves the ephemeral Windows JIT-injection MECHANISM end-to-end on a real

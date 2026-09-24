@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # assert-git-provisioned.ps1 -- HARD GATE: refuse to let a Windows golden be
 # captured unless Git for Windows is actually usable by a SERVICE on every
 # clone of it.

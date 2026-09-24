@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## The Metacraft docs token layer now ships FROM the shared design system --
 ## this file is a thin re-export so this site's `build.nim`/`dev.nim` keep
 ## importing `./theme_tokens` unchanged. The design system is a pinned flake

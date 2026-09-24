@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+
 """Real Linux graph builds must select PCRE without a caller PATH override.
 
 Run with REPRO_BIN pointing to the native repro CLI, from a base environment

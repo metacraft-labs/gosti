@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # S2 (network-primitive) gate — build + run the network/attachment e2e test
 # against reprobuild's full harness env + lib --path set.
 #

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Unit tests for the qemu-windows-arm ephemeral disk provisioning: qcow2
 ## backing overlay (default), whole-file clone fallback, disk-path selection,
 ## and the per-instance liveness lock that ``prune`` relies on.

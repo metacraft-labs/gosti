@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## e2e_vm_harness_tart_cleanup_on_failure (M2 verification).
 ##
 ## Asserts the M0 ``try/finally`` orchestrator runs ``stopAndCleanup``

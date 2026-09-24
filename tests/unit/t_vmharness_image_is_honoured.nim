@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Runner-Fleet-M3-ARM-Wave MA0 gate: ``t_vmharness_image_is_honoured``.
 ##
 ## The gate has three assertions. Two of them are provider-side (Go) and live

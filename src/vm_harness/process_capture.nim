@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Bounded POSIX process capture, draining both outputs while feeding stdin.
 ## Relies on Nim's default ignored SIGPIPE; embedders must not reset it to fatal.
 ## Timeout cleanup supervises the direct child only, not descendant lifetimes.

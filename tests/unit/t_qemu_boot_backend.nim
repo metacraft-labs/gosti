@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Pure/unit tests for the direct-QEMU boot backend (``qemu_boot.nim``).
 ##
 ## These do not boot QEMU. They assert the argument vector, the firmware

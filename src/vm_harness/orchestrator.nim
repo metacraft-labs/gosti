@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Lifecycle orchestrator.
 ##
 ## ``runGate`` wraps the per-gate ``revert → exec → cleanup`` sequence in a

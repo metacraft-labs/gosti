@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Unit tests for the Hyper-V per-job EPHEMERAL clone PowerShell builder
 ## (`buildEphemeralCloneCommand`) — the host-lifecycle primitive RA4's
 ## `t_vmharness_serve_win_hyperv` gate drives on win-ci-bare-001.

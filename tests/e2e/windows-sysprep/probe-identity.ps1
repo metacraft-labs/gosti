@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+
 $ErrorActionPreference = "Continue"
 # Emit the clone's machine identity for the distinct-identity gate. Pipe-free
 # (the Windows sshd default shell routes through cmd.exe, which eats `|`), so

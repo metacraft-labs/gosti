@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_incus_linux_jit_boot (campaign IM2 gate).
 ##
 ## SUPERSEDED PREMISE — DO NOT READ A GREEN HERE AS VALIDATING THE LIVE PATH.

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_vmharness_incus_ephemeral_run (campaign IM1 gate).
 ##
 ## Proves the Incus per-job EPHEMERAL container reset against REAL Incus:

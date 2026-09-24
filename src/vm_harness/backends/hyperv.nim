@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## HyperVBackend — vm-harness adapter for Microsoft Hyper-V on Windows
 ## hosts. Per design doc §4.1.
 ##

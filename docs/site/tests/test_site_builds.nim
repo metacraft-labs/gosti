@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness docs -- SSG smoke + basePath test.
 ##
 ## Builds the real `content/` through the framework `buildSite` into a temp

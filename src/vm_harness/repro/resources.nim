@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Native reprobuild resource providers authored IN vm-harness
 ## (composable resource types, slice 3 — re-authored via the RP4
 ## `resourceType` macro for RP5c1).

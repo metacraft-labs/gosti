@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # assert-pwsh-provisioned.ps1 -- HARD GATE: refuse to let a Windows golden be
 # captured unless PowerShell 7 (`pwsh`) is actually usable by a SERVICE on
 # every clone of it.

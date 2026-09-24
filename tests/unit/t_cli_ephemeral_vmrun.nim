@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## `run --ephemeral` must dispatch on the BACKEND, and the vm-harness-run
 ## backends must not fall through to libvirt.
 ##

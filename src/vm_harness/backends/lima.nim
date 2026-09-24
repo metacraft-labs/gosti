@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## LimaBackend — vm-harness adapter for Lima on macOS hosts.
 ## Per design doc §4 (backend trait + lifecycle) and M5 of the
 ## ``Multi-OS-VM-Automation-Campaign``. Targets Linux guests on Mac

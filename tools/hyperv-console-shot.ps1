@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+
 <#
 .SYNOPSIS
   Capture a Hyper-V guest's console to a PNG.

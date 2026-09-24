@@ -1,9 +1,11 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # Package
 
 version       = "0.1.0"
 author        = "Metacraft Labs"
 description   = "vm-harness documentation site -- the vm-harness user guide ported onto isonim-docs"
-license       = "MIT"
+license       = "Apache-2.0"
 srcDir        = "src"
 
 # Dependencies

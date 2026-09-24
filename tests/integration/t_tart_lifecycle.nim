@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## integration_vm_harness_tart_lifecycle (M2 verification).
 ##
 ## Exercises every ``TartBackend`` method against a real Tart-managed

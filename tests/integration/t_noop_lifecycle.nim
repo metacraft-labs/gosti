@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Integration test: NoopBackend exercises every lifecycle method.
 ##
 ## Per the test methodology (design doc §9.1), ``NoopBackend`` is the one

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # build-nixos-runner-image.sh — build the `vmh-nixos-runner` Incus image (HR3).
 #
 # The NixOS analog of guest-recipes/linux-x64-runner/build-runner-image.sh: a

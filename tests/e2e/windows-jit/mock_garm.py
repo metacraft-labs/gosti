@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 """Mock GARM metadata + actions-runner endpoint for the M3 gate.
 
 Serves, on http://0.0.0.0:<port>:

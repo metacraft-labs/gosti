@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Unit tests for the auto-backend-selection dispatch table.
 ##
 ## The dispatch table is pure logic; the e2e selection test

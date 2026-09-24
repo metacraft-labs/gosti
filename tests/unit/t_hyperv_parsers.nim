@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Unit tests for the HyperVBackend and shared process_helpers parsers.
 ##
 ## These cover pure-logic helpers — verdict parsing, RESULT.txt

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+
 import std/[tables, unittest]
 import vm_harness/[ssh, process_capture, types]
 

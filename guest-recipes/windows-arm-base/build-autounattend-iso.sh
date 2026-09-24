@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # build-autounattend-iso.sh — wrap autounattend.xml + repro-sysprep.xml
 # as a CD-ROM ISO that UTM can attach to the VM.
 #

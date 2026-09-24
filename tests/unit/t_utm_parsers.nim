@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## unit_vm_harness_utm_parsers (M3 supplemental).
 ##
 ## Pure parser unit tests for the ``utmctl`` output formats consumed by

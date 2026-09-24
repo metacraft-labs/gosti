@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # fetch-portable-git.sh -- cache + verify the pinned Git for Windows
 # (PortableGit) self-extractor for a Windows golden-image build.
 #

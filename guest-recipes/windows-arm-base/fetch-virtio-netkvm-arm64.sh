@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # fetch-virtio-netkvm-arm64.sh -- cache ARM64 VirtIO NetKVM drivers.
 
 set -euo pipefail

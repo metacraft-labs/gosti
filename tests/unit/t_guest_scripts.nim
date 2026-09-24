@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Unit tests for the embedded guest scripts.
 ##
 ## Verifies that ``staticRead`` of ``guest-scripts/posix.sh`` and

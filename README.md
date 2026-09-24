@@ -289,4 +289,12 @@ vm-harness never imports Tier 2 or Tier 3 code.
 
 ## License
 
-MIT — see `LICENSE`.
+Apache-2.0 — see `LICENSE` and `NOTICE`. gosti was relicensed from MIT to
+Apache-2.0 by its copyright holder on 2026-09-21.
+
+Every source file carries an SPDX header; files that cannot (prose, data,
+binary assets) are covered by `REUSE.toml`. The documentation site bundles a
+few third-party assets under their own licenses (Geist font — OFL-1.1;
+Material Symbols icons — Apache-2.0; Font Awesome GitHub icon — CC-BY-4.0);
+their texts are in `LICENSES/`. `just lint` runs `reuse lint`, so a new
+source file without a header fails the lint gate.

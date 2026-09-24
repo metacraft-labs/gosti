@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_vmharness_serve_enrollment — RA6 gate.
 ##
 ## A remote client reads a ``vm-harness serve`` daemon's SIGNED IDENTITY + its
