@@ -39,7 +39,9 @@ before invoking the script.
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `VMH_RUNNER_VERSION` | string | `2.335.1` | actions/runner release version to stage. |
+| `VMH_RUNNER_VERSION` | string | `2.337.0` | actions/runner release version to stage, or `latest` to resolve the newest release at build time (not reproducible). GitHub stops dispatching jobs to deprecated runner releases, so keep the pin within one minor release of upstream latest. |
+| `VMH_RUNNER_SHA256` | string | unchecked | Expected sha256 of the runner tarball; the build fails on a mismatch. |
+| `VMH_RUNNER_STALENESS_CHECK` | bool | `1` | Warn when the pin is two or more minor releases behind upstream latest (best effort; `0` skips the lookup). |
 | `VMH_RUNNER_TARBALL` | path | download to `/tmp` | Pre-downloaded runner tarball to use instead of downloading (useful offline). |
 | `VMH_RUNNER_USER` | string | `runner` | Unprivileged runner user (created with passwordless sudo; the runner refuses to run as root). |
 | `VMH_RUNNER_CACHE` | path | `/home/<user>/actions-runner` | In-image runner directory. **Must** match GARM's Linux install template's cached path, or the per-job bootstrap re-downloads the ~200 MB runner every job. |
