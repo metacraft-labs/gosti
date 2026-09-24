@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_libvirt_live_snapshot_restore (campaign WR0 gate).
 ##
 ## The gate that decides whether libvirt can host a WARM pool: does a

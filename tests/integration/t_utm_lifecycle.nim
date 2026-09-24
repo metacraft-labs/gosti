@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## integration_vm_harness_utm_lifecycle (M3 verification).
 ##
 ## Exercises every ``UtmBackend`` method against a real UTM-managed

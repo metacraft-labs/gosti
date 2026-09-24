@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Hermetic gate for the generic-CRUD façade over the FULL deterministic
 ## mock backend (GOSTI2 PR-2).
 ##

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Backend-agnostic snapshot-revert benchmark.
 ##
 ## Measures the per-iteration wall-clock cost of "revert from a hot

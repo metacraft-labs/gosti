@@ -7,3 +7,19 @@ A copy of the License is in the LICENSE file at the repository root.
 
 Relicensed from MIT to Apache-2.0 by the copyright holder (2026-09-21)
 to add an explicit patent grant for this widely-consumed VM library.
+
+Third-party components
+----------------------
+
+The documentation site (docs/site/static/) bundles the following assets,
+which remain under their upstream licenses (texts in LICENSES/):
+
+  * Geist variable font — Copyright 2024 The Geist Project Authors
+    (https://github.com/vercel/geist-font), SIL Open Font License 1.1.
+  * Material Symbols icons (icon__components/faq/start/style/support.svg) —
+    Copyright Google LLC (https://fonts.google.com/icons), Apache-2.0.
+  * GitHub brand icon (icon__github.svg) — Font Awesome Free by Fonticons,
+    Inc. (https://fontawesome.com), CC-BY-4.0.
+
+Per-file licensing is machine-readable: SPDX headers in source files and
+REUSE.toml for the rest (https://reuse.software).

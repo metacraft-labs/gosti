@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## The Windows-ARM fake QEMU harness, shared by the unit-tier gates that need
 ## to drive the real backend against a process that behaves like QEMU.
 ##

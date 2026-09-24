@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+
 <#
 .SYNOPSIS
   Stage (NOT configure) the GitHub Actions runner into a Windows golden.

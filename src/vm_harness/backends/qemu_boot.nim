@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## QemuBootBackend — daemon-less direct-boot backend for x86_64 guests.
 ##
 ## *What it is for.* Boot a disk image (or install ISO) under a

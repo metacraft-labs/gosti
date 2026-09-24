@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## LibvirtBackend — vm-harness adapter for libvirt + QEMU/KVM on Linux
 ## hosts. Per design doc §4.5 and the M4 slice for the
 ## windows-runner-001 prototype on ``high-mem-server``.

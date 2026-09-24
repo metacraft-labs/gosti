@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+
 {
   description = "vm-harness — cross-platform VM lifecycle orchestration library";
 
@@ -76,6 +79,7 @@
                       pkgs.just
                       pkgs.nim
                       pkgs.nixfmt
+                      pkgs.reuse
                     ]
                     ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcre.dev ]
                   )
@@ -115,7 +119,7 @@
             meta = {
               description = "Cross-platform VM lifecycle orchestration";
               homepage = "https://github.com/metacraft-labs/vm-harness";
-              license = pkgs.lib.licenses.mit;
+              license = pkgs.lib.licenses.asl20;
               mainProgram = "vm-harness";
               platforms = [
                 "x86_64-linux"
@@ -155,6 +159,7 @@
               pkgs.nixfmt
               pkgs.openssh
               pkgs.pre-commit
+              pkgs.reuse
               pkgs.sshpass
               # guest-recipes/*/fetch-iso.sh use xorriso to validate that a
               # Windows ISO carries a UEFI El Torito boot record.

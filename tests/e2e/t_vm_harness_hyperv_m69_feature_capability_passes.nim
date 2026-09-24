@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## e2e_vm_harness_hyperv_m69_feature_capability_passes (M1 verification).
 ##
 ## *STATUS: pending* — this test verifies that driving the M69

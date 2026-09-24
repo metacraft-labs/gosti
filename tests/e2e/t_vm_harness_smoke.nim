@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## e2e_vm_harness_smoke (M0 verification).
 ##
 ## Drives the harness through one full lifecycle using NoopBackend (the

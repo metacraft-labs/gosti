@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Gate: a booted Linux guest really sees the virtual TPM when
 ## ``BootMediaSpec.tpmEnabled`` is set, and really sees no TPM when it is
 ## not.

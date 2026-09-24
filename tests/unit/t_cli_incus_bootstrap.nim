@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_cli_incus_bootstrap — incus ephemeral bootstrap exec-injection.
 ##
 ## Proves that the incus ephemeral path, when given a runner BOOTSTRAP payload

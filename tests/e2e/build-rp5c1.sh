@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # RP5c1 / RP5c2 build recipe: compile a vm-harness resource/provider module or
 # the RP5c1 test against reprobuild's full harness env + lib --path set, WITHOUT
 # hand-maintaining a ~27-entry path list.

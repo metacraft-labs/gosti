@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Pool algorithms: `clone-per-task` and `recycle-from-pool-per-task`.
 ##
 ## Two ways to serve a stream of tasks from one host. They are not

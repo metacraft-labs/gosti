@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Ordered serial-console boot assertions over the direct-QEMU backend.
 ##
 ## *What it is.* Give it a disk image (or a kernel + initramfs) and an

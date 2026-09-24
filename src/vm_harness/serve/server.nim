@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness serve — the DAEMON.
 ##
 ## A small authenticated network front-end over the EXISTING vm-harness CLI

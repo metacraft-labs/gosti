@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Slice 3 (composable resource types): vm-harness authors three native
 ## reprobuild resource providers on slice 2's generic external-provider lane.
 ##

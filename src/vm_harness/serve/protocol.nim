@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness serve — RPC PROTOCOL (v1).
 ##
 ## RA1 of the *Runner-Fleet-Capability-Pools-And-Remote-Driving* campaign.

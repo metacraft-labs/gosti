@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Runner-Fleet-M3-ARM-Wave MA7 (hygiene half) gate:
 ## `t_m3_tart_orphan_dirs_reclaimed`.
 ##

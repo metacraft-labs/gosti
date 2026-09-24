@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## unit_serve_protocol — pure wire-contract checks for the RA1 remoting
 ## protocol (``src/vm_harness/serve/protocol.nim`` + ``client.parseAddr``).
 ##

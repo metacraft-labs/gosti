@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+
 {
   description = "vm-harness docs — self-contained dev shell for the isonim-docs-powered docs site";
 

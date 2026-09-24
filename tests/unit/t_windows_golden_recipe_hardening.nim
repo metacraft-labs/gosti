@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Static gates on the Windows golden answer files.
 ##
 ## Two defects were found on the live x64 golden after it had been in the

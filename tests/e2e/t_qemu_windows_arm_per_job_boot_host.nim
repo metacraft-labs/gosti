@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Runner-Fleet-M3-ARM-Wave MA4 gate: ``t_qemu_windows_arm_per_job_boot``
 ## — HOST TIER. Boots an EXISTING Windows-ARM golden through the exact path a
 ## CI job uses — ``provisionBaseline`` -> ``revertToBaseline`` ->

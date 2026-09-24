@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_vmharness_serve_macos_tart — RA5 gate, REAL-backend variant.
 ##
 ## The tart-backed companion to ``t_vmharness_serve_roundtrip`` /

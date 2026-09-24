@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # fetch-openssh-arm64.sh -- cache the official Win32-OpenSSH ARM64 zip.
 
 set -euo pipefail

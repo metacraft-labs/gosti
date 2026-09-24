@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## RP5c1 / RP5c2 build helper: print reprobuild's provider-compile command for
 ## a module. Copied into the reprobuild tree at build time by build-rp5c1.sh so
 ## that reprobuild's config.nims supplies the compiler's own --path set; the

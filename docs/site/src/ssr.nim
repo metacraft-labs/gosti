@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness docs -- thin SSR entry (one-shot preview via `just serve-docs`).
 ##
 ## Calls the framework's own `renderRoute` with this site's `content/` dir and

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Hermetic gate for the generic-CRUD SURFACE GROWTH (GOSTI2 PR-3).
 ##
 ## PR-1 pinned the CRUD contract (envelope + exit codes) and PR-2 gave it a rich

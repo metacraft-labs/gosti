@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # create-utm-bundle.sh — assemble the UTM bundle skeleton and open UTM
 # so the Windows install can proceed.
 #

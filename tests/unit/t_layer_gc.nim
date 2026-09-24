@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Layer GC: the in-use guard and the stale-overlay sweep.
 ##
 ## MOCK POLICY — NO OBJECT IS MOCKED IN THIS FILE, AND NONE MAY BE.

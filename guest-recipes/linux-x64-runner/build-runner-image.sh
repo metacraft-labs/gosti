@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # build-runner-image.sh — build the `vmh-linux-runner` Incus image.
 #
 # The Linux analog of the Windows cloudbase-init golden: a small Debian

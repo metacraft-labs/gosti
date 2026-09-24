@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness serve — CAPABILITY MANIFEST + detection (RA6).
 ##
 ## The host self-reports a *machine-checkable* capability manifest that a

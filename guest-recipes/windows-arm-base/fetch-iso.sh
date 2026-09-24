@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # fetch-iso.sh — select a Windows 11 Arm64 ISO for the recipe.
 #
 # Microsoft publishes official Windows 11 Arm64 ISOs, but the final

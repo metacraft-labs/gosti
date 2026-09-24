@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Runner-Fleet-M3-ARM-Wave MA3 gate: ``t_qemu_windows_arm_golden_build``
 ## — HOST TIER. Opt-in. Runs the real thing: a full unattended Windows ARM64
 ## install, ``sysprep /generalize``, power-off and promotion to a validated

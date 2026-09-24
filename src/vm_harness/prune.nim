@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness prune — reclaim ephemeral resources leaked by launchers that
 ## were hard-killed (SIGKILL / crash) before their teardown could run.
 ##

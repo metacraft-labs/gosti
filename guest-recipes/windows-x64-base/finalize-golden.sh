@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # finalize-golden.sh — confirm the libvirt domain is defined, in the
 # shut-off state, and (optionally) detach the install media so per-
 # boot startups don't re-mount the autounattend / Windows ISOs.

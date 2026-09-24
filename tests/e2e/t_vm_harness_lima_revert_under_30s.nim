@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## e2e_vm_harness_lima_revert_under_30s (M5 verification).
 ##
 ## Measures the full ``limactl stop --force && limactl delete --force

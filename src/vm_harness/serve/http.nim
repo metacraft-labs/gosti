@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness serve — minimal HTTP/1.1 framing over ``std/net``.
 ##
 ## A deliberately small, hand-rolled HTTP/1.1 subset shared by the daemon

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_libvirt_snapshot_surface_conformance (campaign WR0 gate).
 ##
 ## Round-trips the libvirt snapshot surface against REAL ``virsh`` and a

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_vmharness_serve_roundtrip — RA1 gate.
 ##
 ## A REMOTE ``vm-harness`` client drives a full provision → run(exec probe)

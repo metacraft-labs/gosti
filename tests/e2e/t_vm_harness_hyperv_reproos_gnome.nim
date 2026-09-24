@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## e2e_vm_harness_hyperv_reproos_gnome
 ##
 ## DE-G2 acceptance gate for the ReproOS-Wayland-DEs-PoC campaign:

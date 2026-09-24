@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Integration test: WslBackend lifecycle against a real WSL2 host.
 ##
 ## *STATUS: pending* — this test REQUIRES a Windows host with WSL2

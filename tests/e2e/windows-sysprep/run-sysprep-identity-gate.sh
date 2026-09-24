@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # run-sysprep-identity-gate.sh — the sysprep distinct-identity gate.
 #
 # Proves the syspreped ("/generalize") cloudbase-init golden yields a FRESH

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## RP5c1 — vm-harness reprobuild RESOURCE PROVIDER binary.
 ##
 ## Compiled with ``-d:reproProviderMode`` (via reprobuild's

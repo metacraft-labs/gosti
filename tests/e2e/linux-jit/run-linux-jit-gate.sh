@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # run-linux-jit-gate.sh — IM2 gate driver (t_incus_linux_jit_boot).
 #
 # Proves the ephemeral LINUX JIT-injection MECHANISM end-to-end on real

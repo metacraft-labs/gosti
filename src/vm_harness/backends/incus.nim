@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Incus backend — ephemeral per-job Linux SYSTEM CONTAINERS.
 ##
 ## This is the container-based analog of the libvirt backend (which runs

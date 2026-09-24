@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Unit test for the pure El Torito UEFI-detection logic in
 ## ``guest-recipes/lib/validate-uefi-iso.sh``.
 ##

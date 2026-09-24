@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # guest-linux-tpm — a minimal, fast-booting Linux guest that reports what
 # it can see of a virtual TPM, for the `qemu-boot` vTPM gate
 # (`tests/integration/t_guest_sees_tpm_device.nim`).

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 default:
@@ -22,6 +25,7 @@ lint:
     mkdir -p test-logs
     nim check --hints:off --path:src src/vm_harness/cli.nim 2>&1 | tee test-logs/lint.log
     nixfmt --check flake.nix nix/*.nix 2>&1 | tee -a test-logs/lint.log
+    reuse lint 2>&1 | tee -a test-logs/lint.log
 
 format:
     find src tests tools -type f -name '*.nim' -exec nimpretty {} +

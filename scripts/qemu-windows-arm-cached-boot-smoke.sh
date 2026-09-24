@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # Smoke-test a prebuilt Windows ARM qcow2 directory through vm-harness's
 # direct QEMU/HVF backend. This intentionally does not build Windows; it only
 # consumes a VM directory containing windows.qcow2.

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## t_vmharness_serve_survives_a_hung_request — HOST TIER.
 ##
 ## Runner-Fleet-M3-ARM-Wave milestone MA12. The unit/e2e tier

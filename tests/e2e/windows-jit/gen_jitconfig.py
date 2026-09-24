@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 """Generate a synthetic-but-well-formed GitHub Actions JIT runner config.
 
 Produces the three files the actions runner consumes, in the exact schema

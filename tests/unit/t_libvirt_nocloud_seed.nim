@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Hermetic gate for the libvirt NoCloud cloud-init seed (GOSTI2 honor-userdata
 ## follow-up): a real backend BUILDS a NoCloud "cidata" seed from the caller's
 ## cloud-init user-data and ATTACHES it to the domain definition.

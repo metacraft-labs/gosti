@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # vm-harness docs site -- task entry points.
 #
 # Every recipe runs inside THIS site's own dev shell. With direnv the shell is

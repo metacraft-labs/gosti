@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## e2e_vm_harness_wsl_systemd_boot
 ##
 ## R1 Path A in vm-harness: boot a vendored Debian bookworm-slim rootfs

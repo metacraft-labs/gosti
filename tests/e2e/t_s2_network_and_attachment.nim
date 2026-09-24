@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## S2 (network-primitive) gate — Incus managed networks + container network
 ## attachment expressed as reprobuild resources, verified on REAL incus.
 ##

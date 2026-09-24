@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Guest-script embedding (design doc §12 choice #1: ``staticRead`` at
 ## compile time).
 ##

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Hermetic regression gate for the libvirt baseline write-lock bug
 ## (gosti/fix-libvirt-baseline-writelock).
 ##

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # Workspace-wide Nim configuration.
 #
 # Ensure that ``nim r tests/...`` finds the library sources at ``src/``

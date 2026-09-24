@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## MockBackend — a full, deterministic, in-memory ``VmBackend`` (GOSTI2 PR-2).
 ##
 ## PR-1 pinned the generic-CRUD *contract* (JSON envelope + frozen exit codes)

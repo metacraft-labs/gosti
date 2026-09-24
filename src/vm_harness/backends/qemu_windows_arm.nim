@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## QemuWindowsArmBackend — direct QEMU/HVF Windows-on-ARM cached boot.
 ##
 ## This backend is intentionally narrower than UTM: it consumes a prebuilt

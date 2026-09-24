@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+
 <#
 .SYNOPSIS
   Write a directory tree to an ISO9660+Joliet image on a Windows host.

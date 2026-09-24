@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## vm-harness serve — pure-Nim SHA-256 + HMAC-SHA256 (RA6).
 ##
 ## Self-contained, dependency-free hashing used by the enrollment/identity

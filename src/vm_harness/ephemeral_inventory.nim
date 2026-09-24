@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Enumerate the per-job ephemeral instances a backend is holding — the
 ## ``vm-harness ephemeral-list`` verb's value logic.
 ##

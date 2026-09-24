@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## e2e_vm_harness_finally_cleanup_on_panic (M0 verification).
 ##
 ## Verifies that the orchestrator's ``try/finally`` block guarantees

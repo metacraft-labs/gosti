@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## unit_serve_enrollment — pure RA6 logic: SHA-256/HMAC test vectors, the
 ## capability deciders against FIXTURE inputs, and the enrollment/identity
 ## sign+verify state machine.

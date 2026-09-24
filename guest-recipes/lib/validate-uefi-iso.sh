@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # validate-uefi-iso.sh — shared helper sourced by the Windows recipe
 # fetch-iso.sh scripts to fail fast on a BIOS-only install ISO.
 #

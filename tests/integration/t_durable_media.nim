@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## External-tool fixtures exercise real process boundaries and the real CLI.
 ## They model lifecycle failures deterministically; they do not claim live VM coverage.
 import std/[json, os, osproc, sequtils, strutils, tables, tempfiles, times,

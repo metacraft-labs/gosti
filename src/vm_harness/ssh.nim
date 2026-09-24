@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## SSH command payloads are interpreted by the remote login shell, not argv.
 import std/[strutils, tables]
 import ./types

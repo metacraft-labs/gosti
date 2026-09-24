@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## unit_vm_harness_lima_backend — LimaBackend command-construction tests.
 ##
 ## Mock policy (per design.md §9.1): NO backend mock. These are the

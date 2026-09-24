@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # build-autounattend-iso.sh — wrap autounattend.xml (and an optional
 # first-boot.ps1) as a CD-ROM ISO that libvirt's virt-install can
 # attach to the VM via the libvirt backend's third sata CD slot.

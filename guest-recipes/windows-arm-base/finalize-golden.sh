@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # finalize-golden.sh — strip the install ISOs from the golden bundle
 # and confirm it's registered with UTM under the expected name.
 #

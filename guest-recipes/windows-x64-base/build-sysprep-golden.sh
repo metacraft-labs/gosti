@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # build-sysprep-golden.sh — produce a sysprepped/generalized Windows golden.
 #
 # The Windows analog of linux-x64-runner/build-runner-image.sh. It turns the

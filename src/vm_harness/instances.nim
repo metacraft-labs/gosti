@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Durable media ownership. Operation locks are not lifetime leases; the caller
 ## (for example Reprobuild) owns retention and scheduling.
 import std/[json, options, os, osproc, strutils, sysrand, tables, times,

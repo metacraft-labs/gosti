@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## e2e_vm_harness_auto_backend_selection (M0 verification).
 ##
 ## Drives ``--backend auto`` for every (host OS, guest OS) cell in the

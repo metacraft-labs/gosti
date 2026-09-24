@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Teardown gate for the boot-smoke harness (``boot_smoke.nim``).
 ##
 ## Hosts that run these gates also run production CI: on the development

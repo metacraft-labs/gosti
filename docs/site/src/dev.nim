@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Live-reloading dev server for the vm-harness docs site.
 ##
 ## Serves this site's own `content/` plus its themed assets (`assets/style.css`

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # assert-defender-exclusions-sane.ps1 -- HARD GATE: refuse to let a Windows
 # golden be captured while it carries a Defender exclusion that names a path
 # which does not exist.

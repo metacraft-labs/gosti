@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Integration test (no-live-virsh) for LibvirtBackend.
 ##
 ## Verifies the M4 Phase A slice's compile + boilerplate-correctness

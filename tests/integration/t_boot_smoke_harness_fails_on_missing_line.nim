@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Falsifiability gate for the boot-smoke harness (``boot_smoke.nim``).
 ##
 ## *Why this test is the important one.* Every consumer boot gate built

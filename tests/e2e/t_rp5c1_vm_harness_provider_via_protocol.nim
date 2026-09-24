@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 ## RP5c1 (the project-provider runtime protocol) — vm-harness's
 ## resource providers, re-authored via the RP4 ``resourceType`` macro, served
 ## from a PROVIDER BINARY and driven OVER THE PROTOCOL (RP5b) on REAL incus.
