@@ -202,34 +202,42 @@ suite "t_vmharness_serve_roundtrip":
     check normalizeEnvelope(remoteArt) == normalizeEnvelope(localArt)
 
   test "authenticated remote Incus capability argv reaches fixed local policy":
-    writeFile(incusLog, "")
-    var logs: seq[string]
-    let code = client.execStream(@[
-      "run", "--ephemeral", "--backend", "incus",
-      "--baseline", "remote-capability", "--base-image", "runner-base",
-      "--incus-security-nesting", "--incus-nested-kvm", "--", "true",
-    ], proc(ev: ExecEvent) =
-      if ev.kind == ekLog: logs.add(ev.line))
-    check code == 0
-    check logs.len > 0
-    check readFile(incusLog).strip().splitLines() == @[
-      "info remote-capability",
-      "init runner-base remote-capability",
-      "config set remote-capability security.nesting true",
-      "config set remote-capability security.syscalls.intercept.mknod true",
-      "config set remote-capability security.syscalls.intercept.setxattr true",
-      "config device add remote-capability kvm unix-char source=/dev/kvm " &
-        "path=/dev/kvm mode=0666",
-      "start remote-capability",
-      "exec remote-capability -- true",
-      "exec remote-capability -- chmod 0666 /dev/kvm",
-      "exec remote-capability -- stat -c %a /dev/kvm",
-      "exec remote-capability -- sh -c exec 3<>/dev/kvm",
-      "list remote-capability --format csv -c s",
-      "exec remote-capability -- true",
-      "exec remote-capability -- true",
-      "delete --force remote-capability",
-    ]
+    # The incus backend's lifecycle methods (startAndAwaitReady / execInGuest /
+    # stopAndCleanup) exist only on Linux hosts and raise
+    # BackendUnavailableError elsewhere, so the full `run --ephemeral` argv
+    # can only be exercised on Linux. The 401 case above still proves, on
+    # every host, that an unauthenticated incus argv never reaches the shim.
+    when not defined(linux):
+      skip()
+    else:
+      writeFile(incusLog, "")
+      var logs: seq[string]
+      let code = client.execStream(@[
+        "run", "--ephemeral", "--backend", "incus",
+        "--baseline", "remote-capability", "--base-image", "runner-base",
+        "--incus-security-nesting", "--incus-nested-kvm", "--", "true",
+      ], proc(ev: ExecEvent) =
+        if ev.kind == ekLog: logs.add(ev.line))
+      check code == 0
+      check logs.len > 0
+      check readFile(incusLog).strip().splitLines() == @[
+        "info remote-capability",
+        "init runner-base remote-capability",
+        "config set remote-capability security.nesting true",
+        "config set remote-capability security.syscalls.intercept.mknod true",
+        "config set remote-capability security.syscalls.intercept.setxattr true",
+        "config device add remote-capability kvm unix-char source=/dev/kvm " &
+          "path=/dev/kvm mode=0666",
+        "start remote-capability",
+        "exec remote-capability -- true",
+        "exec remote-capability -- chmod 0666 /dev/kvm",
+        "exec remote-capability -- stat -c %a /dev/kvm",
+        "exec remote-capability -- sh -c exec 3<>/dev/kvm",
+        "list remote-capability --format csv -c s",
+        "exec remote-capability -- true",
+        "exec remote-capability -- true",
+        "delete --force remote-capability",
+      ]
 
   test "graceful shutdown stops the daemon":
     client.shutdown()
