@@ -89,7 +89,8 @@ small Debian system-container image that carries:
 VMH_INCUS_CMD="sudo -n incus" ./build-runner-image.sh
 
 # Pin the runner version / supply a pre-downloaded tarball:
-VMH_RUNNER_VERSION=2.335.1 ./build-runner-image.sh
+VMH_RUNNER_VERSION=2.337.0 VMH_RUNNER_SHA256=<sha256> ./build-runner-image.sh
+VMH_RUNNER_VERSION=latest ./build-runner-image.sh   # resolve at build time
 VMH_RUNNER_TARBALL=/path/to/actions-runner-linux-x64-X.tar.gz ./build-runner-image.sh
 
 # The prod nested-capability image (Docker + KVM) under a SIDE alias so the

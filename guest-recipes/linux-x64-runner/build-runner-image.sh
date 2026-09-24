@@ -43,7 +43,8 @@
 # Usage:
 #   ./build-runner-image.sh
 #   VMH_INCUS_CMD="sudo -n incus" ./build-runner-image.sh
-#   VMH_RUNNER_VERSION=2.335.1 ./build-runner-image.sh
+#   VMH_RUNNER_VERSION=2.337.0 ./build-runner-image.sh
+#   VMH_RUNNER_VERSION=latest ./build-runner-image.sh   # resolve at build time
 #   VMH_RUNNER_TARBALL=/path/to/actions-runner-linux-x64-X.tar.gz ./build-runner-image.sh
 #   # FU3 (HR-BAKE): the prod nested-capability image (`incus-nested` class) —
 #   # bake BOTH docker (HR1) + qemu/kvm (HR2) under a SIDE alias:
@@ -62,7 +63,13 @@
 #   VMH_CLOUD_MAX_AGE_DAYS  refresh the cached cloud base once it is older than
 #                       this many days, so its apt index does not go stale past a
 #                       Debian point release (0 = never refresh) (default: 7)
-#   VMH_RUNNER_VERSION  actions runner version   (default: 2.335.1)
+#   VMH_RUNNER_VERSION  actions runner version   (default: 2.337.0; `latest`
+#                       resolves the newest non-prerelease at build time)
+#   VMH_RUNNER_SHA256   expected sha256 of the    (default: unchecked)
+#                       runner tarball
+#   VMH_RUNNER_STALENESS_CHECK  warn when the pin (default: 1; set =0 to skip,
+#                       is >=2 minor releases     e.g. for offline builds)
+#                       behind upstream latest
 #   VMH_RUNNER_TARBALL  pre-downloaded tarball    (default: download to /tmp)
 #   VMH_RUNNER_CACHE    in-image runner dir       (default: /home/<user>/actions-runner)
 #   VMH_RUNNER_DOCKER   bake nested Docker (HR1)  (default: off; set =1)
@@ -106,7 +113,18 @@ INCUS=(${VMH_INCUS_CMD:-incus})
 ALIAS="${VMH_RUNNER_ALIAS:-vmh-linux-runner}"
 CLOUD_BASE="${VMH_CLOUD_BASE:-im2-debian-cloud}"
 CLOUD_REMOTE="${VMH_CLOUD_REMOTE:-images:debian/12/cloud}"
-RUNNER_VERSION="${VMH_RUNNER_VERSION:-2.335.1}"
+# RUNNER VERSION PIN. GitHub stops dispatching jobs to runner releases it has
+# deprecated: the listener connects, prints "Listening for Jobs", then exits
+# with "Runner version vX is deprecated and cannot receive messages". Because
+# GARM takes the CACHED runner baked here (and runners are configured without
+# self-update), a stale pin yields an image whose every runner dies right
+# after registering. In practice a release is deprecated roughly a month after
+# it falls two minor releases behind latest, so keep this default current, pass
+# an explicit VMH_RUNNER_VERSION from the caller, or use `latest`.
+RUNNER_VERSION_DEFAULT="2.337.0"
+RUNNER_VERSION="${VMH_RUNNER_VERSION:-${RUNNER_VERSION_DEFAULT}}"
+RUNNER_SHA256="${VMH_RUNNER_SHA256:-}"
+RUNNER_STALENESS_CHECK="${VMH_RUNNER_STALENESS_CHECK:-1}"
 RUNNER_USER="${VMH_RUNNER_USER:-runner}"
 # Default to the GARM-expected cached path /home/<user>/actions-runner so the
 # per-job bootstrap uses the baked runner instead of re-downloading it.
@@ -175,6 +193,55 @@ BUILD_EGRESS_DNS="${VMH_BUILD_EGRESS_DNS:-1.1.1.1}"
 INCUS_BRIDGE="${VMH_CLOUD_BRIDGE:-incusbr0}"
 
 log() { echo "[build-runner-image] $*"; }
+warn() { echo "[build-runner-image] WARNING: $*" >&2; }
+
+# Newest non-prerelease actions/runner release (no leading `v`), or empty.
+latest_runner_release() {
+  curl --silent --show-error --fail --connect-timeout 10 --max-time 20 \
+    --retry 3 --retry-delay 2 \
+    -H 'Accept: application/vnd.github+json' \
+    https://api.github.com/repos/actions/runner/releases/latest 2>/dev/null \
+    | sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"v\{0,1\}\([0-9][0-9.]*\)".*/\1/p' \
+    | head -1
+}
+
+# Minor-release distance: `runner_minor_lag 2.335.1 2.337.0` prints 2. Prints
+# nothing for a major-version change or an unparsable version.
+runner_minor_lag() {
+  local pin_major pin_minor latest_major latest_minor
+  IFS=. read -r pin_major pin_minor _ <<<"$1"
+  IFS=. read -r latest_major latest_minor _ <<<"$2"
+  case "$pin_major$pin_minor$latest_major$latest_minor" in
+    '' | *[!0-9]*) return 0 ;;
+  esac
+  [ "$pin_major" = "$latest_major" ] || return 0
+  echo $((latest_minor - pin_minor))
+}
+
+if [ "$RUNNER_VERSION" = "latest" ]; then
+  RUNNER_VERSION="$(latest_runner_release || true)"
+  if [ -z "$RUNNER_VERSION" ]; then
+    echo "[build-runner-image] ERROR: VMH_RUNNER_VERSION=latest but the latest actions/runner release could not be resolved" >&2
+    exit 1
+  fi
+  warn "VMH_RUNNER_VERSION=latest resolved to ${RUNNER_VERSION}; this build is NOT reproducible — pin VMH_RUNNER_VERSION for that"
+  if [ -n "$RUNNER_SHA256" ]; then
+    warn "VMH_RUNNER_SHA256 is ignored with VMH_RUNNER_VERSION=latest"
+    RUNNER_SHA256=""
+  fi
+elif [ "$RUNNER_STALENESS_CHECK" != "0" ]; then
+  # Best effort: an offline build must still succeed, so a failed lookup is
+  # only noted.
+  upstream_latest="$(latest_runner_release || true)"
+  if [ -z "$upstream_latest" ]; then
+    log "note: could not look up the latest actions/runner release; staleness of pin ${RUNNER_VERSION} unchecked"
+  else
+    lag="$(runner_minor_lag "$RUNNER_VERSION" "$upstream_latest")"
+    if [ -n "$lag" ] && [ "$lag" -ge 2 ]; then
+      warn "actions runner pin ${RUNNER_VERSION} is ${lag} minor releases behind latest ${upstream_latest}; GitHub deprecates such releases and they stop receiving jobs — bump VMH_RUNNER_VERSION"
+    fi
+  fi
+fi
 
 cleanup() { "${INCUS[@]}" delete --force "$BLD" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -323,6 +390,14 @@ else
     curl --retry 5 --retry-delay 3 --retry-connrefused -fL -o "$TARBALL" "$URL"
   fi
   log "runner tarball: $TARBALL"
+fi
+if [ -n "$RUNNER_SHA256" ]; then
+  actual_sha256="$(sha256sum "$TARBALL" | awk '{print $1}')"
+  if [ "$actual_sha256" != "$RUNNER_SHA256" ]; then
+    echo "[build-runner-image] ERROR: runner tarball $TARBALL has sha256 $actual_sha256, expected $RUNNER_SHA256" >&2
+    exit 1
+  fi
+  log "runner tarball sha256 verified: $actual_sha256"
 fi
 
 # 2. Launch a throwaway build container off the cloud base.
@@ -526,10 +601,18 @@ cat "$TARBALL" | "${INCUS[@]}" exec "$BLD" -- sh -c "
   test -x '${RUNNER_CACHE}/config.sh'
 "
 # Sanity: the runner binary must load with the base deps.
+# The staged binary must also BE the pinned version: a VMH_RUNNER_TARBALL for a
+# different release would otherwise publish an image whose label lies about
+# the runner it carries.
 log "smoke: Runner.Listener --version"
-"${INCUS[@]}" exec "$BLD" -- sh -c "
+staged_version="$("${INCUS[@]}" exec "$BLD" -- sh -c "
   cd '${RUNNER_CACHE}' && DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 ./bin/Runner.Listener --version
-"
+" | tr -d '\r' | tail -1)"
+log "staged runner reports version: ${staged_version}"
+if [ "$staged_version" != "$RUNNER_VERSION" ]; then
+  echo "[build-runner-image] ERROR: staged runner reports version '${staged_version}', expected '${RUNNER_VERSION}'" >&2
+  exit 1
+fi
 
 # IM4 CRITICAL: the runner SERVICE runs as the unprivileged '${RUNNER_USER}'
 # user, and GARM's cached-runner bootstrap path does NOT chown the runner dir
@@ -832,6 +915,9 @@ log "stopping container + publishing image alias '$ALIAS'"
   --public=false \
   description="vmh linux runner: ${CLOUD_BASE} + actions-runner ${RUNNER_VERSION} + cloud-init"
 "${INCUS[@]}" image set-property "$ALIAS" vmh.recipe_revision "$RECIPE_REVISION"
+# Machine-readable runner version, so fleet checks can compare what an image
+# actually carries against upstream without parsing the description.
+"${INCUS[@]}" image set-property "$ALIAS" vmh.runner_version "$RUNNER_VERSION"
 
 log "done: image '$ALIAS' built"
 "${INCUS[@]}" image list "$ALIAS"

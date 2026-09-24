@@ -38,7 +38,7 @@
 
 .EXAMPLE
   .\build-hyperv-runner-golden.ps1 -WindowsIso D:\iso\Win11_25H2_x64.iso `
-     -WindowsIsoSha256 <sha> -RunnerVersion 2.335.1 -RunnerSha256 <sha> `
+     -WindowsIsoSha256 <sha> -RunnerVersion 2.337.0 -RunnerSha256 <sha> `
      -OutputVhdx D:\storage\golden-win11-hyperv.vhdx -DisableDefender
 #>
 param(

@@ -73,6 +73,9 @@ run_nim r --hints:off tests/unit/t_qemu_windows_arm_dead_guest_is_named.nim
 run_nim r --hints:off tests/unit/t_qemu_boot_backend.nim
 run_nim r --hints:off tests/unit/t_tpm_device_args.nim
 run_nim r --hints:off tests/unit/t_windows_golden_recipe_hardening.nim
+# The Linux runner recipe's actions-runner pin: stale-pin warning helpers,
+# `latest` resolution, staged-version + digest verification, version stamp.
+run_nim r --hints:off tests/unit/t_linux_runner_recipe_pin.nim
 run_nim r --hints:off tests/unit/t_tart_backend.nim
 # Runner-Fleet-M3-ARM-Wave MA0 gate: t_vmharness_image_is_honoured, assertion
 # (c) — a registry-constructed tart backend with no image configured RAISES
