@@ -109,7 +109,13 @@ suite "t_vmharness_serve_enrollment":
     # The signed payload carries a real, machine-checkable capability manifest.
     let m = signed.identity.manifest
     check m["manifestVersion"].getStr == ManifestVersion
-    check m["os"].getStr == "linux"
+    # The manifest self-reports the HOST os (capability.nim), so the expected
+    # token follows the host this gate runs on (Linux and macOS CI legs).
+    const expectedOs =
+      when defined(windows): "windows"
+      elif defined(macosx): "macos"
+      else: "linux"
+    check m["os"].getStr == expectedOs
     check m.hasKey("archLevel")
     check m.hasKey("gpu")
     check m.hasKey("nestedVirt")
