@@ -480,6 +480,10 @@ Common flags:
                                   security.nesting and attach a fixed
                                   read/write /dev/kvm device before first
                                   start. Requires host nested KVM support.
+  --cpus/--memory-mb (Incus)      With run --ephemeral --backend incus, set
+                                  the container's limits.cpu (a CPU count)
+                                  and limits.memory (MiB) before first start.
+                                  Omitted ⇒ the container is uncapped.
   --kernel <path>                 libvirt-only: optional direct-kernel-boot
                                   bzImage for --ephemeral (tiny Linux golden).
   --initrd <path>                 Initramfs for a direct-kernel boot: the
@@ -1489,7 +1493,7 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
     baseImage: opts.baseImage,
     ephemeral: false,
     userData: userData,
-    config: initTable[string, string](),
+    config: incusEphemeralLimits(opts.cpus, opts.memoryMB),
     securityNesting: opts.incusSecurityNesting,
     nestedKvm: opts.incusNestedKvm)
   logEvent(opts.logFormat, "info", "ephemeral container: launch",
