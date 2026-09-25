@@ -129,6 +129,12 @@ run_nim r --hints:off tests/e2e/t_vmharness_serve_concurrency.nim
 # A teardown whose client vanishes (GARM SIGKILLs/cancels its provider) must
 # still run to completion on the daemon host. Hermetic (self-exec worker).
 run_nim r --hints:off tests/e2e/t_vmharness_serve_teardown_survives_disconnect.nim
+# ... and must cost the daemon nothing while it does: no CPU spin on the dead
+# socket, the worker keeps being drained (it outputs more than a pipe holds),
+# and every worker is reaped — zero zombie/leftover children after a mix of
+# abandoned and completed execs. Falsifiable: routing writes back through
+# std/net's send(Socket, string) fails all three. Hermetic (self-exec worker).
+run_nim r --hints:off tests/e2e/t_vmharness_serve_client_disconnect_no_spin.nim
 # Runner-Fleet-M3-ARM-Wave MA12 gate:
 # t_vmharness_serve_survives_a_hung_request — the daemon must survive a HUNG
 # request, not merely a slow one. Three layers: one hung /v1/exec does not

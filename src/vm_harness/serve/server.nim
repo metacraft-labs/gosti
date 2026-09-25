@@ -376,6 +376,84 @@ proc applyUserData*(argv: seq[string], userData: string,
     setFilePermissions(path, {fpUserRead, fpUserWrite})
   (argv & @["--user-data", path], path)
 
+# ---------------------------------------------------------------------------
+# Client-disconnect handling (docs/serve.md "Client disconnects: finish the
+# worker, never spin").
+#
+# A vanished client is NOT a cancellation: the worker must run to completion
+# (a cancelled GARM delete must still finish its teardown). What the handler
+# must not do is keep TALKING to the dead socket. The first failed write marks
+# the stream gone; from then on output is drained from the worker (so it never
+# blocks on a full pipe) and discarded, except for a short tail kept for the
+# daemon log.
+
+const ClientSendTimeoutSec* = 300
+  ## A single write that has been blocked this long means the client stopped
+  ## reading; it is then treated exactly like a disconnect. Generous on purpose:
+  ## the event stream is small and a live client drains it immediately.
+
+const DrainTailLines = 20
+  ## Lines of discarded worker output kept for the post-exit log entry.
+
+type
+  ClientStream = object
+    ## The exec response stream, as seen by the handler. Writes never raise and
+    ## never retry: the first failure flips ``gone`` and every later write is a
+    ## no-op.
+    sock: Socket
+    gone: bool
+    why: string        ## the failed write's error, for the log
+    dropped: int       ## worker lines the client never saw
+    tail: seq[string]  ## the last ``DrainTailLines`` of them
+
+proc emit(cs: var ClientStream, data: string): bool {.discardable.} =
+  ## Write ``data`` as one chunk. Returns false (and writes nothing) once the
+  ## client is gone; the write that DISCOVERS it is gone returns false too.
+  if cs.gone:
+    return false
+  try:
+    cs.sock.writeChunk(data)
+    true
+  except CatchableError as e:
+    cs.gone = true
+    cs.why = e.msg
+    false
+
+proc finish(cs: var ClientStream) =
+  ## Terminate the chunked body, if anyone is still listening.
+  if cs.gone:
+    return
+  try:
+    cs.sock.endChunked()
+  except CatchableError as e:
+    cs.gone = true
+    cs.why = e.msg
+
+proc discardLine(cs: var ClientStream, line: string) =
+  inc cs.dropped
+  cs.tail.add(line)
+  if cs.tail.len > DrainTailLines:
+    cs.tail.delete(0)
+
+proc setSendTimeout(client: Socket, seconds: int) =
+  ## Bound how long one ``send`` may block (``SO_SNDTIMEO``). Best-effort: a
+  ## platform that rejects it just keeps blocking sends, which is the old
+  ## behaviour.
+  try:
+    when defined(windows):
+      # winlean does not export SO_SNDTIMEO; 0x1005 is its value in
+      # <winsock2.h>. Winsock takes the timeout as a DWORD of milliseconds.
+      const WinSoSndTimeo = cint(0x1005)
+      var ms = DWORD(seconds * 1000)
+      discard winlean.setsockopt(client.getFd(), SOL_SOCKET, WinSoSndTimeo,
+                                 addr ms, SockLen(sizeof(ms)))
+    else:
+      var tv = Timeval(tv_sec: posix.Time(seconds), tv_usec: 0)
+      discard posix.setsockopt(client.getFd(), SOL_SOCKET, SO_SNDTIMEO,
+                               addr tv, SockLen(sizeof(tv)))
+  except CatchableError:
+    discard
+
 proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
                 slot: int) =
   ## Parse the forwarded argv, spawn the worker (the same vm-harness
@@ -415,7 +493,15 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
   # log; the user-data CONTENTS are never logged.
   daemonLog(ctx, "exec " & exe & " " & args.join(" "))
 
-  client.beginChunked()
+  # From here on every write goes through ``cs``, which never raises: a client
+  # that disconnects must not route the handler into the ``finally`` below
+  # (which kills a still-running worker) nor keep it retrying the dead socket.
+  var cs = ClientStream(sock: client)
+  try:
+    client.beginChunked()
+  except CatchableError as e:
+    cs.gone = true
+    cs.why = e.msg
   var p: Process
   try:
     p = startProcess(exe, workingDir = ctx.cfg.workDir, args = args,
@@ -423,9 +509,9 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
   except CatchableError as e:
     if userDataPath.len > 0:
       try: removeFile(userDataPath) except CatchableError: discard
-    client.writeChunk(errorEvent("failed to start worker: " & e.msg) & "\n")
-    client.writeChunk(exitEvent(127) & "\n")
-    client.endChunked()
+    cs.emit(errorEvent("failed to start worker: " & e.msg) & "\n")
+    cs.emit(exitEvent(127) & "\n")
+    cs.finish()
     return
 
   # Arm the deadline. Order matters: publish the deadline BEFORE the kill
@@ -443,22 +529,39 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
       p.inputStream.write(parsed.stdin)
     p.inputStream.close()
     let outStream = p.outputStream
+    let pid = p.processID
     var line = ""
+    # Once the client is gone this loop keeps DRAINING the worker — blocked on
+    # the pipe, not on the socket — so the worker runs to completion instead
+    # of stalling on a full pipe, and the handler costs nothing while it does.
     while outStream.readLine(line):
-      client.writeChunk(logEvent(line) & "\n")
+      if cs.gone:
+        cs.discardLine(line)
+      elif not cs.emit(logEvent(line) & "\n"):
+        daemonLog(ctx, "exec client gone (" & cs.why & "); letting worker " &
+                  $pid & " run to completion, output discarded")
+        cs.discardLine(line)
     let code = p.waitForExit()
     # Distinguish "the worker exited" from "we killed it for overrunning".
     # Without this the client sees only a signal exit status and has to guess,
     # which is precisely the misattribution MA8 removed from the run path.
     if execWasReaped[slot].load():
-      client.writeChunk(errorEvent(
+      cs.emit(errorEvent(
         "vm-harness serve: exec exceeded its " & $budget &
         "s deadline and the worker was killed " &
         "(raise it with serve --exec-deadline-sec)") & "\n")
-    client.writeChunk(exitEvent(code) & "\n")
+    cs.emit(exitEvent(code) & "\n")
+    if cs.gone:
+      var msg = "worker " & $pid & " (client gone) exited " & $code & "; " &
+                $cs.dropped & " output line(s) not delivered"
+      if cs.tail.len > 0:
+        msg.add(", last " & $cs.tail.len & ":")
+        for t in cs.tail:
+          msg.add("\n    " & t)
+      daemonLog(ctx, msg)
   except CatchableError as e:
-    client.writeChunk(errorEvent("worker stream error: " & e.msg) & "\n")
-    client.writeChunk(exitEvent(1) & "\n")
+    cs.emit(errorEvent("worker stream error: " & e.msg) & "\n")
+    cs.emit(exitEvent(1) & "\n")
   finally:
     # Disarm BEFORE reaping the process object, so the reaper cannot kill a
     # token this slot no longer owns.
@@ -524,7 +627,7 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
     # token-bearing file must not linger on disk.
     if userDataPath.len > 0:
       try: removeFile(userDataPath) except CatchableError: discard
-    client.endChunked()
+    cs.finish()
 
 proc handleConnection(ctx: ServeContext, client: Socket, slot: int) =
   var req: HttpRequest
@@ -642,7 +745,9 @@ proc rejectSaturated(client: Socket) =
     msg.add("Connection: close\r\n")
     msg.add("\r\n")
     msg.add(SaturatedBody)
-    client.send(msg)
+    # ``sendAll``, not std/net's ``send``: the latter never returns on EPIPE
+    # (see http.nim), which here would wedge the ONE acceptor thread.
+    client.sendAll(msg)
   except CatchableError:
     discard
 
@@ -690,6 +795,7 @@ proc workerLoop(arg: ptr WorkerArg) {.thread.} =
         break
       var client = newSocket(SocketHandle(handle), domain, SOCK_STREAM,
                              IPPROTO_TCP)
+      client.setSendTimeout(ClientSendTimeoutSec)
       try:
         handleConnection(ctx, client, slot)
       except CatchableError as e:
