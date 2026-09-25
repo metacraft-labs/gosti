@@ -509,6 +509,30 @@ proc listDevices*(b: IncusBackend, container: string): seq[string] =
 # ---------------------------------------------------------------------------
 # provisionEphemeralClone + teardown (the per-job core).
 
+const
+  IncusLimitsCpuKey* = "limits.cpu"
+  IncusLimitsMemoryKey* = "limits.memory"
+
+proc incusEphemeralLimits*(cpus, memoryMB: int): Table[string, string] =
+  ## The ``incus config`` keys that bound one per-job container's resources.
+  ##
+  ## ``cpus > 0`` ⇒ ``limits.cpu = "<cpus>"`` (a CPU COUNT: incusd pins the
+  ## container to that many host CPUs, so ``nproc`` inside it — and every
+  ## ``make -j$(nproc)`` / ``cargo`` / ``nix build --cores 0`` sized from it —
+  ## reports the cap rather than the whole host). ``memoryMB > 0`` ⇒
+  ## ``limits.memory = "<memoryMB>MiB"``. A zero/negative value sets no key,
+  ## so a caller that passes neither gets an empty table and a container that
+  ## is byte-identical to one created without limits.
+  result = initTable[string, string]()
+  if cpus > 0:
+    result[IncusLimitsCpuKey] = $cpus
+  if memoryMB > 0:
+    result[IncusLimitsMemoryKey] = $memoryMB & "MiB"
+
+proc hasResourceLimits(spec: EphemeralIncusSpec): bool =
+  spec.config.hasKey(IncusLimitsCpuKey) or
+    spec.config.hasKey(IncusLimitsMemoryKey)
+
 proc applyConfig(b: IncusBackend, name: string, spec: EphemeralIncusSpec) =
   ## Apply any raw ``incus config set`` keys from ``spec.config``.
   ##
@@ -636,7 +660,12 @@ proc provisionEphemeralClone*(b: IncusBackend,
       "provisionEphemeralClone: container '" & spec.name &
       "' already exists; per-job clones require a fresh name")
 
-  let needsPreStartCapabilities = spec.securityNesting or spec.nestedKvm
+  # Resource limits also take the pre-start path: a cap applied after
+  # `incus launch` would leave the guest's first seconds (cloud-init, the
+  # runner bootstrap) running uncapped, and would let the guest observe the
+  # host's full CPU count at boot.
+  let needsPreStartCapabilities =
+    spec.securityNesting or spec.nestedKvm or spec.hasResourceLimits
   var launchArgs = @[
     (if needsPreStartCapabilities: "init" else: "launch"), base, spec.name]
   if spec.ephemeral:
@@ -656,7 +685,8 @@ proc provisionEphemeralClone*(b: IncusBackend,
   try:
     b.applyConfig(spec.name, spec)
     if needsPreStartCapabilities:
-      b.applyOperatorCapabilities(spec.name, spec)
+      if spec.securityNesting or spec.nestedKvm:
+        b.applyOperatorCapabilities(spec.name, spec)
       let startRes = b.runIncus(@["start", spec.name], timeoutSec = 60)
       if startRes.exitCode != 0:
         raise newVmHarnessError($b.id, lpStartup,

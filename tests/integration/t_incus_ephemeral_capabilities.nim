@@ -112,6 +112,51 @@ suite "Incus ephemeral operator capabilities":
     check verifyPos < openPos
     check lines.join("\n").find("launch runner-base nested") < 0
 
+  test "resource limits are applied before first start alongside nesting":
+    let work = createTempDir("vmh-incus-limits", "")
+    defer: removeDir(work)
+    let logPath = work / "argv.log"
+    let shim = work / "incus"
+    writeIncusShim(shim, logPath)
+    let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
+
+    discard b.provisionEphemeralClone(EphemeralIncusSpec(
+      name: "capped",
+      config: incusEphemeralLimits(6, 16384),
+      securityNesting: true))
+    let lines = readFile(logPath).strip().splitLines()
+    let initPos = lines.lineIndex("init runner-base capped")
+    let cpuPos = lines.lineIndex("config set capped limits.cpu 6")
+    let memPos = lines.lineIndex("config set capped limits.memory 16384MiB")
+    let nestingPos = lines.lineIndex("config set capped security.nesting true")
+    let startPos = lines.lineIndex("start capped")
+    check initPos >= 0
+    check cpuPos > initPos
+    check memPos > initPos
+    check nestingPos > initPos
+    check cpuPos < startPos
+    check memPos < startPos
+    check nestingPos < startPos
+    check lines.join("\n").find("launch runner-base capped") < 0
+
+  test "resource limits alone take the pre-start path without capabilities":
+    let work = createTempDir("vmh-incus-limits-only", "")
+    defer: removeDir(work)
+    let logPath = work / "argv.log"
+    let shim = work / "incus"
+    writeIncusShim(shim, logPath)
+    let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
+
+    discard b.provisionEphemeralClone(EphemeralIncusSpec(
+      name: "cpu-only", config: incusEphemeralLimits(4, 0)))
+    let lines = readFile(logPath).strip().splitLines()
+    check lines == @[
+      "info cpu-only",
+      "init runner-base cpu-only",
+      "config set cpu-only limits.cpu 4",
+      "start cpu-only",
+    ]
+
   test "nested KVM alone implies nesting without Docker intercepts":
     let work = createTempDir("vmh-incus-kvm-only", "")
     defer: removeDir(work)

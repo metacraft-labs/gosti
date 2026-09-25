@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
 
-import std/[os, strutils, tempfiles, unittest]
+import std/[os, strutils, tables, tempfiles, unittest]
 import vm_harness/cli
+import vm_harness/backends/incus
 
 suite "CLI Incus lifecycle":
   test "nested capability flags parse only for ephemeral Incus runs":
@@ -31,6 +32,65 @@ suite "CLI Incus lifecycle":
     ]:
       expect ValueError:
         discard parseCliOpts(invalid)
+
+  test "--cpus/--memory-mb map to Incus resource limits":
+    let opts = parseCliOpts(@[
+      "run", "--ephemeral", "--backend", "incus",
+      "--cpus", "6", "--memory-mb", "16384",
+      "--baseline", "runner-limits", "--", "true",
+    ])
+    let limits = incusEphemeralLimits(opts.cpus, opts.memoryMB)
+    check limits.len == 2
+    check limits["limits.cpu"] == "6"
+    check limits["limits.memory"] == "16384MiB"
+
+    let gb = parseCliOpts(@[
+      "run", "--ephemeral", "--backend", "incus",
+      "--memory-gb", "8", "--baseline", "runner-gb", "--", "true",
+    ])
+    let gbLimits = incusEphemeralLimits(gb.cpus, gb.memoryMB)
+    check gbLimits.len == 1
+    check gbLimits["limits.memory"] == "8192MiB"
+
+    let bare = parseCliOpts(@[
+      "run", "--ephemeral", "--backend", "incus",
+      "--baseline", "runner-bare", "--", "true",
+    ])
+    check incusEphemeralLimits(bare.cpus, bare.memoryMB).len == 0
+
+  test "CLI applies --cpus/--memory-mb as limits before the container starts":
+    when defined(linux):
+      let work = createTempDir("vmh-cli-incus-limits", "")
+      defer: removeDir(work)
+      let logPath = work / "incus.log"
+      let fakeIncus = work / "incus"
+      writeFile(fakeIncus,
+        "#!/bin/sh\n" &
+        "printf '%s\\n' \"$*\" >> '" & logPath & "'\n" &
+        "case \"$*\" in\n" &
+        "  'info runner-lim') exit 1 ;;\n" &
+        "esac\n")
+      setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
+
+      let previous = getEnv("VMH_INCUS_CMD")
+      putEnv("VMH_INCUS_CMD", fakeIncus)
+      defer: putEnv("VMH_INCUS_CMD", previous)
+
+      check runCli(@[
+        "run", "--ephemeral", "--backend", "incus",
+        "--baseline", "runner-lim", "--base-image", "runner-base",
+        "--incus-security-nesting", "--cpus", "6", "--memory-mb", "16384",
+        "--keep",
+      ]) == 0
+      let lines = readFile(logPath).splitLines()
+      let startPos = lines.find("start runner-lim")
+      check "init runner-base runner-lim" in lines
+      check startPos >= 0
+      check lines.find("config set runner-lim limits.cpu 6") in 0 ..< startPos
+      check lines.find("config set runner-lim limits.memory 16384MiB") in
+        0 ..< startPos
+    else:
+      skip()
 
   test "privileged Incus CLI path keeps the configured container running":
     when defined(linux):
