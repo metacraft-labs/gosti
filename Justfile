@@ -8,7 +8,9 @@ default:
 
 build:
     mkdir -p build/bin test-logs
-    nim c --hints:off -o:build/bin/vm-harness src/vm_harness/cli.nim 2>&1 | tee test-logs/build.log
+    nim c --hints:off -o:build/gosti.out src/vm_harness/cli.nim 2>&1 | tee test-logs/build.log
+    bash scripts/install-binaries.sh build/gosti.out build/bin
+    rm -f build/gosti.out
     nim c --hints:off --path:src -o:build/bin/vm-harness-bench-snapshot-revert tools/bench/snapshot_revert_bench.nim 2>&1 | tee -a test-logs/build.log
 
 test:

@@ -117,6 +117,11 @@ run_nim r --hints:off tests/e2e/t_vm_harness_auto_backend_selection.nim
 # RA1 remoting: a remote client drives provision->run->destroy against a
 # `vm-harness serve` daemon over the authenticated endpoint (noop backend).
 run_nim r --hints:off tests/e2e/t_vmharness_serve_roundtrip.nim
+# vm-harness -> gosti rename (design doc §6.0): the real CLI installed by the
+# shared layout script is `bin/gosti` + a `bin/vm-harness` symlink, both names
+# behave identically, and a daemon started as `vm-harness serve` (how the
+# deployed units start it) still serves execs. Hermetic (noop backend).
+run_nim r --hints:off tests/e2e/t_gosti_command_names.nim
 # GOSTI2 PR-1 follow-up: the generic-CRUD `--json` envelope and exit code are
 # byte-identical over the local CLI (child process, stdout only) and over
 # serve's POST /v1/exec (one `log` line + matching `exit`). Hermetic (noop).

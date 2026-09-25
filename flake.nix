@@ -92,7 +92,7 @@
           };
 
           vm-harness = pkgs.stdenv.mkDerivation {
-            pname = "vm-harness";
+            pname = "gosti";
             version = "0.1.0";
             src = ./.;
             nativeBuildInputs = [ pkgs.nim ];
@@ -103,7 +103,7 @@
               # the writable build directory.
               nim c --hints:off --opt:speed \
                 --nimcache:$TMPDIR/nimcache \
-                -o:vm-harness src/vm_harness/cli.nim
+                -o:gosti src/vm_harness/cli.nim
               runHook postBuild
             '';
             installPhase = ''
@@ -111,7 +111,9 @@
               mkdir -p $out/bin \
                 $out/share/vm-harness/guest-scripts \
                 $out/share/vm-harness/guest-recipes
-              install -m755 vm-harness $out/bin/vm-harness
+              # `gosti` plus the `vm-harness` compatibility symlink — the
+              # shared layout script, so `just build` produces the same names.
+              bash scripts/install-binaries.sh gosti $out/bin
               # Hermetic-consumer fixture (docs/design.md §8.6): the real CLI
               # against the file-backed mock backend.
               install -m755 scripts/vm-harness-fixture.sh \
@@ -124,7 +126,9 @@
               description = "Cross-platform VM lifecycle orchestration";
               homepage = "https://github.com/metacraft-labs/vm-harness";
               license = pkgs.lib.licenses.asl20;
-              mainProgram = "vm-harness";
+              # `lib.getExe` consumers now run `bin/gosti`; `bin/vm-harness`
+              # remains as a symlink for everything that names it directly.
+              mainProgram = "gosti";
               platforms = [
                 "x86_64-linux"
                 "aarch64-linux"
@@ -137,6 +141,7 @@
         {
           packages = {
             default = vm-harness;
+            gosti = vm-harness;
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
             # The fast-booting libvirt test golden needs a Linux kernel,
