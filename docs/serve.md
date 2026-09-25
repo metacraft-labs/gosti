@@ -149,6 +149,43 @@ probes every registered hypervisor backend. Measured on aarch64-darwin
 2026-09-18, against the same daemon: **16.7 s authenticated vs 5 ms
 unauthenticated.**
 
+### Client disconnects: finish the worker, never spin
+
+A `/v1/exec` client may vanish at any point — central GARM cancels and
+SIGKILLs provider processes routinely. The daemon's contract when that happens:
+
+1. **The worker runs to completion.** A disconnect is not a cancellation. A
+   `ephemeral-destroy` whose caller went away must still finish, or every
+   cancelled delete would abort mid-teardown and leak a guest.
+2. **The first failed write marks the client gone, and nothing is written to
+   it again.** Any write error (`EPIPE`, `ECONNRESET`, a send timeout, anything)
+   is final for that connection: no retry, no backoff loop. From then on the
+   handler only DRAINS the worker's output — so the worker can never block on a
+   full pipe — and discards it, keeping a short tail (the last 20 lines) that
+   is written to the daemon's log when the worker exits, together with its exit
+   code and the number of lines the client never saw.
+3. **While draining, the handler blocks on the worker, not on the socket.** It
+   costs no CPU beyond reading the worker's output.
+4. **Every worker is reaped** (`waitpid`) by the handler that spawned it, on
+   every exit path — normal exit, deadline kill, and disconnect. The daemon
+   never accumulates `<defunct>` children.
+5. **A client that stays connected but stops reading** is treated as gone once
+   one write has been blocked for `ClientSendTimeoutSec` (300 s), by the same
+   rule as (2). Without it such a client would pin the handler in `send`, the
+   worker's pipe would fill, and the worker would stall until the exec
+   deadline.
+
+Every server-side write — the exec stream, buffered responses, and the
+acceptor's saturation 503 — goes through one `sendAll` that raises on the first
+hard error. It exists because std/net's `send(Socket, string)` cannot be used
+here: with its default `SafeDisconn` flag it treats `EPIPE`/`ECONNRESET` as
+"not an error" INSIDE its write-until-done loop without advancing, so a write
+to a vanished peer never returns. Measured on high-mem-server: seven handler
+threads at ~91% CPU each, 225,086 failed `sendto` calls in 5 s, and 16
+unreaped workers (each spinning handler never reached its `waitpid`). The same
+loop also resends from offset 0 after a partial write, which would corrupt the
+stream. Gated by `t_vmharness_serve_client_disconnect_no_spin`.
+
 ## Driving a remote host
 
 Any operational subcommand gains a `--remote <host:port>` flag that forwards
@@ -202,6 +239,14 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   `t_vmharness_serve_survives_a_hung_request_host.nim`, is READ-ONLY and
   asserts that a DEPLOYED listener answers and that its accept backlog is not
   saturated; `just test-host`, skips loudly with no deployed daemon.
+- `tests/e2e/t_vmharness_serve_client_disconnect_no_spin.nim` — the
+  disconnect contract above. Clients abandon a chatty exec (more output than a
+  pipe buffer holds) mid-stream; asserts the daemon stays idle while the worker
+  finishes (CPU time over a fixed window), every worker completes, and after a
+  mix of abandoned and completed execs the daemon has ZERO zombie children and
+  still answers. Falsifiable: routing the writes back through std/net's
+  `send(Socket, string)` makes every assertion fail. Hermetic (self-exec
+  worker). In `just test`.
 - `tests/e2e/t_vmharness_serve_roundtrip_incus.nim` — the same remote path
   against a **real** incus ephemeral container, including authenticated
   selection of the pre-start nesting/KVM policy and guest mode verification.

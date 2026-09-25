@@ -9,16 +9,20 @@
 ## deletes ended `signal: killed` and ~23k `context canceled`. The question
 ## that decides the root cause of the STOPPED-container leak on
 ## gpu-server-001/002 is whether killing the PROVIDER also aborts the remote
-## `ephemeral-destroy`. MEASURED here: it does not. `handleExec` streams with
-## `Socket.send`, whose default `SafeDisconn` flag swallows EPIPE/ECONNRESET,
-## so the worker is never interrupted by a vanished client and runs to
-## completion. (The leak was the teardown itself reporting success for a
-## container it had not removed — gated in tests/unit/t_ephemeral_inventory.)
+## `ephemeral-destroy`. It must not, and it does not: `handleExec` writes
+## through a `ClientStream` that marks the client gone on the first failed
+## write and then DRAINS the worker to completion without writing again.
+## (The leak was the teardown itself reporting success for a container it had
+## not removed — gated in tests/unit/t_ephemeral_inventory.)
 ##
-## This gate keeps that property from regressing silently: a future change
-## that makes a dead-client write raise would route the handler into its
-## `finally`, which SIGKILLs a still-running worker — i.e. every cancelled
-## GARM delete would then abort mid-`incus delete`.
+## History: this property originally held only by accident — std/net's
+## `Socket.send` swallowed EPIPE by spinning on the dead socket forever, which
+## "survived" the disconnect at the cost of a pinned core per connection and a
+## worker stalled on a full pipe (see t_vmharness_serve_client_disconnect_no_spin,
+## which gates the no-spin half). This gate keeps the survival half: a change
+## that let a dead-client write raise out of the stream loop would route the
+## handler into its `finally`, which SIGKILLs a still-running worker — i.e.
+## every cancelled GARM delete would abort mid-`incus delete`.
 ##
 ## MOCK JUSTIFICATION (workspace test policy). No hypervisor is exercised: the
 ## daemon's worker is this test binary re-execed in a `__work` role that

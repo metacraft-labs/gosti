@@ -16,7 +16,11 @@
 ## ``recvLine`` empty-line/closed-connection ambiguity; bodies and chunks use
 ## sized ``recv``.
 
-import std/[net, strutils, tables]
+import std/[net, os, strutils, tables]
+when defined(windows):
+  import std/winlean
+else:
+  import std/posix
 
 type
   HttpRequest* = object
@@ -70,6 +74,53 @@ proc parseHeaderLine(line: string, headers: var Table[string, string]) =
   headers[key] = val
 
 # ---------------------------------------------------------------------------
+# Writing.
+
+const MaxInterruptedSends = 100
+  ## How many consecutive EINTR-interrupted sends ``sendAll`` tolerates before
+  ## treating the socket as broken. EINTR is the ONLY error it retries.
+
+proc isInterrupted(err: OSErrorCode): bool =
+  when defined(windows):
+    err.int32 == WSAEINTR
+  else:
+    err.int32 == EINTR
+
+proc sendAll*(sock: Socket, data: string) =
+  ## Write all of ``data`` to ``sock`` or raise ``HttpError``. Every write in
+  ## this module — server AND client side — goes through here.
+  ##
+  ## Why not std/net's ``send(Socket, string)``: with its default
+  ## ``SafeDisconn`` flag, a write that fails with EPIPE / ECONNRESET is
+  ## classified as a "safe" disconnection and IGNORED, but inside the proc's own
+  ## ``while written < data.len`` loop and without advancing ``written`` — so a
+  ## write to a peer that has gone away never returns (Nim 2.2.x
+  ## ``lib/pure/net.nim``, ``send``). That is a tight ``sendto`` -> EPIPE loop
+  ## at 100% of a core, per connection, forever: measured on high-mem-server as
+  ## seven serve handler threads at ~91% CPU each and 225,086 failed ``sendto``
+  ## calls in 5 s. The same loop also resends from offset 0 after a partial
+  ## write, which would corrupt the stream.
+  ##
+  ## So: any error other than EINTR is final, and so is a zero-byte write. A
+  ## send timeout (``SO_SNDTIMEO``) or a non-blocking socket's EAGAIN surfaces
+  ## here as an error too, which is exactly the behaviour both callers want.
+  var written = 0
+  var interrupted = 0
+  while written < data.len:
+    let n = sock.send(unsafeAddr data[written], data.len - written)
+    if n > 0:
+      written += n
+      interrupted = 0
+      continue
+    let err = osLastError()
+    if n < 0 and isInterrupted(err) and interrupted < MaxInterruptedSends:
+      inc interrupted
+      continue
+    raise newException(HttpError,
+      "send failed after " & $written & " of " & $data.len & " bytes: " &
+      (if n == 0: "peer accepted no data" else: osErrorMsg(err)))
+
+# ---------------------------------------------------------------------------
 # Server side.
 
 proc readRequest*(client: Socket): HttpRequest =
@@ -116,7 +167,7 @@ proc sendResponse*(client: Socket, status: int, body: string,
     msg.add("WWW-Authenticate: Bearer\r\n")
   msg.add("\r\n")
   msg.add(body)
-  client.send(msg)
+  client.sendAll(msg)
 
 proc beginChunked*(client: Socket, status = 200,
                    contentType = "application/x-ndjson") =
@@ -126,7 +177,7 @@ proc beginChunked*(client: Socket, status = 200,
   msg.add("Transfer-Encoding: chunked\r\n")
   msg.add("Connection: close\r\n")
   msg.add("\r\n")
-  client.send(msg)
+  client.sendAll(msg)
 
 proc chunkSizeHex*(n: int): string =
   ## The HTTP/1.1 chunk-size token for a body of ``n`` bytes: minimal
@@ -144,15 +195,15 @@ proc chunkSizeHex*(n: int): string =
 
 proc writeChunk*(client: Socket, data: string) =
   ## Write one chunk. Empty ``data`` is ignored (a zero-length chunk would
-  ## be misread as the terminator).
+  ## be misread as the terminator). One ``sendAll`` per chunk: the size line,
+  ## payload and trailer are framed together so a failure cannot leave a
+  ## half-written frame followed by more writes.
   if data.len == 0:
     return
-  client.send(chunkSizeHex(data.len) & "\r\n")
-  client.send(data)
-  client.send("\r\n")
+  client.sendAll(chunkSizeHex(data.len) & "\r\n" & data & "\r\n")
 
 proc endChunked*(client: Socket) =
-  client.send("0\r\n\r\n")
+  client.sendAll("0\r\n\r\n")
 
 # ---------------------------------------------------------------------------
 # Client side.
@@ -169,7 +220,7 @@ proc sendRequest*(sock: Socket, httpMethod, path, host: string,
   msg.add("Connection: close\r\n")
   msg.add("\r\n")
   msg.add(body)
-  sock.send(msg)
+  sock.sendAll(msg)
 
 proc readResponseHead*(sock: Socket): tuple[status: int,
                        headers: Table[string, string]] =
