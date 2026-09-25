@@ -261,7 +261,9 @@ type
                                  ## ``DefaultExecDeadlineSec``.
 
 const HelpText = """
-vm-harness <subcommand> [flags]
+gosti <subcommand> [flags]
+
+(`vm-harness` is the same binary under its pre-rename name.)
 
 Subcommands:
   provision               Ensure a baseline image exists (idempotent).

@@ -425,6 +425,33 @@ exit $LASTEXITCODE
 
 ## 6. CLI reference
 
+### 6.0 Command names
+
+The project was renamed vm-harness → gosti. The binary is installed under
+BOTH names, and they are the same file:
+
+- `bin/gosti` — the primary name. `meta.mainProgram` is `gosti`, so
+  `lib.getExe` consumers run this.
+- `bin/vm-harness` — a relative symlink to `gosti`, kept indefinitely for
+  compatibility. Existing callers (the `vm-harness serve` units, the GARM
+  provider's default binary path, scripts, operator muscle memory) need no
+  change.
+
+Both the flake's `installPhase` and `just build` produce this layout through
+the one script `scripts/install-binaries.sh`, so they cannot disagree.
+Behaviour does not depend on the invoked name: argv, exit codes, output, and
+the serve daemon's worker re-exec (it runs the RESOLVED executable) are
+identical. Deliberately NOT renamed by this step, because each is a
+compatibility surface whose consumers have to move first (see the GOSTI1
+consumer migration plan in reprobuild-specs): the `VMH_*` environment
+variables, the on-disk state directories (`…/vm-harness/crud`,
+`…/vm-harness/ephemeral-labels`, `/var/lib/vm-harness-serve`), the
+`share/vm-harness/` payload path, the `vm_harness` Nim package/module name,
+and the `[vm-harness serve]` log prefix and `vm-harness:` message prefixes
+that consumers match on. Gated by `t_gosti_command_names`.
+
+The examples below use `vm-harness`; `gosti` is interchangeable.
+
 ```
 vm-harness <subcommand> [flags]
 
