@@ -49,7 +49,7 @@ Backend implementations live in `src/vm_harness/backends/`, guest bootstrap
 assets live in `guest-scripts/` and `guest-recipes/`, and tests are split across
 `tests/unit/`, `tests/integration/`, and `tests/e2e/`.
 
-Use the Nix development environment (`direnv allow` or `nix develop`) and the
+Use the Nix development environment (`repro allow` and the repro shell hook) and the
 repository entrypoints below:
 
 - `just build` builds the CLI and snapshot benchmark.

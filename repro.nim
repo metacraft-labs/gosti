@@ -9,6 +9,7 @@
 ## lifecycles remain in the explicit host-test catalog.
 
 import repro_project_dsl
+import repro_dsl_stdlib/foreign_env
 import ct_test_nim_unittest
 import repro_dsl_stdlib/nixpkgs_pin
 import repro_resources/run_edge
@@ -124,6 +125,10 @@ const posixTestSpecs: seq[VmHarnessTestSpec] = @[
 # hermetic collection.
 
 package vm_harness:
+  devEnv:
+    when not defined(windows):
+      useFlakeDevShell()
+
   defaultToolProvisioning "path"
 
   uses:
