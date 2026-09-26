@@ -3,6 +3,9 @@
 # Build artifacts
 build/
 nimcache/
+# Per-checkout nimcache (config.nims): every Nim compile in this checkout
+# keeps its intermediate files here, never in the shared ~/.cache/nim.
+.nimcache/
 /.repro/
 /result
 *.exe
