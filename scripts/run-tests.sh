@@ -10,6 +10,7 @@ run_nim() {
 }
 
 # Host-independent unit tests.
+run_nim r --hints:off tests/unit/t_nimcache_is_worktree_local.nim
 run_nim r --hints:off tests/unit/t_output_envelope.nim
 run_nim r --hints:off tests/unit/t_auto_selection.nim
 # GOSTI2 PR-1: the generic-CRUD façade contract (JSON schema + exit codes),
