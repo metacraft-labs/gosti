@@ -129,6 +129,10 @@ suite "LibvirtBackend smoke (no live virsh)":
     let bootIdx = argv.find("--boot")
     check bootIdx >= 0 and bootIdx + 1 < argv.len
     check argv[bootIdx + 1].startsWith("uefi,")
+    # vCPUs as one socket of N cores (Windows 11 Pro uses at most 2 sockets).
+    let vcpuIdx = argv.find("--vcpus")
+    check vcpuIdx >= 0 and vcpuIdx + 1 < argv.len
+    check argv[vcpuIdx + 1] == "4,sockets=1,cores=4,threads=1"
     # Bridge override survives.
     let networkSpec = argv.filterIt(it.startsWith("bridge=br0"))
     check networkSpec.len == 1
@@ -777,6 +781,31 @@ suite "LibvirtBackend (continued)":
     check "template='/run/libvirt/nix-ovmf/edk2-i386-vars.fd'" in xml
     # Windows on UEFI needs SMM.
     check "<smm state='on'/>" in xml
+    # The RTC is UTC, independent of the host's time zone (the golden sets
+    # RealTimeIsUniversal=1 to match).
+    check "<clock offset='utc'>" in xml
+    check "localtime" notin xml
+
+  test "buildEphemeralDomainXml exposes the vCPUs as ONE socket of N cores":
+    # Windows 11 Pro uses at most 2 sockets; libvirt's default is one socket
+    # per vCPU, which left a 4-vCPU Windows guest on 2 logical processors.
+    let b = newLibvirtBackend()
+    let spec = EphemeralCloneSpec(
+      name: "topo", goldenImage: "/storage/iso/golden-win11-cloudbase.qcow2",
+      cpus: 4, memoryMB: 16384,
+      uefiLoader: "/run/libvirt/nix-ovmf/edk2-x86_64-code.fd",
+      uefiNvramTemplate: "/run/libvirt/nix-ovmf/edk2-i386-vars.fd",
+      uefiNvram: "/var/lib/libvirt/images/topo_VARS.fd")
+    let xml = b.buildEphemeralDomainXml(spec,
+      "/var/lib/libvirt/images/topo.overlay.qcow2", "/tmp/topo.serial.log")
+    check "<vcpu>4</vcpu>" in xml
+    check "<cpu mode='host-passthrough'>" in xml
+    check "<topology sockets='1' dies='1' cores='4' threads='1'/>" in xml
+    # The direct-kernel path gets the same topology (default 2 vCPUs).
+    let tiny = b.buildEphemeralDomainXml(EphemeralCloneSpec(
+      name: "tiny", goldenImage: "/tmp/g.qcow2", kernel: "/tmp/kernel"),
+      "/tmp/tiny.overlay.qcow2", "/tmp/tiny.serial.log")
+    check "<topology sockets='1' dies='1' cores='2' threads='1'/>" in tiny
 
   test "the tiny-Linux (direct-kernel) ephemeral path is unchanged (no NIC/" &
        "config-drive/UEFI)":

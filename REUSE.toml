@@ -25,6 +25,7 @@ path = [
   "guest-recipes/**/*.reg",
   "guest-recipes/**/*.conf",
   "guest-recipes/**/*.targets",
+  "guest-recipes/**/*.pins",
   "docs/site/static/img/ct-search-icon.svg",
   "docs/site/static/img/icon-dark-circle.svg",
 ]

@@ -729,6 +729,20 @@ proc overlayPathFor*(b: LibvirtBackend, name: string): string =
   ## remove exactly it (never the golden, never a shared ISO).
   b.imagePoolDir / (name & ".overlay.qcow2")
 
+proc singleSocketTopologyXml*(cpus: int): string =
+  ## ``<topology>`` for ``cpus`` vCPUs as ONE socket of ``cpus`` cores.
+  ##
+  ## libvirt's default topology is one socket per vCPU, and Windows client
+  ## SKUs cap the SOCKETS they use (Windows 11 Pro: 2), not the cores: a
+  ## 4-vCPU domain with the default layout shows Windows 11 Pro only 2
+  ## logical processors. One socket x N cores is honoured by every guest.
+  "<topology sockets='1' dies='1' cores='" & $cpus & "' threads='1'/>"
+
+proc singleSocketVcpusArg*(cpus: int): string =
+  ## The ``virt-install --vcpus`` value with the same 1-socket topology as
+  ## ``singleSocketTopologyXml`` (see there for why).
+  $cpus & ",sockets=1,cores=" & $cpus & ",threads=1"
+
 proc buildEphemeralDomainXml*(b: LibvirtBackend, spec: EphemeralCloneSpec,
                               overlayPath, serialLogPath: string): string =
   ## Render a minimal transient domain XML around the per-job overlay.
@@ -814,8 +828,14 @@ proc buildEphemeralDomainXml*(b: LibvirtBackend, spec: EphemeralCloneSpec,
       "    </hyperv>\n" &
       "    <smm state='on'/>\n" &
       "  </features>\n"
+    # ``utc``, not ``localtime``: the RTC must not depend on the HOST's
+    # time zone (hms runs Europe/Sofia, which put every guest whose own
+    # zone differed hours off, and GitHub rejected the runner's token as
+    # "not valid until ..."). The Windows golden pairs this with
+    # RealTimeIsUniversal=1 (guest-recipes/windows-x64-base/
+    # provision-ci-toolchain.ps1 -ClockMode utc), so any guest zone is right.
     clockBlock =
-      "  <clock offset='localtime'>\n" &
+      "  <clock offset='utc'>\n" &
       "    <timer name='rtc' tickpolicy='catchup'/>\n" &
       "    <timer name='hpet' present='no'/>\n" &
       "    <timer name='hypervclock' present='yes'/>\n" &
@@ -827,7 +847,9 @@ proc buildEphemeralDomainXml*(b: LibvirtBackend, spec: EphemeralCloneSpec,
     "  <vcpu>" & $cpus & "</vcpu>\n" &
     osBlock &
     featuresBlock &
-    (if uefi: "  <cpu mode='host-passthrough'/>\n" else: "") &
+    (if uefi: "  <cpu mode='host-passthrough'>\n" else: "  <cpu>\n") &
+    "    " & singleSocketTopologyXml(cpus) & "\n" &
+    "  </cpu>\n" &
     clockBlock &
     "  <devices>\n" &
     "    <disk type='file' device='disk'>\n" &
@@ -1125,7 +1147,7 @@ proc buildVirtInstallArgs*(b: LibvirtBackend, name: string,
     "--connect", b.libvirtUri,
     "--name", name,
     "--osinfo", osVariant,
-    "--vcpus", $vcpus,
+    "--vcpus", singleSocketVcpusArg(vcpus),
     "--memory", $memoryMB,
     "--cpu", "host-model",
     "--machine", "q35",
@@ -1452,7 +1474,7 @@ method provisionBaseline*(b: LibvirtBackend, spec: BaselineSpec) =
         "--connect", b.libvirtUri,
         "--name", spec.name,
         "--osinfo", "win11",
-        "--vcpus", $cpus,
+        "--vcpus", singleSocketVcpusArg(cpus),
         "--memory", $mem,
         "--cpu", "host-model",
         "--machine", "q35",
@@ -2603,7 +2625,7 @@ method bootFromMedia*(b: LibvirtBackend, spec: BootMediaSpec): VmHandle =
       "--connect", b.libvirtUri,
       "--name", domainName,
       "--memory", $mem,
-      "--vcpus", $cpus,
+      "--vcpus", singleSocketVcpusArg(cpus),
       "--machine", "q35"]
     if durable: argv.add(@["--uuid", spec.instanceId])
     argv.add(transientBootAccelerationArgs(spec))
