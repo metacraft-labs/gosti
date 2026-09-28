@@ -36,6 +36,10 @@ fail() { echo "[harden-defender-offline][FAIL] $*" >&2; exit 1; }
 for f in "$SYS_REG" "$SOFT_REG" "$TARGETS"; do [[ -f "$f" ]] || fail "payload file missing: $f"; done
 for t in qemu-nbd ntfs-3g hivexregedit hivexget; do command -v "$t" >/dev/null || fail "missing tool: $t"; done
 
+# hivexget is a shell script with a #!/bin/bash shebang, which NixOS does not
+# have; run it through the bash on PATH.
+hget() { bash "$(command -v hivexget)" "$@"; }
+
 modprobe nbd max_part=16
 NBD=""
 for d in /sys/block/nbd*; do
@@ -76,7 +80,7 @@ done
 
 SYSHIVE="$MNT/Windows/System32/config/SYSTEM"
 SOFTHIVE="$MNT/Windows/System32/config/SOFTWARE"
-cur="$(hivexget "$SYSHIVE" '\Select' Current)"
+cur="$(hget "$SYSHIVE" '\Select' Current)"
 [[ "$cur" =~ ^[0-9]+$ ]] || fail "could not read \\Select\\Current from SYSTEM (got '$cur')"
 CS="$(printf 'ControlSet%03d' "$cur")"
 log "current control set: $CS"
@@ -90,7 +94,7 @@ bad=0; n=0
 while read -r svc; do
   [[ -z "$svc" || "$svc" == \#* ]] && continue
   n=$((n + 1))
-  v="$(hivexget "$SYSHIVE" "\\$CS\\Services\\$svc" Start 2>/dev/null || echo missing)"
+  v="$(hget "$SYSHIVE" "\\$CS\\Services\\$svc" Start 2>/dev/null || echo missing)"
   if [[ "$v" == 4 ]]; then log "  $svc Start=4"; else log "  $svc Start=$v (EXPECTED 4)"; bad=1; fi
 done < "$TARGETS"
 [[ "$n" -gt 0 ]] || fail "targets file listed nothing"

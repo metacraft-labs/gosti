@@ -43,6 +43,8 @@
 #   VMH_OVMF_CODE / VMH_OVMF_VARS  (default /run/libvirt/nix-ovmf/edk2-x86_64-code.fd / edk2-i386-vars.fd)
 #   VMH_PROVISION_TIMEOUT seconds for the in-guest provision (default 7200)
 #   VMH_KEEP_ON_FAIL  non-empty = on failure, keep the work/verify domains + disks
+#   VMH_RESUME_FROM   continue a VMH_KEEP_ON_FAIL run: gates = at the work gates
+#                     (after provisioning), offline = at the offline AV step
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
@@ -176,18 +178,36 @@ drop_domain() {
   "${VIRSH[@]}" undefine "$1" --nvram >/dev/null 2>&1 || true
 }
 
-run_gates() { # ip extra-assert-args label
-  local ip="$1" extra="$2" label="$3" g
+# Run one gate script. SSH exit 255 is a TRANSPORT failure (the guest
+# rebooted or dropped the session, e.g. a post-install reboot Windows
+# scheduled on its own), not a verdict, so wait for SSH and retry it
+# (bounded). Sets GATE_IP to the address that answered.
+run_gate() { # domain label name args
+  local dom="$1" label="$2" g="$3" args="$4" attempt rc
+  for attempt in 1 2 3; do
+    ps_guest "$GATE_IP" "-File $GUEST_STAGE\\$g $args" 2>&1 | sed "s/^/  [$label:$g] /"
+    rc=${PIPESTATUS[0]}
+    [[ "$rc" == 0 ]] && return 0
+    [[ "$rc" != 255 ]] && fail "$label gate $g FAILED (exit $rc)"
+    log "$label gate $g: SSH transport lost (attempt $attempt), waiting for the guest"
+    sleep 60
+    GATE_IP="$(wait_ssh "$dom")" || fail "$label guest SSH did not come back"
+    stage_into_guest "$GATE_IP"
+  done
+  fail "$label gate $g: SSH kept dropping"
+}
+
+run_gates() { # domain ip extra-assert-args label
+  local dom="$1" extra="$3" label="$4" g
+  GATE_IP="$2"
   for g in assert-git-provisioned.ps1 assert-pwsh-provisioned.ps1 assert-defender-exclusions-sane.ps1; do
     if [[ "$g" == assert-defender-exclusions-sane.ps1 && "$DISABLE_DEFENDER" == 1 && "$label" == clone ]]; then
       continue  # with the AV services disabled there are no preferences to read
     fi
-    ps_guest "$ip" "-File $GUEST_STAGE\\$g" 2>&1 | sed "s/^/  [$label:$g] /"
-    [[ ${PIPESTATUS[0]} == 0 ]] || fail "$label gate $g FAILED"
+    run_gate "$dom" "$label" "$g" ""
   done
-  ps_guest "$ip" "-File $GUEST_STAGE\\assert-ci-toolchain.ps1 -StageDir $GUEST_STAGE -ClockMode $CLOCK_MODE -ExpectLogicalProcessors $VCPUS $extra" \
-    2>&1 | sed "s/^/  [$label:ci-toolchain] /"
-  [[ ${PIPESTATUS[0]} == 0 ]] || fail "$label gate assert-ci-toolchain.ps1 FAILED"
+  run_gate "$dom" "$label" assert-ci-toolchain.ps1 \
+    "-StageDir $GUEST_STAGE -ClockMode $CLOCK_MODE -ExpectLogicalProcessors $VCPUS $extra"
 }
 
 stage_into_guest() { # ip [files...]
@@ -254,6 +274,25 @@ cleanup() {
   sudo -n rm -f "$WORK" "$WORK_NVRAM" "$VERIFY_OVERLAY" "$VERIFY_NVRAM" "${OUT_GOLDEN}.partial" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+RESUME="${VMH_RESUME_FROM:-}"
+if [[ "$RESUME" == offline ]]; then
+  # Continue a VMH_KEEP_ON_FAIL run that passed the work gates and shut the
+  # work guest down: only the cold image is needed.
+  [[ -f "$WORK" ]] || fail "resume: work image $WORK not found"
+  [[ "$("${VIRSH[@]}" domstate "$WORK_DOMAIN" 2>/dev/null | tr -d '[:space:]')" != running ]] || fail "resume: $WORK_DOMAIN is still running"
+  drop_domain "$WORK_DOMAIN"
+  log "resuming at the offline step on $WORK"
+elif [[ "$RESUME" == gates ]]; then
+  # Continue a VMH_KEEP_ON_FAIL run whose provisioning finished: the work
+  # domain must still be defined (running or shut off) on $WORK.
+  "${VIRSH[@]}" domstate "$WORK_DOMAIN" >/dev/null 2>&1 || fail "resume: $WORK_DOMAIN is not defined"
+  [[ "$("${VIRSH[@]}" domstate "$WORK_DOMAIN" | tr -d '[:space:]')" == running ]] || "${VIRSH[@]}" start "$WORK_DOMAIN" >/dev/null
+  IP="$(wait_ssh "$WORK_DOMAIN")" || fail "resume: work guest SSH never came up"
+  log "resuming at the gates on $WORK_DOMAIN ($IP)"
+  stage_into_guest "$IP"
+else
+[[ -z "$RESUME" ]] || fail "VMH_RESUME_FROM must be empty, 'gates' or 'offline'"
 drop_domain "$WORK_DOMAIN"; drop_domain "$VERIFY_DOMAIN"
 
 # ── step 2: full standalone copy (+ grow) ────────────────────────────────────
@@ -282,7 +321,10 @@ log "rebooting the work guest (installer reboot + clock settings take effect)"
 ssh_guest "$IP" 'shutdown /r /t 3 /f' >/dev/null 2>&1 || true
 sleep 60
 IP="$(wait_ssh "$WORK_DOMAIN")" || fail "work guest did not come back after reboot"
-run_gates "$IP" "" work
+fi  # end of the non-resume path
+if [[ "$RESUME" != offline ]]; then
+run_gates "$WORK_DOMAIN" "$IP" "" work
+IP="$GATE_IP"
 check_clock "$IP"
 
 log "removing the guest staging dir and shutting down"
@@ -290,6 +332,7 @@ ps_guest "$IP" "-Command \"Remove-Item -Recurse -Force -Path $GUEST_STAGE\"" >/d
 ssh_guest "$IP" 'shutdown /s /t 3 /f' >/dev/null 2>&1 || true
 wait_off "$WORK_DOMAIN" 900 || fail "work guest did not power off"
 drop_domain "$WORK_DOMAIN"
+fi
 
 # ── step 4: offline antivirus disable ────────────────────────────────────────
 if [[ "$DISABLE_DEFENDER" == 1 ]]; then
@@ -311,7 +354,8 @@ boot_domain "$VERIFY_DOMAIN" "$VERIFY_OVERLAY" "$VERIFY_NVRAM"
 IP="$(wait_ssh "$VERIFY_DOMAIN")" || fail "clone SSH never came up (did the offline edit break boot? check VNC)"
 stage_into_guest "$IP"
 defx=""; [[ "$DISABLE_DEFENDER" == 1 ]] && defx="-ExpectDefenderOff"
-run_gates "$IP" "$defx" clone
+run_gates "$VERIFY_DOMAIN" "$IP" "$defx" clone
+IP="$GATE_IP"
 check_clock "$IP"
 drop_domain "$VERIFY_DOMAIN"
 sudo -n rm -f "$VERIFY_OVERLAY" "$VERIFY_NVRAM"
