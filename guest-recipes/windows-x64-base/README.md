@@ -698,6 +698,14 @@ domain as long-lived and skips per-gate revert.
   over SSH against an already-built golden.
 - `../lib/fetch-portable-git.sh` — host-side cache + checksum verify for
   the pinned PortableGit archive (`--arch x64|arm64`).
+- `build-ci-toolchain-golden.sh`, `provision-ci-toolchain.ps1`,
+  `assert-ci-toolchain.ps1`, `ci-toolchain.pins` — the CI-toolchain layer
+  (VS 2022 Build Tools + Windows SDK, WinFsp, long paths, the pinned actions
+  runner, the UTC clock contract, antivirus off), built and verified on a
+  clone in one script. See [`ci-toolchain-golden.md`](ci-toolchain-golden.md).
+- `../lib/harden-defender-offline.sh` — the qcow2/Linux sibling of
+  `../lib/harden-defender.ps1` (qemu-nbd + ntfs-3g + hivexregedit, same
+  payload files).
 
 All scripts are POSIX `bash` and self-contained; they accept
 `--help` for usage.

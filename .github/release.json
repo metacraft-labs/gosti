@@ -1,0 +1,86 @@
+{
+  "product": "gosti",
+  "versionFile": "vm_harness.nimble",
+  "packageName": "metacraft-gosti",
+  "commands": [
+    "gosti",
+    "vm-harness"
+  ],
+  "license": "Apache-2.0",
+  "summary": "Cross-platform VM lifecycle orchestration",
+  "targets": [
+    {
+      "id": "linux-x86_64",
+      "runner": [
+        "self-hosted",
+        "linux",
+        "x64"
+      ],
+      "assets": [
+        "{product}-{version}-linux-x86_64.tar.gz",
+        "{product}-{version}-linux-x86_64.json",
+        "metacraft-gosti_{version}-1_amd64.deb",
+        "metacraft-gosti-{version}-1.x86_64.rpm"
+      ]
+    },
+    {
+      "id": "linux-aarch64",
+      "runner": "ubuntu-24.04-arm",
+      "assets": [
+        "{product}-{version}-linux-aarch64.tar.gz",
+        "{product}-{version}-linux-aarch64.json",
+        "metacraft-gosti_{version}-1_arm64.deb",
+        "metacraft-gosti-{version}-1.aarch64.rpm"
+      ],
+      "runnerReason": "Temporary native Linux ARM64 release migration exception while the self-hosted Tart route is unfinished.",
+      "runnerMigration": {
+        "version": "0.1.0",
+        "owner": "zah",
+        "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-28-release-linux-arm64-runner-migration.md"
+      }
+    },
+    {
+      "id": "darwin-aarch64",
+      "runner": [
+        "self-hosted",
+        "macos",
+        "arm64"
+      ],
+      "assets": [
+        "{product}-{version}-darwin-aarch64.tar.gz",
+        "{product}-{version}-darwin-aarch64.json"
+      ]
+    },
+    {
+      "id": "windows-x86_64",
+      "runner": [
+        "self-hosted",
+        "windows",
+        "x64"
+      ],
+      "assets": [
+        "{product}-{version}-windows-x86_64.zip",
+        "{product}-{version}-windows-x86_64.json"
+      ]
+    },
+    {
+      "id": "windows-aarch64",
+      "runner": [
+        "self-hosted",
+        "windows",
+        "arm64"
+      ],
+      "assets": [
+        "{product}-{version}-windows-aarch64.zip",
+        "{product}-{version}-windows-aarch64.json"
+      ]
+    }
+  ],
+  "runtimeSources": {
+    "pcre": {
+      "url": "https://ftp.exim.org/pub/pcre/pcre-8.45.tar.bz2",
+      "sha256": "4dae6fdcd2bb0bb6c37b5f97c33c2be954da743985369cddac3546e3218bffb8"
+    }
+  },
+  "unsignedReleaseVersion": "0.1.0"
+}
