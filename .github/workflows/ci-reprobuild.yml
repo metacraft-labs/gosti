@@ -38,16 +38,19 @@ jobs:
           owner: metacraft-labs
 
       - name: Setup reprobuild environment
-        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@6d607047dc8b99753f1b16cf37982506de65b373
         with:
           env-flavor: reprobuild
+          # Exercise the published bootstrap repairs before a new CLI release.
+          # ARM64 Windows retains its current path pending the backend work.
+          repro-from-source: ${{ !contains(matrix.runner, 'windows') || !contains(matrix.runner, 'arm64') }}
+          repro-build-pin: e8804eb367f979c810cc440b901a9506f23b9ae5
           gh-token: ${{ steps.ci-token.outputs.token }}
           substituters: ${{ vars.SUBSTITUTERS }}
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           attic-token: ${{ secrets.ATTIC_TOKEN }}
           attic-cache: ${{ vars.ATTIC_CACHE }}
           attic-endpoint: ${{ vars.ATTIC_ENDPOINT }}
-          repro-build-pin: b29a5ababae99a81a96b84939128dc07771564ba
 
       - name: Repro build
         shell: bash
