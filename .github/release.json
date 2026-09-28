@@ -25,17 +25,14 @@
     },
     {
       "id": "linux-aarch64",
-      "runner": [
-        "self-hosted",
-        "linux",
-        "arm64"
-      ],
+      "runner": "eph-linux-arm64",
       "assets": [
         "{product}-{version}-linux-aarch64.tar.gz",
         "{product}-{version}-linux-aarch64.json",
         "metacraft-gosti_{version}-1_arm64.deb",
         "metacraft-gosti-{version}-1.aarch64.rpm"
-      ]
+      ],
+      "runnerReason": "Temporary route through the live m3 scale set; central Tart pool cannot drive this backend (infra 5878095c, central-garm.nix)."
     },
     {
       "id": "darwin-aarch64",
@@ -79,5 +76,6 @@
       "url": "https://ftp.exim.org/pub/pcre/pcre-8.45.tar.bz2",
       "sha256": "4dae6fdcd2bb0bb6c37b5f97c33c2be954da743985369cddac3546e3218bffb8"
     }
-  }
+  },
+  "unsignedReleaseVersion": "0.1.0"
 }

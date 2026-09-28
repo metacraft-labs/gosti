@@ -17,9 +17,16 @@ The archive includes `gosti`, its `vm-harness` compatibility command, guest scri
 
 Each target emits JSON evidence naming the source commit, pinned dependency
 revisions, smoke result, signing state and artifact hashes. The assembly step
-checks the exact asset set and hashes after upload, then signs `SHA256SUMS`
-with Sigstore. Verification checks the pinned shared workflow identity and
-the producing repository, ref and commit.
+checks the exact asset set and hashes after upload and generates `SHA256SUMS`.
+The user approved unsigned version 0.1.0 releases on 2026-09-28;
+`unsignedReleaseVersion` scopes this exception to that version. Signing evidence
+remains false. Later versions must update the policy explicitly or use OS
+signatures and a verified Sigstore checksum-manifest signature. The shared Linux
+package publisher retains its existing package and repository signatures.
+
+Linux ARM64 temporarily uses the documented `eph-linux-arm64` scale-set route
+while its central Tart pool cannot serve jobs. Native execution checks still
+apply; move back to capability arrays once the pool works.
 
 ## Release sequence
 
@@ -27,13 +34,13 @@ the producing repository, ref and commit.
    implementation through `agents` into `dev`. Keep tags and published bytes
    immutable.
 2. Run the **Release** workflow with `workflow_dispatch` at the exact candidate
-   commit. Wait for the complete matrix, packaging checks and signed manifest.
+   commit. Wait for the complete matrix, packaging checks and checksum manifest.
    Download the `verified-release` workflow artifact for review. A dispatch
    never publishes, including one dispatched at an existing tag.
-3. Confirm the OS signing scope. The current workflow refuses publication when
-   Developer ID/notarization or Authenticode evidence is missing. An explicit
-   exception must be recorded in the release policy before changing this gate.
-   Ad-hoc macOS signing is not Developer ID signing.
+3. Check the signing scope. Version 0.1.0 has an explicit unsigned-release
+   exception. A version change rejects that exception until the policy is
+   updated; it cannot silently waive signing for future releases. Required
+   ad-hoc Mach-O execution signatures do not imply Developer ID signing.
 4. Create the matching `v<version>` tag at that tested commit, reachable from
    `dev`. The tag workflow checks the successful dispatch at the same SHA,
    repeats the builds and tests, and verifies every draft asset's uploaded bytes
@@ -43,7 +50,7 @@ the producing repository, ref and commit.
    Verify both architectures in the live apt and RPM indices and install from
    those repositories in clean environments. The producer carries no package
    repository keys or bucket credentials.
-6. Download the published archives, verify `SHA256SUMS` and its Sigstore bundle,
+6. Download the published archives, verify `SHA256SUMS` (and its Sigstore bundle for signed releases),
    and record the tag SHA, dry-run/tag/publisher URLs and installation evidence.
    Only then fast-forward `stable` to the published tag.
 
