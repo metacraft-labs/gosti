@@ -159,6 +159,7 @@
           };
 
           devShells.default = pkgs.mkShell {
+            RELEASE_PCRE_SRC = if pkgs.stdenv.isLinux then pkgs.pcre.src else "";
             buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcre ];
             packages = [
               pkgs.nodejs
