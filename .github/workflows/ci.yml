@@ -80,7 +80,9 @@ jobs:
       fail-fast: false
       matrix:
         runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
-    runs-on: ${{ matrix.runner }}
+    # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
+    # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
+    runs-on: ${{ contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -118,7 +120,9 @@ jobs:
       fail-fast: false
       matrix:
         runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
-    runs-on: ${{ matrix.runner }}
+    # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
+    # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
+    runs-on: ${{ contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -156,7 +160,9 @@ jobs:
       fail-fast: false
       matrix:
         runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
-    runs-on: ${{ matrix.runner }}
+    # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
+    # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
+    runs-on: ${{ contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix

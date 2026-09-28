@@ -33,3 +33,12 @@ The release uses a dedicated pinned compiler/packaging shell, since packaging
 the CLI does not require a host hypervisor or a guest boot. The default shell
 and native ARM64 guest-test support still need a separate repair and real
 guest execution evidence.
+
+## Repair under validation
+
+The repair keeps QEMU and archive tools native to the host, and selects explicit
+x86 guest packages for the kernel, static BusyBox and OVMF firmware. The same
+selection applies to the libvirt golden guest. On ARM64 the pinned Nixpkgs
+cross packages produce these x86 binaries; the tests still boot the real guest
+and exchange a real TPM command. Native ARM64 CI evidence is required before
+closing this issue.
