@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   reprobuild:
-    name: Repro build/test (${{ join(matrix.runner, '-') }})
+    name: Repro build/test (${{ join(matrix.runner, '-') }}) ${{ contains(matrix.runner, 'windows') && contains(matrix.runner, 'arm64') && '(x64 emulation)' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +25,11 @@ jobs:
           - [self-hosted, windows, x64]
           - [self-hosted, windows, arm64]
     runs-on: ${{ matrix.runner }}
+    env:
+      # Reprobuild and its monitor currently target x64 on Windows, including
+      # the existing emulated lane on ARM64 hosts. Native release payloads
+      # are built and exercised separately by the release workflow.
+      WINDOWS_DIY_ARCH_OVERRIDE: ${{ contains(matrix.runner, 'windows') && contains(matrix.runner, 'arm64') && 'x64' || '' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -42,8 +47,8 @@ jobs:
         with:
           env-flavor: reprobuild
           # Exercise the published bootstrap repairs before a new CLI release.
-          # ARM64 Windows retains its current path pending the backend work.
-          repro-from-source: ${{ !contains(matrix.runner, 'windows') || !contains(matrix.runner, 'arm64') }}
+          # Windows ARM64 keeps the existing emulated x64 Reprobuild tools.
+          repro-from-source: true
           repro-build-pin: 0d69de556ce7b8e8585fdcc6e6aaee91de84b1da
           gh-token: ${{ steps.ci-token.outputs.token }}
           substituters: ${{ vars.SUBSTITUTERS }}
