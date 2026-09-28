@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs
+# SPDX-License-Identifier: Apache-2.0
 ## Every Nim compile in this checkout keeps its nimcache INSIDE the checkout.
 ##
 ## WHY.  Nim's default nimcache (`~/.cache/nim/<project>_d`, `_r` for

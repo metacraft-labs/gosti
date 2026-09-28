@@ -1,0 +1,77 @@
+{
+  "product": "gosti",
+  "versionFile": "vm_harness.nimble",
+  "packageName": "metacraft-gosti",
+  "commands": [
+    "gosti",
+    "vm-harness"
+  ],
+  "license": "Apache-2.0",
+  "summary": "Cross-platform VM lifecycle orchestration",
+  "targets": [
+    {
+      "id": "linux-x86_64",
+      "runner": [
+        "self-hosted",
+        "linux",
+        "x64"
+      ],
+      "assets": [
+        "{product}-{version}-linux-x86_64.tar.gz",
+        "{product}-{version}-linux-x86_64.json",
+        "metacraft-gosti_{version}-1_amd64.deb",
+        "metacraft-gosti-{version}-1.x86_64.rpm"
+      ]
+    },
+    {
+      "id": "linux-aarch64",
+      "runner": [
+        "self-hosted",
+        "linux",
+        "arm64"
+      ],
+      "assets": [
+        "{product}-{version}-linux-aarch64.tar.gz",
+        "{product}-{version}-linux-aarch64.json",
+        "metacraft-gosti_{version}-1_arm64.deb",
+        "metacraft-gosti-{version}-1.aarch64.rpm"
+      ]
+    },
+    {
+      "id": "darwin-aarch64",
+      "runner": [
+        "self-hosted",
+        "macos",
+        "arm64"
+      ],
+      "assets": [
+        "{product}-{version}-darwin-aarch64.tar.gz",
+        "{product}-{version}-darwin-aarch64.json"
+      ]
+    },
+    {
+      "id": "windows-x86_64",
+      "runner": [
+        "self-hosted",
+        "windows",
+        "x64"
+      ],
+      "assets": [
+        "{product}-{version}-windows-x86_64.zip",
+        "{product}-{version}-windows-x86_64.json"
+      ]
+    },
+    {
+      "id": "windows-aarch64",
+      "runner": [
+        "self-hosted",
+        "windows",
+        "arm64"
+      ],
+      "assets": [
+        "{product}-{version}-windows-aarch64.zip",
+        "{product}-{version}-windows-aarch64.json"
+      ]
+    }
+  ]
+}

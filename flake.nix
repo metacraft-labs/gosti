@@ -161,6 +161,7 @@
           devShells.default = pkgs.mkShell {
             buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcre ];
             packages = [
+              pkgs.nodejs
               pkgs.git
               pkgs.just
               pkgs.nim
@@ -174,7 +175,14 @@
               # Windows ISO carries a UEFI El Torito boot record.
               pkgs.xorriso
             ]
-            ++ backendTools;
+            ++ backendTools
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.zig
+              pkgs.patchelf
+              pkgs.binutils
+              pkgs.dpkg
+              pkgs.rpm
+            ];
 
             shellHook = ''
               ${pre-commit-check.shellHook}

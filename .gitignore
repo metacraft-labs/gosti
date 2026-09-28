@@ -43,3 +43,7 @@ tests/**/t_*
 # otherwise be resurrected by the re-include above (cf. `*.exe` near the top).
 tests/**/t_*.exe
 tests/**/t_*.pdb
+
+# Release output and pinned shared tooling checkout.
+/dist/
+/.release-tools/

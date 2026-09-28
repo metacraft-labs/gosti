@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs
+# SPDX-License-Identifier: Apache-2.0
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release/unified-0.1.0]
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    uses: metacraft-labs/metacraft-github-actions/.github/workflows/release-tools.yml@c0e53d48e5426e571e9467dae4dbcadfa90b4b1a
+    with:
+      tooling-ref: c0e53d48e5426e571e9467dae4dbcadfa90b4b1a
+    secrets: inherit
