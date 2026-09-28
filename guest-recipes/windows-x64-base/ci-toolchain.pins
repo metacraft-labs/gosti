@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pins for the CI-toolchain layer of the Windows x64 golden
+# (build-ci-toolchain-golden.sh + provision-ci-toolchain.ps1). KEY=VALUE, one
+# per line. The host driver sources it; the guest script parses it. It is the
+# ONE place these versions and digests live, so a bump is a one-file change
+# followed by a re-run of build-ci-toolchain-golden.sh.
+#
+# Why each pin is what it is: see ci-toolchain-golden.md.
+
+# GitHub Actions runner staged at C:\actions-runner. MUST match infra's
+# lib/actions-runner.json: GARM's server-rendered Windows bootstrap reuses the
+# staged runner when the directory exists, so a stale copy here is a runner
+# GitHub rejects.
+ACTIONS_RUNNER_VERSION=2.337.0
+ACTIONS_RUNNER_SHA256_WIN_X64=1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc
+
+# WinFsp: a kernel-mode filesystem driver, so it cannot be provisioned from a
+# content-addressed store at job time. Version = agent-harbor's
+# scripts/windows-devenv/toolchain-versions.env DIY_WINFSP_VERSION.
+WINFSP_VERSION=2.1.25156
+WINFSP_MSI_URL=https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi
+WINFSP_MSI_SHA256=073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a
+
+# Visual Studio 2022 Build Tools. The bootstrapper is Microsoft's evergreen
+# channel link, so it is verified by Authenticode signature, not by digest
+# (see ci-toolchain-golden.md). The component set is exactly what
+# agent-harbor's "Install required Visual Studio components" step asks for,
+# installed with --includeRecommended as that step does, so its later
+# `vs_installer modify` is a no-op instead of a multi-GB download.
+VS_BUILDTOOLS_URL=https://aka.ms/vs/17/release/vs_buildtools.exe
+VS_INSTALL_PATH=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
+VS_COMPONENTS=Microsoft.VisualStudio.Workload.VCTools Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.Windows11SDK.26100
+WINDOWS_SDK_VERSION=10.0.26100.0

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Metacraft Labs
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
 ## Every Nim compile in this checkout keeps its nimcache INSIDE the checkout.
 ##
