@@ -12,7 +12,7 @@ import repro_project_dsl
 import repro_dsl_stdlib/foreign_env
 import ct_test_nim_unittest
 when defined(posix):
-  import ./repro_support/qemu_img
+  import ./repro_support/qemu_img as qemuImageTools
 import repro_dsl_stdlib/nixpkgs_pin
 import repro_resources/run_edge
 when defined(linux):
