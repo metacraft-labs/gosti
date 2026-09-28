@@ -5,6 +5,12 @@
 # shellcheck disable=SC2154,SC1091
 set -euo pipefail
 source "${RELEASE_TOOLS:?}/common.sh" "$@"
+if [ "$release_os" = linux ]; then
+  # Make PCRE a declared ELF dependency. Nim's default dlopen calls are
+  # invisible to the dependency packager and let --as-needed discard -lpcre.
+  # config.nims supplies the pinned library's linker flags.
+  release_nim_flags+=(--dynlibOverride:pcre)
+fi
 nim c "${release_nim_flags[@]}" --nimcache:"build/nimcache/release-$release_target" \
   --out:build/gosti-release src/vm_harness/cli.nim
 bash scripts/install-binaries.sh build/gosti-release "$release_stage/bin"
