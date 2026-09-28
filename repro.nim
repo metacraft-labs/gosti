@@ -11,6 +11,8 @@
 import repro_project_dsl
 import repro_dsl_stdlib/foreign_env
 import ct_test_nim_unittest
+when defined(posix):
+  import ./repro_support/qemu_img
 import repro_dsl_stdlib/nixpkgs_pin
 import repro_resources/run_edge
 when defined(linux):
@@ -133,6 +135,11 @@ package vm_harness:
 
   uses:
     "nim >=2.2 <3.0"
+    when defined(posix):
+      "qemu-img"
+      "sleep"
+      "sha256sum"
+      "git >=2"
     when defined(linux):
       "pcre-config >=0"
       "uname"
@@ -204,6 +211,10 @@ package vm_harness:
       let execute = edge.testBinary.run(
         actionId = "vm_harness.test_execute." & spec.binary,
         registerImplicitName = false)
+      when defined(posix):
+        if spec.binary in ["t_qemu_windows_arm_golden_build",
+                           "t_qemu_windows_arm_dead_guest_is_named"]:
+          appendRegisteredActionToolIdentityRefs(execute.id, ["qemu-img", "sleep", "sha256sum", "git"])
       executeActions.add(execute)
       run("test-" & spec.binary, build = execute.id,
         owningPackage = "vm_harness")

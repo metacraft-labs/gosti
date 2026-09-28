@@ -594,7 +594,7 @@ suite "Golden build: the install wait":
     check b.installSentinelPresent(2245)
     check b.waitForInstallSentinel(2245, epochTime() + 5.0, pollMs = 100)
 
-  test "the sentinel wait is bounded, and probes more than once":
+  test "the sentinel wait is bounded even when the poll exceeds its deadline":
     let tmp = createTempDir("vmh-qwa-sentinel-deadline-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
@@ -613,9 +613,30 @@ suite "Golden build: the install wait":
     check elapsed >= 0.9
     check elapsed < 15.0
     let probes = readFile(tmp / "ssh.log").strip().splitLines()
-    check probes.len >= 2
+    # A slow first process launch can use the entire deadline.
+    check probes.len >= 1
     for p in probes:
       check QwaInstallSentinelPath in p
+
+  test "the sentinel wait probes again until the install declares itself":
+    let tmp = createTempDir("vmh-qwa-sentinel-repeat-", "")
+    defer: removeDir(tmp)
+    let b = goldenBackend(tmp)
+    let state = tmp / "first-probe"
+    let log = tmp / "probes.log"
+    # A real shell transport with controlled readiness: only its second
+    # invocation reports the marker. This tests polling without a startup
+    # speed assumption; the production probe still checks exit and output.
+    writeFile(b.sshpassCmd, "#!/bin/sh\n" &
+      "printf '%s\\n' \"$*\" >> " & quoteShell(log) & "\n" &
+      "if [ -f " & quoteShell(state) & " ]; then\n" &
+      "  printf '%s\\n' " & quoteShell(QwaInstallDoneMarker) & "\n" &
+      "  exit 0\nfi\n: > " & quoteShell(state) & "\nexit 1\n")
+    check b.waitForInstallSentinel(2247, epochTime() + 10.0, pollMs = 10)
+    let probes = readFile(log).strip().splitLines()
+    check probes.len == 2
+    for probe in probes:
+      check QwaInstallSentinelPath in probe
 
 suite "Golden build: the freeze watchdog":
   ## MA4's fourth and fifth host runs: the guest stopped dead in the firmware

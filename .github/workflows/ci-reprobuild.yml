@@ -114,6 +114,12 @@ jobs:
           # Deliberately no -e: this is a best-effort collector, and one
           # unreadable log must not cost us the rest of the post-mortem.
           set -uo pipefail
+          # Source bootstrap roots Python on POSIX, even when the action PATH
+          # lacks find. Windows retains the existing PortableGit collector.
+          if [ -n "${REPROBUILD_BOOTSTRAP_PYTHON:-}" ]; then
+            "$REPROBUILD_BOOTSTRAP_PYTHON" scripts/collect-repro-diagnostics.py
+            exit "$?"
+          fi
           dest=test-logs/repro-diagnostics
           mkdir -p "$dest"
           collected=0

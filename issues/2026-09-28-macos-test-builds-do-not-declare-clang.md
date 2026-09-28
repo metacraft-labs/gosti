@@ -16,3 +16,13 @@ for those two POSIX execution edges; do not replace disk operations with mocks.
 The diagnostic collector also lacks `find` in the minimized macOS PATH; use
 the preserved rooted Python interpreter to collect reports and nonempty logs.
 Refreshed dev `850e9de` and searched current/deleted issues before this update.
+
+The complete local macOS Reprobuild graph passes all 56 actions at `6a2ed63`
+plus the repaired recipe and polling fixture. The two golden-guest programs
+now declare qemu-img, sleep, sha256sum and Git; every original disk, manifest
+and deadline assertion remains covered. The diagnostic collector uses rooted
+Python on POSIX and retains its Windows shell path. A real temporary-tree
+check preserves the report and nonempty action log while excluding empty logs.
+Evidence: `/tmp/gosti-final-local-graph.json` and
+`/tmp/gosti-release-tools-lint.log`. Native macOS and Linux ARM64 complete tests
+already pass at `442cd78`; the final CI graph remains required.
