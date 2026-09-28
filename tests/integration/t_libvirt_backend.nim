@@ -36,7 +36,9 @@
 import std/[options, os, sequtils, strutils, tables, tempfiles, unittest]
 import vm_harness
 
-if getAppFilename().extractFilename == "xorriso" & ExeExt:
+const XorrisoFixtureName = when defined(windows): "xorriso.exe" else: "xorriso"
+
+if getAppFilename().extractFilename == XorrisoFixtureName:
   stdout.write(readFile(getAppFilename().parentDir / "xorriso-report.txt"))
   quit(0)
 
@@ -907,7 +909,7 @@ proc writeXorrisoStub(dir, report: string): string =
   ## The native stand-in is justified in the file header. Its sidecar holds
   ## the response so the child needs no shell or inherited test-only variable.
   createDir(dir)
-  let stub = dir / ("xorriso" & ExeExt)
+  let stub = dir / XorrisoFixtureName
   copyFile(getAppFilename(), stub)
   writeFile(dir / "xorriso-report.txt", report & "\n")
   setFilePermissions(stub, {fpUserRead, fpUserWrite, fpUserExec,
@@ -948,6 +950,12 @@ suite "LibvirtBackend UEFI El Torito ISO validation":
       BiosOnlyPlain)
     defer: removeDir(dir)
     withPath(dir & PathSep & getEnv("PATH")):
+      # Prove this case uses the native fixture, rather than silently taking
+      # the missing-tool branch (ExeExt is "exe", without its leading dot).
+      require findExe("xorriso") == dir / XorrisoFixtureName
+      let report = queryIsoElToritoReport("/tmp/fake-bios-only.iso")
+      require report.isSome
+      check report.get.strip() == BiosOnlyPlain.strip()
       var raised = false
       try:
         b.validateWindowsIsoBootable("/tmp/fake-bios-only.iso")
@@ -966,6 +974,9 @@ suite "LibvirtBackend UEFI El Torito ISO validation":
       Win11PlainBiosPlusUefi)
     defer: removeDir(dir)
     withPath(dir & PathSep & getEnv("PATH")):
+      # Prove this case uses the native fixture, rather than silently taking
+      # the missing-tool branch (ExeExt is "exe", without its leading dot).
+      require findExe("xorriso") == dir / XorrisoFixtureName
       # Must not raise.
       b.validateWindowsIsoBootable("/tmp/fake-uefi.iso")
 

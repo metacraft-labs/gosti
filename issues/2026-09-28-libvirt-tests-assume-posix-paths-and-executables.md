@@ -28,3 +28,5 @@ argument with OpenSSH's config parser where available.
 
 Fetched `dev` (`850e9de`) and current `agents` (`9d59f2e`); searched current
 issues and issue history for libvirt, Windows paths and xorriso before filing.
+
+At `788f159`, native Windows job `109034817183` isolates one remaining failure: the fixture concatenated `ExeExt` without a dot, producing `xorrisoexe`. Use the native `.exe` filename and require discovery and the exact captured BIOS report before exercising the rejection path. All other original Windows fixture failures pass in that run.

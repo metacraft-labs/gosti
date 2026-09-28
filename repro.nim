@@ -159,6 +159,7 @@ package vm_harness:
     name: "vm-harness-bench-snapshot-revert"
 
   build:
+    const backendCompiler = (when defined(macosx): "clang" else: "gcc")
     const exeSuffix = (when defined(windows): ".exe" else: "")
     const binDir = "build/bin/"
     const testBinDir = "build/test-bin/"
@@ -195,9 +196,10 @@ package vm_harness:
         extraInputs = @["src", "config.nims", "guest-scripts", "guest-recipes",
                         "vm_harness.nimble"],
         actionId = "vm_harness.test_build." & spec.binary)
+      # The unittest adapter does not register Nim's C compiler itself.
+      appendRegisteredActionToolIdentityRefs(edge.action.id, [backendCompiler])
       when defined(linux):
-        # The unittest adapter does not register Nim's C compiler itself.
-        appendRegisteredActionToolIdentityRefs(edge.action.id, ["pcre-config", "uname", "gcc"])
+        appendRegisteredActionToolIdentityRefs(edge.action.id, ["pcre-config", "uname"])
       buildActions.add(edge.action)
       let execute = edge.testBinary.run(
         actionId = "vm_harness.test_execute." & spec.binary,
