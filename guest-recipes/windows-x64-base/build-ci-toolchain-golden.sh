@@ -241,7 +241,7 @@ log "SRC  $SRC_GOLDEN (read-only)"
 log "OUT  $OUT_GOLDEN (side artifact)"
 log "WORK $WORK   clock=$CLOCK_MODE defender-off=$DISABLE_DEFENDER grow=${GROW_GB}G vm=${VCPUS}c/${MEMORY_MB}M"
 if [[ -n "${VMH_CI_DRY_RUN:-}" ]]; then
-  log "plan: fetch -> copy+grow -> boot work VM -> provision -> reboot -> gates -> shutdown"
+  log "plan: fetch -> copy+grow -> boot work VM -> provision -> power-cycle -> gates -> shutdown"
   log "      -> offline AV disable -> capture -> boot CoW clone -> gates again -> record"
   exit 0
 fi
@@ -287,7 +287,13 @@ elif [[ "$RESUME" == gates ]]; then
   # Continue a VMH_KEEP_ON_FAIL run whose provisioning finished: the work
   # domain must still be defined (running or shut off) on $WORK.
   "${VIRSH[@]}" domstate "$WORK_DOMAIN" >/dev/null 2>&1 || fail "resume: $WORK_DOMAIN is not defined"
-  [[ "$("${VIRSH[@]}" domstate "$WORK_DOMAIN" | tr -d '[:space:]')" == running ]] || "${VIRSH[@]}" start "$WORK_DOMAIN" >/dev/null
+  # Always from a cold start (see the power cycle below for why).
+  if [[ "$("${VIRSH[@]}" domstate "$WORK_DOMAIN" | tr -d '[:space:]')" == running ]]; then
+    IP="$(guest_ip "$WORK_DOMAIN")"
+    [[ -n "$IP" ]] && ssh_guest "$IP" 'shutdown /s /t 3 /f' >/dev/null 2>&1
+    wait_off "$WORK_DOMAIN" 900 || fail "resume: $WORK_DOMAIN did not power off"
+  fi
+  "${VIRSH[@]}" start "$WORK_DOMAIN" >/dev/null || fail "resume: virsh start $WORK_DOMAIN failed"
   IP="$(wait_ssh "$WORK_DOMAIN")" || fail "resume: work guest SSH never came up"
   log "resuming at the gates on $WORK_DOMAIN ($IP)"
   stage_into_guest "$IP"
@@ -317,10 +323,18 @@ timeout "$PROVISION_TIMEOUT" sshpass -p "$GUEST_PASSWORD" ssh "${SSH_OPTS[@]}" "
   2>&1 | sed 's/^/  [provision] /'
 [[ ${PIPESTATUS[0]} == 0 ]] || fail "provision-ci-toolchain.ps1 failed"
 
-log "rebooting the work guest (installer reboot + clock settings take effect)"
-ssh_guest "$IP" 'shutdown /r /t 3 /f' >/dev/null 2>&1 || true
-sleep 60
-IP="$(wait_ssh "$WORK_DOMAIN")" || fail "work guest did not come back after reboot"
+# A COLD power cycle, not `shutdown /r`. A guest-initiated reboot keeps the
+# same QEMU process and with it the RTC value Windows wrote at shutdown. Under
+# the source golden's RealTimeIsUniversal=0 + FLE zone, a guest booted with
+# <clock offset='utc'> runs 3 h behind, and it writes that back to the RTC as
+# it goes down, so after a warm reboot the new RealTimeIsUniversal=1 reads a
+# clock that is still 3 h off (seen 2026-09-28: 10803 s). A fresh QEMU start
+# re-seeds the RTC from host UTC, which is also what every fleet clone sees.
+log "power-cycling the work guest (installer reboot + clock settings take effect)"
+ssh_guest "$IP" 'shutdown /s /t 3 /f' >/dev/null 2>&1 || true
+wait_off "$WORK_DOMAIN" 900 || fail "work guest did not power off"
+"${VIRSH[@]}" start "$WORK_DOMAIN" >/dev/null || fail "virsh start $WORK_DOMAIN failed"
+IP="$(wait_ssh "$WORK_DOMAIN")" || fail "work guest did not come back after the power cycle"
 fi  # end of the non-resume path
 if [[ "$RESUME" != offline ]]; then
 run_gates "$WORK_DOMAIN" "$IP" "" work
