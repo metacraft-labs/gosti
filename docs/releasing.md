@@ -24,9 +24,12 @@ remains false. Later versions must update the policy explicitly or use OS
 signatures and a verified Sigstore checksum-manifest signature. The shared Linux
 package publisher retains its existing package and repository signatures.
 
-Linux ARM64 temporarily uses the documented `eph-linux-arm64` scale-set route
-while its central Tart pool cannot serve jobs. Native execution checks still
-apply; move back to capability arrays once the pool works.
+Linux ARM64 temporarily uses the native `ubuntu-24.04-arm` runner for version
+0.1.0 while migration to the self-hosted Tart class is unfinished. The inventory
+names owner `zah` and the [return-to-fleet follow-up](https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-28-release-linux-arm64-runner-migration.md).
+Native execution checks still apply. A later version cannot inherit this
+exception silently; return to `[self-hosted, linux, arm64]` when the fleet
+proof passes.
 
 ## Release sequence
 
