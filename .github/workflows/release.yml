@@ -14,8 +14,8 @@ permissions:
 
 jobs:
   release:
-    uses: metacraft-labs/metacraft-github-actions/.github/workflows/release-tools.yml@7a5126af05daa2cbb0113069eb1a4b2d7ef38dd6
+    uses: metacraft-labs/metacraft-github-actions/.github/workflows/release-tools.yml@9b68619e091df77a9d7bc7c099fa427bd2d07cfc
     with:
-      tooling-ref: 7a5126af05daa2cbb0113069eb1a4b2d7ef38dd6
+      tooling-ref: 9b68619e091df77a9d7bc7c099fa427bd2d07cfc
       nix-shell: release
     secrets: inherit

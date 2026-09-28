@@ -11,11 +11,7 @@
   "targets": [
     {
       "id": "linux-x86_64",
-      "runner": [
-        "self-hosted",
-        "linux",
-        "x64"
-      ],
+      "runner": "eph-linux-x64-release",
       "assets": [
         "{product}-{version}-linux-x86_64.tar.gz",
         "{product}-{version}-linux-x86_64.json",
