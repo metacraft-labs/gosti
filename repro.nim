@@ -131,7 +131,9 @@ package vm_harness:
     when not defined(windows):
       useFlakeDevShell()
 
-  defaultToolProvisioning "path"
+  # The Reprobuild CI environment does not activate this project's Nix shell.
+  # Resolve declared POSIX tools even when they are absent from the host PATH.
+  defaultToolProvisioning(when defined(windows): path else: nix)
 
   uses:
     "nim >=2.2 <3.0"

@@ -24,5 +24,18 @@ and deadline assertion remains covered. The diagnostic collector uses rooted
 Python on POSIX and retains its Windows shell path. A real temporary-tree
 check preserves the report and nonempty action log while excluding empty logs.
 Evidence: `/tmp/gosti-final-local-graph.json` and
-`/tmp/gosti-release-tools-lint.log`. Native macOS and Linux ARM64 complete tests
+the passing commit-hook lint at `b58e2d0` (the earlier lint log records a
+missing-header failure, corrected before that commit). Native macOS and Linux ARM64 complete tests
 already pass at `442cd78`; the final CI graph remains required.
+
+
+At `b58e2d0`, macOS CI job `109114115647` still fails the two golden tests:
+`qemu-img` is absent. The recipe defaults to PATH provisioning, whereas the
+successful local graph explicitly selected Nix provisioning. Change the
+POSIX default to Nix so a declared tool is realized on a clean runner. Keep
+Windows's current PATH provisioning and validate without a CLI provisioning
+override. The rooted Python collector now successfully uploads diagnostics.
+
+The no-override macOS run at `b58e2d0` plus this default change passes all
+56 actions; `/tmp/gosti-default-provisioning-graph.json` records the complete
+graph. Windows keeps the already passing provisioning path.
