@@ -158,6 +158,25 @@
             package-build = vm-harness;
           };
 
+          # Packaging the CLI does not require hypervisors or booting a guest.
+          # Keep the pinned compiler and runtime inputs, without realising the
+          # development shell's x86-specific vTPM fixture on ARM64 builders.
+          devShells.release = pkgs.mkShell {
+            RELEASE_PCRE_SRC = if pkgs.stdenv.isLinux then pkgs.pcre.src else "";
+            buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcre ];
+            packages = [
+              pkgs.nodejs
+              pkgs.nim
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.zig
+              pkgs.patchelf
+              pkgs.binutils
+              pkgs.dpkg
+              pkgs.rpm
+            ];
+          };
+
           devShells.default = pkgs.mkShell {
             RELEASE_PCRE_SRC = if pkgs.stdenv.isLinux then pkgs.pcre.src else "";
             buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcre ];
