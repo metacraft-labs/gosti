@@ -34,7 +34,10 @@
           # These fixtures boot an x86_64 guest even on an ARM64 host. Keep
           # their kernel, userspace and firmware on that guest architecture;
           # packaging tools and QEMU itself still run natively on the host.
-          x86GuestPkgs = if pkgs.stdenv.hostPlatform.isx86_64 then pkgs else pkgs.pkgsCross.gnu64;
+          # These are guest payload files, never build-host executables. Use
+          # the pinned x86 package outputs available from the binary cache;
+          # pkgsCross would rebuild a compiler and kernel for the same guest.
+          x86GuestPkgs = inputs.nixpkgs.legacyPackages.x86_64-linux;
           # The vTPM gate's Linux guest (kernel + busybox initramfs). Only
           # meaningful on Linux, where the gate runs.
           guest-linux-tpm =
