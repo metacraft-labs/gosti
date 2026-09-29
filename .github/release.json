@@ -26,22 +26,6 @@
       }
     },
     {
-      "id": "linux-aarch64",
-      "runner": "ubuntu-24.04-arm",
-      "assets": [
-        "{product}-{version}-linux-aarch64.tar.gz",
-        "{product}-{version}-linux-aarch64.json",
-        "metacraft-gosti_{version}-1_arm64.deb",
-        "metacraft-gosti-{version}-1.aarch64.rpm"
-      ],
-      "runnerReason": "Temporary native Linux ARM64 release migration exception while the self-hosted Tart route is unfinished.",
-      "runnerMigration": {
-        "version": "0.1.0",
-        "owner": "zah",
-        "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-28-release-linux-arm64-runner-migration.md"
-      }
-    },
-    {
       "id": "darwin-aarch64",
       "runner": [
         "self-hosted",
