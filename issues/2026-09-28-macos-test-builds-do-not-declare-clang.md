@@ -39,3 +39,22 @@ override. The rooted Python collector now successfully uploads diagnostics.
 The no-override macOS run at `b58e2d0` plus this default change passes all
 56 actions; `/tmp/gosti-default-provisioning-graph.json` records the complete
 graph. Windows keeps the already passing provisioning path.
+
+## CI wrapper overrides the recipe default at `32b9175`
+
+[macOS job 109427556345](https://github.com/metacraft-labs/gosti/actions/runs/36574789846/job/109427556345)
+now bootstraps Reprobuild successfully, then both product builds fail on missing
+`sys/types.h` and `string.h`. The shared `dev-exec` wrapper at `93de03f`
+explicitly adds `--tool-provisioning=path` to bare `repro build` and `repro test`.
+That command-line option overrides the recipe's POSIX Nix default, so the
+host compiler is selected instead of the declared Nix compiler and SDK closure.
+The local no-override test above invoked Reprobuild directly and did not test
+this wrapper, which is why it passed.
+
+Pass `--tool-provisioning=nix` explicitly in both POSIX CI commands; keep the
+existing Windows PATH mode. This matches io-mon and RunQuota's explicit mode
+selection and the documented dependency-provisioning contract. No compile or
+test gate is removed. The catalog Clang at canonical nixpkgs `addf7cf5` compiles
+and links a real C probe using system and CoreFoundation headers with a clean
+environment, confirming it carries its SDK. Refreshed dev `af517b4` and searched
+open and deleted compiler/SDK issues before extending this record.
