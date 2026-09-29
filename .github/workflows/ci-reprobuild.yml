@@ -92,7 +92,7 @@ jobs:
           owner: metacraft-labs
 
       - name: Setup reprobuild environment
-        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@6991ebb8e108423b32b2afe8031346db2bf087e1
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@93de03f82560d545ea345b9810123135ca875674
         with:
           env-flavor: reprobuild
           # Exercise the published bootstrap repairs before a new CLI release.
