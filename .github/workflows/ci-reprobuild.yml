@@ -37,7 +37,9 @@ jobs:
       # the existing emulated lane on ARM64 hosts. Native release payloads
       # are built and exercised separately by the release workflow.
       WINDOWS_DIY_ARCH_OVERRIDE: ${{ contains(matrix.runner, 'windows') && contains(matrix.runner, 'arm64') && 'x64' || '' }}
-    timeout-minutes: 90
+    # Source bootstrap reached the 90-minute job limit on loaded fleet hosts
+    # at 63680f8 before product tests began. Keep the full test matrix.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +52,7 @@ jobs:
           owner: metacraft-labs
 
       - name: Setup reprobuild environment
-        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@b4b1ae1e33c7384cb046f35030b19875a19f8a3c
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@2f1abf5e4e2102f2a9abe1ea9a0f3b4097ec9717
         with:
           env-flavor: reprobuild
           # Exercise the published bootstrap repairs before a new CLI release.
