@@ -4,6 +4,8 @@
 name: CI
 
 on:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main, dev]
   pull_request:
@@ -28,7 +30,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  choose-linux:
+    # The shared CI_RUNNER_MODE policy selects free hosted runners for public
+    # repos by default and preserves the org-controlled self-hosted fallback.
+    uses: metacraft-labs/devops-modules/.github/workflows/reusable-choose-runner.yml@cd73eba732b9190499ec78e1e65b0dd784507440
+    with:
+      preferred: ubuntu-24.04
+      fallback: '["self-hosted","linux","x64"]'
+
   lint:
+    needs: choose-linux
     name: Lint (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
@@ -40,7 +51,7 @@ jobs:
         # kept because it genuinely covers the `defined(macosx)` branches in
         # the tart/lima/utm/qemu_windows_arm backends that no Linux leg sees.
         runner: [[self-hosted, linux, x64], [self-hosted, macos, arm64]]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ contains(matrix.runner, 'linux') && fromJSON(needs.choose-linux.outputs.runs_on) || matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -75,6 +86,7 @@ jobs:
           secret-access-key: ${{ secrets.MCL_S3_ARTIFACTS_SECRET_ACCESS_KEY }}
 
   test:
+    needs: choose-linux
     name: Test (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
@@ -82,7 +94,7 @@ jobs:
         runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
     # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
     # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
-    runs-on: ${{ contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner }}
+    runs-on: ${{ contains(matrix.runner, 'linux') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-linux.outputs.runs_on) || (contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner) }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -115,6 +127,7 @@ jobs:
           secret-access-key: ${{ secrets.MCL_S3_ARTIFACTS_SECRET_ACCESS_KEY }}
 
   build-cli:
+    needs: choose-linux
     name: Build CLI (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
@@ -122,7 +135,7 @@ jobs:
         runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
     # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
     # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
-    runs-on: ${{ contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner }}
+    runs-on: ${{ contains(matrix.runner, 'linux') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-linux.outputs.runs_on) || (contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner) }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -155,6 +168,7 @@ jobs:
           secret-access-key: ${{ secrets.MCL_S3_ARTIFACTS_SECRET_ACCESS_KEY }}
 
   nix-build:
+    needs: choose-linux
     name: Nix Build (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
@@ -162,7 +176,7 @@ jobs:
         runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
     # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
     # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
-    runs-on: ${{ contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner }}
+    runs-on: ${{ contains(matrix.runner, 'linux') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-linux.outputs.runs_on) || (contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner) }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
