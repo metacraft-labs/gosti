@@ -26,9 +26,12 @@ jobs:
         runner:
           - [self-hosted, linux, x64]
           - [self-hosted, linux, arm64]
-          - [self-hosted, macos, arm64]
+          - [self-hosted, macos, arm64, nix-darwin]
           - [self-hosted, windows, x64]
           - [self-hosted, windows, arm64]
+    # Source bootstrap exceeds the current Tart guest's writable storage.
+    # The native nix-darwin class retains every test; owner zah, follow-up:
+    # metacraft-specs/issues/2026-09-29-macos-tart-source-bootstrap-exhausts-guest-disk.md
     # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
     # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
     runs-on: ${{ contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner }}
