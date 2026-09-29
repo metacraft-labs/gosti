@@ -61,6 +61,7 @@ run_nim r --hints:off tests/unit/t_wsl_parsers.nim
 run_nim r --hints:off tests/unit/t_utm_parsers.nim
 run_nim r --hints:off tests/unit/t_tart_shared_dirs.nim
 run_nim r --hints:off tests/unit/t_qemu_windows_arm_backend.nim
+run_nim r --hints:off tests/unit/t_qemu_windows_arm_swtpm_startup.nim
 run_nim r --hints:off tests/unit/t_qemu_windows_arm_overlay.nim
 # Runner-Fleet-M3-ARM-Wave MA3 gate: t_qemu_windows_arm_golden_build, UNIT
 # TIER — the install argv, the rebuild-safety guards, the free-space

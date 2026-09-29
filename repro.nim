@@ -82,6 +82,8 @@ const posixTestSpecs: seq[VmHarnessTestSpec] = @[
     binary: "t_cli_incus"),
   VmHarnessTestSpec(source: "tests/integration/t_incus_ephemeral_capabilities.nim",
     binary: "t_incus_ephemeral_capabilities"),
+  VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_swtpm_startup.nim",
+    binary: "t_qemu_windows_arm_swtpm_startup"),
   VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_backend.nim",
     binary: "t_qemu_windows_arm_backend"),
   VmHarnessTestSpec(source: "tests/unit/t_cli_ephemeral_vmrun.nim",

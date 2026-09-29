@@ -277,6 +277,21 @@ Tracked as a future vm-harness milestone (not yet numbered).
 - **Auth**: admin/<configured-password> set in autounattend.xml.
 - **Cleanup**: `utmctl stop <ephemeral> && utmctl delete <ephemeral>` in `finally`.
 
+### 4.4.1 Direct QEMU Windows ARM helper startup
+
+The direct QEMU Windows ARM backend starts swtpm before launching the guest.
+Wait for its control socket for up to 30 seconds, using a monotonic deadline;
+report an early child exit immediately. This allows a live helper to start
+while the macOS host serves other fleet jobs. The former three-second bound
+repeatedly expired under load, as recorded in Runner-Fleet-M3-ARM-Wave MA8
+and reproduced in Gosti CI at `33aa89dc` on 2026-09-29.
+
+If startup fails, terminate and reap the helper and remove its socket before
+returning the error. The caller receives a PID only after successful startup,
+so it cannot own cleanup of a failed attempt. A successful startup transfers
+process ownership to the existing guest lifecycle. Tests must cover delayed
+socket creation, early exit and a helper that never becomes ready.
+
 ### 4.5 libvirt/QEMU (HostPlatform: hpLinux; Guests: goLinux, goWindows)
 
 - **Transport**: SSH over libvirt's default-switch NAT. Guest's IP via `virsh domifaddr`.

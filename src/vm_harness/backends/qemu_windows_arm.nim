@@ -9,7 +9,7 @@
 ## host port forwarding. It exists as an unblock path when UTM's control plane
 ## cannot enumerate or clone registered bundles.
 
-import std/[algorithm, hashes, json, net, options, os, osproc, streams,
+import std/[algorithm, hashes, json, monotimes, net, options, os, osproc, streams,
             strutils, tables, times]
 when defined(posix):
   import std/posix
@@ -1274,7 +1274,10 @@ proc waitForSshReady*(b: QemuWindowsArmBackend, port: int,
   b.waitForFirstBootSshReady(port, timeoutSec,
                              qemuPid = qemuPid).outcome == fbSshReady
 
-proc startSwtpmInBackground*(b: QemuWindowsArmBackend, vmDir: string): int =
+proc stopStartedProcess(pid: int)
+
+proc startSwtpmInBackground*(b: QemuWindowsArmBackend, vmDir: string,
+                             timeoutMs: int = 30_000): int =
   let tpmDir = vmDir / "tpm"
   createDir(tpmDir)
   let sock = shortSocketPath("vmh-qwa-tpm", vmDir)
@@ -1292,18 +1295,30 @@ proc startSwtpmInBackground*(b: QemuWindowsArmBackend, vmDir: string): int =
                        # real swtpm orphaned and impossible to reap reliably.
                        options = {poUsePath, poParentStreams},
                        workingDir = vmDir)
+  defer: p.close()
   result = p.processID
   forgetChildExit(result)
-  let deadline = epochTime() + 3.0
-  while epochTime() < deadline:
-    if pathExists(sock):
-      return
-    if not p.running:
-      raise newVmHarnessError($b.id, lpStartup,
-        "QemuWindowsArmBackend: swtpm exited before creating socket " & sock)
-    sleep(100)
-  raise newVmHarnessError($b.id, lpStartup,
-    "QemuWindowsArmBackend: swtpm did not create socket " & sock)
+  let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
+  try:
+    while true:
+      if not p.running:
+        raise newVmHarnessError($b.id, lpStartup,
+          "QemuWindowsArmBackend: swtpm exited before creating socket " & sock)
+      if pathExists(sock):
+        return
+      let remainingMs = (deadline - getMonoTime()).inMilliseconds
+      if remainingMs <= 0:
+        raise newVmHarnessError($b.id, lpStartup,
+          "QemuWindowsArmBackend: swtpm did not create socket " & sock &
+          " within " & $timeoutMs & "ms")
+      sleep(int(min(remainingMs, 100)))
+  except CatchableError:
+    # The caller has no PID when startup raises. Own failure cleanup here.
+    if p.running:
+      stopStartedProcess(result)
+    try: removeFile(sock)
+    except OSError: discard
+    raise
 
 proc startQemuArgvInBackground*(b: QemuWindowsArmBackend, vmDir: string,
                                 args: seq[string]): int =
