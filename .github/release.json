@@ -61,15 +61,17 @@
     },
     {
       "id": "windows-aarch64",
-      "runner": [
-        "self-hosted",
-        "windows",
-        "arm64"
-      ],
+      "runner": "windows-11-arm",
       "assets": [
         "{product}-{version}-windows-aarch64.zip",
         "{product}-{version}-windows-aarch64.json"
-      ]
+      ],
+      "runnerReason": "Temporary native Windows ARM64 release migration while the two-slot fleet queue is pending.",
+      "runnerMigration": {
+        "version": "0.1.0",
+        "owner": "zah",
+        "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-29-windows-arm64-release-runner-migration.md"
+      }
     }
   ],
   "runtimeSources": {

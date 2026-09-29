@@ -20,6 +20,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  choose-windows-arm:
+    # Existing x64-emulation suite on a native ARM64 host; no backend port.
+    # Temporary migration owner: zah. Follow-up: metacraft-specs/issues/
+    # 2026-09-29-windows-arm64-release-runner-migration.md
+    uses: metacraft-labs/devops-modules/.github/workflows/reusable-choose-runner.yml@cd73eba732b9190499ec78e1e65b0dd784507440
+    with:
+      preferred: windows-11-arm
+      fallback: '["self-hosted","windows","arm64"]'
+
   choose-macos:
     # Native macOS jobs retain their full gates while the fleet repair lands.
     # Owner: zah. Follow-up: metacraft-specs/issues/
@@ -38,7 +47,7 @@ jobs:
       fallback: '["self-hosted","linux","x64"]'
 
   reprobuild:
-    needs: [choose-linux, choose-macos]
+    needs: [choose-linux, choose-macos, choose-windows-arm]
     name: Repro build/test (${{ join(matrix.runner, '-') }}) ${{ contains(matrix.runner, 'windows') && contains(matrix.runner, 'arm64') && '(x64 emulation)' || '' }}
     strategy:
       fail-fast: false
@@ -54,7 +63,7 @@ jobs:
     # metacraft-specs/issues/2026-09-29-macos-tart-source-bootstrap-exhausts-guest-disk.md
     # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
     # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
-    runs-on: ${{ contains(matrix.runner, 'macos') && fromJSON(needs.choose-macos.outputs.runs_on) || contains(matrix.runner, 'linux') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-linux.outputs.runs_on) || (contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner) }}
+    runs-on: ${{ contains(matrix.runner, 'windows') && contains(matrix.runner, 'arm64') && fromJSON(needs.choose-windows-arm.outputs.runs_on) || contains(matrix.runner, 'macos') && fromJSON(needs.choose-macos.outputs.runs_on) || contains(matrix.runner, 'linux') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-linux.outputs.runs_on) || (contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner) }}
     env:
       # Reprobuild and its monitor currently target x64 on Windows, including
       # the existing emulated lane on ARM64 hosts. Native release payloads
