@@ -118,7 +118,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p test-logs
-          dev-exec repro build 2>&1 | tee test-logs/repro-build.log
+          # dev-exec otherwise adds PATH provisioning, overriding repro.nim.
+          dev-exec repro build --tool-provisioning=${{ contains(matrix.runner, 'windows') && 'path' || 'nix' }} 2>&1 | tee test-logs/repro-build.log
 
       - name: Refresh authentication before Repro test
         uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
@@ -131,7 +132,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dev-exec repro test 2>&1 | tee test-logs/repro-test.log
+          dev-exec repro test --tool-provisioning=${{ contains(matrix.runner, 'windows') && 'path' || 'nix' }} 2>&1 | tee test-logs/repro-test.log
 
       # The two steps above capture only reprobuild's own stdout. When an
       # action fails, the engine has already written that child's raw stdio
