@@ -35,3 +35,10 @@ while its own child holds stdout, then run the full Windows Reprobuild gate.
 This is a CI logging repair; it does not claim to fix Reprobuild's daemon
 inheritance issue. Fetched dev `af517b4`, checked ancestry, and searched current
 and deleted Gosti issues for tee, pipes and log capture before recording.
+
+A local real-process control verifies the logging boundary: the foreground
+program exits 7 after launching a child that retains stdout. The old pipeline
+continues waiting until that child is terminated. `capture-ci-command.sh`
+returns 7 promptly, emits the foreground output, and leaves the still-live
+child to its owner. Its success path also returns zero. Evidence is retained
+in `/tmp/gosti-ci-log-control/`; full Windows Reprobuild CI remains required.
