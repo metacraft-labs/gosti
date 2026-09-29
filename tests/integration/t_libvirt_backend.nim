@@ -26,9 +26,26 @@
 ##    which is what the second suite in this file covers, against a fake
 ##    ``virsh`` binary. See the mock justification there.
 ##  - The backend is registered with the auto-selection factory.
+##
+## The xorriso stand-in deliberately returns captured El Torito reports:
+## these cases exercise executable discovery and the backend's refusal path
+## without building ISO images or installing xorriso on every host. It is a
+## native copy of this test program, so lookup and process capture are real
+## on Windows as well as POSIX. The report parser is tested independently.
 
 import std/[options, os, sequtils, strutils, tables, tempfiles, unittest]
 import vm_harness
+
+const XorrisoFixtureName = when defined(windows): "xorriso.exe" else: "xorriso"
+
+if getAppFilename().extractFilename == XorrisoFixtureName:
+  stdout.write(readFile(getAppFilename().parentDir / "xorriso-report.txt"))
+  quit(0)
+
+const OverrideDiskPath = when defined(windows):
+  r"\storage\libvirt\windows-runner-001.qcow2"
+else:
+  "/storage/libvirt/windows-runner-001.qcow2"
 
 suite "LibvirtBackend smoke (no live virsh)":
   test "newLibvirtBackend populates defaults consistent with high-mem-server":
@@ -75,7 +92,7 @@ suite "LibvirtBackend smoke (no live virsh)":
     let bOverride = newLibvirtBackend(imagePoolDir = "/storage/libvirt")
     check bOverride.imagePoolDir == "/storage/libvirt"
     check bOverride.domainDiskPath("windows-runner-001") ==
-      "/storage/libvirt/windows-runner-001.qcow2"
+      OverrideDiskPath
 
   test "buildVirtInstallArgs writes the disk at the overridden pool dir":
     # The disk path virt-install receives is computed by domainDiskPath,
@@ -92,7 +109,7 @@ suite "LibvirtBackend smoke (no live virsh)":
       osVariant = "win11")
     var diskArg = ""
     for a in argv:
-      if a.startsWith("path=/storage/libvirt/windows-runner-001.qcow2"):
+      if a.startsWith("path=" & OverrideDiskPath & ","):
         diskArg = a
     check diskArg.len > 0
     check diskArg.contains("format=qcow2")
@@ -889,14 +906,12 @@ Bootoff 23 0x17
 """
 
 proc writeXorrisoStub(dir, report: string): string =
-  ## Write an executable `xorriso` shim into `dir` that ignores its args
-  ## and prints `report` on stdout, exit 0. Returns `dir` (to prepend to
-  ## PATH). This is a real binary spawned by osproc — not a mock.
+  ## The native stand-in is justified in the file header. Its sidecar holds
+  ## the response so the child needs no shell or inherited test-only variable.
   createDir(dir)
-  let stub = dir / "xorriso"
-  # Single-quote the heredoc-free body; embed the report via a Nim string.
-  writeFile(stub, "#!/usr/bin/env bash\ncat <<'__RPT__'\n" & report &
-    "\n__RPT__\n")
+  let stub = dir / XorrisoFixtureName
+  copyFile(getAppFilename(), stub)
+  writeFile(dir / "xorriso-report.txt", report & "\n")
   setFilePermissions(stub, {fpUserRead, fpUserWrite, fpUserExec,
     fpGroupRead, fpGroupExec, fpOthersRead, fpOthersExec})
   dir
@@ -934,7 +949,13 @@ suite "LibvirtBackend UEFI El Torito ISO validation":
       getTempDir() / "vmh-xorriso-bios-" & $getCurrentProcessId(),
       BiosOnlyPlain)
     defer: removeDir(dir)
-    withPath(dir & ":" & getEnv("PATH")):
+    withPath(dir & PathSep & getEnv("PATH")):
+      # Prove this case uses the native fixture, rather than silently taking
+      # the missing-tool branch (ExeExt is "exe", without its leading dot).
+      require findExe("xorriso") == dir / XorrisoFixtureName
+      let report = queryIsoElToritoReport("/tmp/fake-bios-only.iso")
+      require report.isSome
+      check report.get.strip() == BiosOnlyPlain.strip()
       var raised = false
       try:
         b.validateWindowsIsoBootable("/tmp/fake-bios-only.iso")
@@ -952,7 +973,10 @@ suite "LibvirtBackend UEFI El Torito ISO validation":
       getTempDir() / "vmh-xorriso-uefi-" & $getCurrentProcessId(),
       Win11PlainBiosPlusUefi)
     defer: removeDir(dir)
-    withPath(dir & ":" & getEnv("PATH")):
+    withPath(dir & PathSep & getEnv("PATH")):
+      # Prove this case uses the native fixture, rather than silently taking
+      # the missing-tool branch (ExeExt is "exe", without its leading dot).
+      require findExe("xorriso") == dir / XorrisoFixtureName
       # Must not raise.
       b.validateWindowsIsoBootable("/tmp/fake-uefi.iso")
 

@@ -11,32 +11,18 @@
   "targets": [
     {
       "id": "linux-x86_64",
-      "runner": [
-        "self-hosted",
-        "linux",
-        "x64"
-      ],
+      "runner": "eph-linux-x64-release",
       "assets": [
         "{product}-{version}-linux-x86_64.tar.gz",
         "{product}-{version}-linux-x86_64.json",
         "metacraft-gosti_{version}-1_amd64.deb",
         "metacraft-gosti-{version}-1.x86_64.rpm"
-      ]
-    },
-    {
-      "id": "linux-aarch64",
-      "runner": "ubuntu-24.04-arm",
-      "assets": [
-        "{product}-{version}-linux-aarch64.tar.gz",
-        "{product}-{version}-linux-aarch64.json",
-        "metacraft-gosti_{version}-1_arm64.deb",
-        "metacraft-gosti-{version}-1.aarch64.rpm"
       ],
-      "runnerReason": "Temporary native Linux ARM64 release migration exception while the self-hosted Tart route is unfinished.",
+      "hostedRunner": "ubuntu-24.04",
       "runnerMigration": {
         "version": "0.1.0",
         "owner": "zah",
-        "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-28-release-linux-arm64-runner-migration.md"
+        "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-24-ci-runner-mode-policy-conflicts-with-hosted-runner-ban.md"
       }
     },
     {
@@ -49,7 +35,13 @@
       "assets": [
         "{product}-{version}-darwin-aarch64.tar.gz",
         "{product}-{version}-darwin-aarch64.json"
-      ]
+      ],
+      "hostedRunner": "macos-26",
+      "runnerMigration": {
+        "version": "0.1.0",
+        "owner": "zah",
+        "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-24-ci-runner-mode-policy-conflicts-with-hosted-runner-ban.md"
+      }
     },
     {
       "id": "windows-x86_64",
@@ -58,6 +50,12 @@
         "windows",
         "x64"
       ],
+      "hostedRunner": "windows-2025",
+      "runnerMigration": {
+        "version": "0.1.0",
+        "owner": "zah",
+        "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-24-ci-runner-mode-policy-conflicts-with-hosted-runner-ban.md"
+      },
       "assets": [
         "{product}-{version}-windows-x86_64.zip",
         "{product}-{version}-windows-x86_64.json"
@@ -65,15 +63,17 @@
     },
     {
       "id": "windows-aarch64",
-      "runner": [
-        "self-hosted",
-        "windows",
-        "arm64"
-      ],
+      "runner": "windows-11-arm",
       "assets": [
         "{product}-{version}-windows-aarch64.zip",
         "{product}-{version}-windows-aarch64.json"
-      ]
+      ],
+      "runnerReason": "Temporary native Windows ARM64 release migration while the two-slot fleet queue is pending.",
+      "runnerMigration": {
+        "version": "0.1.0",
+        "owner": "zah",
+        "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-29-windows-arm64-release-runner-migration.md"
+      }
     }
   ],
   "runtimeSources": {

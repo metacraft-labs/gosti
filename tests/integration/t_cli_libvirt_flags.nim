@@ -87,7 +87,7 @@ suite "CLI libvirt M4 canonical-command flag plumbing":
 
   test "boot can pin host identity across forwarded port changes":
     let privateKey = getAppFilename()
-    let knownHosts = getTempDir() / "vmh-cli-known-hosts"
+    let knownHosts = getTempDir() / "vmh cli known hosts"
     let opts = parseCliOpts(@[
       "boot",
       "--backend", "libvirt",
@@ -108,7 +108,7 @@ suite "CLI libvirt M4 canonical-command flag plumbing":
       sshHostKeyAlias = opts.sshHostKeyAlias)
     let sshArgs = backend.sshBaseArgs("127.0.0.1")
     check "StrictHostKeyChecking=accept-new" in sshArgs
-    check "UserKnownHostsFile=" & knownHosts in sshArgs
+    check "UserKnownHostsFile=" & quoteSshConfigValue(knownHosts) in sshArgs
     check "HostKeyAlias=reproos-installed-disk" in sshArgs
     check "StrictHostKeyChecking=no" notin sshArgs
     check "UserKnownHostsFile=/dev/null" notin sshArgs

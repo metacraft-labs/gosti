@@ -11,6 +11,8 @@
 import repro_project_dsl
 import repro_dsl_stdlib/foreign_env
 import ct_test_nim_unittest
+when defined(posix):
+  import ./repro_support/qemu_img as qemuImageTools
 import repro_dsl_stdlib/nixpkgs_pin
 import repro_resources/run_edge
 when defined(linux):
@@ -80,6 +82,8 @@ const posixTestSpecs: seq[VmHarnessTestSpec] = @[
     binary: "t_cli_incus"),
   VmHarnessTestSpec(source: "tests/integration/t_incus_ephemeral_capabilities.nim",
     binary: "t_incus_ephemeral_capabilities"),
+  VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_swtpm_startup.nim",
+    binary: "t_qemu_windows_arm_swtpm_startup"),
   VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_backend.nim",
     binary: "t_qemu_windows_arm_backend"),
   VmHarnessTestSpec(source: "tests/unit/t_cli_ephemeral_vmrun.nim",
@@ -129,10 +133,17 @@ package vm_harness:
     when not defined(windows):
       useFlakeDevShell()
 
-  defaultToolProvisioning "path"
+  # The Reprobuild CI environment does not activate this project's Nix shell.
+  # Resolve declared POSIX tools even when they are absent from the host PATH.
+  defaultToolProvisioning(when defined(windows): path else: nix)
 
   uses:
     "nim >=2.2 <3.0"
+    when defined(posix):
+      "qemu-img"
+      "sleep"
+      "sha256sum"
+      "git >=2"
     when defined(linux):
       "pcre-config >=0"
       "uname"
@@ -159,6 +170,7 @@ package vm_harness:
     name: "vm-harness-bench-snapshot-revert"
 
   build:
+    const backendCompiler = (when defined(macosx): "clang" else: "gcc")
     const exeSuffix = (when defined(windows): ".exe" else: "")
     const binDir = "build/bin/"
     const testBinDir = "build/test-bin/"
@@ -195,13 +207,18 @@ package vm_harness:
         extraInputs = @["src", "config.nims", "guest-scripts", "guest-recipes",
                         "vm_harness.nimble"],
         actionId = "vm_harness.test_build." & spec.binary)
+      # The unittest adapter does not register Nim's C compiler itself.
+      appendRegisteredActionToolIdentityRefs(edge.action.id, [backendCompiler])
       when defined(linux):
-        # The unittest adapter does not register Nim's C compiler itself.
-        appendRegisteredActionToolIdentityRefs(edge.action.id, ["pcre-config", "uname", "gcc"])
+        appendRegisteredActionToolIdentityRefs(edge.action.id, ["pcre-config", "uname"])
       buildActions.add(edge.action)
       let execute = edge.testBinary.run(
         actionId = "vm_harness.test_execute." & spec.binary,
         registerImplicitName = false)
+      when defined(posix):
+        if spec.binary in ["t_qemu_windows_arm_golden_build",
+                           "t_qemu_windows_arm_dead_guest_is_named"]:
+          appendRegisteredActionToolIdentityRefs(execute.id, ["qemu-img", "sleep", "sha256sum", "git"])
       executeActions.add(execute)
       run("test-" & spec.binary, build = execute.id,
         owningPackage = "vm_harness")

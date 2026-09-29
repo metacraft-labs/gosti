@@ -24,6 +24,8 @@ when defined(posix):
 suite "SSH POSIX payloads":
   test "SSH config values quote whitespace without shell quoting":
     check quoteSshConfigValue("/tmp/two words") == "\"/tmp/two words\""
+    check quoteSshConfigValue(r"C:\Temp\known hosts") ==
+      "\"C:\\\\Temp\\\\known hosts\""
     check quoteSshConfigValue("simple-alias") == "simple-alias"
     expect ValueError: discard quoteSshConfigValue("bad\noption")
   test "argv is quoted exactly once, including empty arguments and shell syntax":

@@ -4,6 +4,9 @@
 name: CI (reprobuild)
 
 on:
+  workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main, dev]
   pull_request:
@@ -12,20 +15,71 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded PR checks while preserving every mainline run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
+  choose-windows:
+    # Public-repository policy route; retain the existing fleet fallback.
+    uses: metacraft-labs/devops-modules/.github/workflows/reusable-choose-runner.yml@cd73eba732b9190499ec78e1e65b0dd784507440
+    with:
+      preferred: windows-2025
+      fallback: '["self-hosted","windows","x64"]'
+
+  choose-windows-arm:
+    # Existing x64-emulation suite on a native ARM64 host; no backend port.
+    # Temporary migration owner: zah. Follow-up: metacraft-specs/issues/
+    # 2026-09-29-windows-arm64-release-runner-migration.md
+    uses: metacraft-labs/devops-modules/.github/workflows/reusable-choose-runner.yml@cd73eba732b9190499ec78e1e65b0dd784507440
+    with:
+      preferred: windows-11-arm
+      fallback: '["self-hosted","windows","arm64"]'
+
+  choose-macos:
+    # Native macOS jobs retain their full gates while the fleet repair lands.
+    # Owner: zah. Follow-up: metacraft-specs/issues/
+    # 2026-09-28-shared-macos-host-has-no-headroom-for-runquota-measurements.md
+    uses: metacraft-labs/devops-modules/.github/workflows/reusable-choose-runner.yml@cd73eba732b9190499ec78e1e65b0dd784507440
+    with:
+      preferred: macos-26
+      fallback: '["self-hosted","macos","arm64","nix-darwin"]'
+
+  choose-linux:
+    # The shared CI_RUNNER_MODE policy selects free hosted runners for public
+    # repos by default and preserves the org-controlled self-hosted fallback.
+    uses: metacraft-labs/devops-modules/.github/workflows/reusable-choose-runner.yml@cd73eba732b9190499ec78e1e65b0dd784507440
+    with:
+      preferred: ubuntu-24.04
+      fallback: '["self-hosted","linux","x64"]'
+
   reprobuild:
-    name: Repro build/test (${{ join(matrix.runner, '-') }})
+    needs: [choose-linux, choose-macos, choose-windows, choose-windows-arm]
+    name: Repro build/test (${{ join(matrix.runner, '-') }}) ${{ contains(matrix.runner, 'windows') && contains(matrix.runner, 'arm64') && '(x64 emulation)' || '' }}
     strategy:
       fail-fast: false
       matrix:
         runner:
           - [self-hosted, linux, x64]
           - [self-hosted, linux, arm64]
-          - [self-hosted, macos, arm64]
+          - [self-hosted, macos, arm64, nix-darwin]
           - [self-hosted, windows, x64]
           - [self-hosted, windows, arm64]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    # Source bootstrap exceeds the current Tart guest's writable storage.
+    # The native nix-darwin class retains every test; owner zah, follow-up:
+    # metacraft-specs/issues/2026-09-29-macos-tart-source-bootstrap-exhausts-guest-disk.md
+    # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
+    # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
+    runs-on: ${{ contains(matrix.runner, 'windows') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-windows.outputs.runs_on) || contains(matrix.runner, 'windows') && contains(matrix.runner, 'arm64') && fromJSON(needs.choose-windows-arm.outputs.runs_on) || contains(matrix.runner, 'macos') && fromJSON(needs.choose-macos.outputs.runs_on) || contains(matrix.runner, 'linux') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-linux.outputs.runs_on) || (contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner) }}
+    env:
+      # Reprobuild and its monitor currently target x64 on Windows, including
+      # the existing emulated lane on ARM64 hosts. Native release payloads
+      # are built and exercised separately by the release workflow.
+      WINDOWS_DIY_ARCH_OVERRIDE: ${{ contains(matrix.runner, 'windows') && contains(matrix.runner, 'arm64') && 'x64' || '' }}
+    # Source bootstrap reached the 90-minute job limit on loaded fleet hosts
+    # at 63680f8 before product tests began. Keep the full test matrix.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -38,29 +92,57 @@ jobs:
           owner: metacraft-labs
 
       - name: Setup reprobuild environment
-        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@93de03f82560d545ea345b9810123135ca875674
         with:
           env-flavor: reprobuild
+          # Exercise the published bootstrap repairs before a new CLI release.
+          # Windows ARM64 keeps the existing emulated x64 Reprobuild tools.
+          repro-from-source: true
+          repro-build-pin: 90dc43218b00f2a1a7de94c174fb849f21b3a377
           gh-token: ${{ steps.ci-token.outputs.token }}
           substituters: ${{ vars.SUBSTITUTERS }}
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           attic-token: ${{ secrets.ATTIC_TOKEN }}
           attic-cache: ${{ vars.ATTIC_CACHE }}
           attic-endpoint: ${{ vars.ATTIC_ENDPOINT }}
-          repro-build-pin: b29a5ababae99a81a96b84939128dc07771564ba
+
+      - name: Refresh authentication before Repro build
+        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID || vars.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
 
       - name: Repro build
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p test-logs
-          dev-exec repro build 2>&1 | tee test-logs/repro-build.log
+          # dev-exec otherwise adds PATH provisioning, overriding repro.nim.
+          if [ "$RUNNER_OS" = Windows ]; then
+            bash scripts/capture-ci-command.sh test-logs/repro-build.log \
+              dev-exec repro build --tool-provisioning=path
+          else
+            dev-exec repro build --tool-provisioning=nix 2>&1 | tee test-logs/repro-build.log
+          fi
+
+      - name: Refresh authentication before Repro test
+        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID || vars.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
 
       - name: Repro test
         shell: bash
         run: |
           set -euo pipefail
-          dev-exec repro test 2>&1 | tee test-logs/repro-test.log
+          if [ "$RUNNER_OS" = Windows ]; then
+            bash scripts/capture-ci-command.sh test-logs/repro-test.log \
+              dev-exec repro test --tool-provisioning=path
+          else
+            dev-exec repro test --tool-provisioning=nix 2>&1 | tee test-logs/repro-test.log
+          fi
 
       # The two steps above capture only reprobuild's own stdout. When an
       # action fails, the engine has already written that child's raw stdio
@@ -85,6 +167,12 @@ jobs:
           # Deliberately no -e: this is a best-effort collector, and one
           # unreadable log must not cost us the rest of the post-mortem.
           set -uo pipefail
+          # Source bootstrap roots Python on POSIX, even when the action PATH
+          # lacks find. Windows retains the existing PortableGit collector.
+          if [ -n "${REPROBUILD_BOOTSTRAP_PYTHON:-}" ]; then
+            "$REPROBUILD_BOOTSTRAP_PYTHON" scripts/collect-repro-diagnostics.py
+            exit "$?"
+          fi
           dest=test-logs/repro-diagnostics
           mkdir -p "$dest"
           collected=0

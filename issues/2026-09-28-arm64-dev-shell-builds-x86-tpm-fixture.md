@@ -33,3 +33,27 @@ The release uses a dedicated pinned compiler/packaging shell, since packaging
 the CLI does not require a host hypervisor or a guest boot. The default shell
 and native ARM64 guest-test support still need a separate repair and real
 guest execution evidence.
+
+## Repair under validation
+
+The repair keeps QEMU and archive tools native to the host, and selects explicit
+x86 guest packages for the kernel, static BusyBox and OVMF firmware. The same
+selection applies to the libvirt golden guest. The pinned Nixpkgs x86 Linux
+outputs supply these guest binaries; the tests still boot the real guest
+and exchange a real TPM command. Native ARM64 CI evidence is required before
+closing this issue.
+
+## Guest artifact selection
+
+The ARM64 jobs at `fc78d2c` spend nearly two hours realizing the cross compiler,
+kernel and firmware before the CLI/test steps can proceed. The fixture only
+copies these x86 guest payloads; it does not execute their tools on the host.
+All three native x86 outputs from the same pinned Nixpkgs revision are present
+in `cache.nixos.org` (verified with `nix path-info --store`): kernel 6.18.26,
+static BusyBox 1.37.0 and OVMF 202602. Select
+`inputs.nixpkgs.legacyPackages.x86_64-linux` for those payloads and retain the
+host's native packing tools and QEMU. Full real-guest validation remains required.
+
+At `956cbf3` plus this selection change, the x64 guest derivation is unchanged.
+A Linux ARM64 shell dry run needs five local derivations and fetches the
+compiler-independent guest artifacts instead of rebuilding them.

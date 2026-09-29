@@ -31,10 +31,23 @@
       perSystem =
         { pkgs, system, ... }:
         let
+          # These fixtures boot an x86_64 guest even on an ARM64 host. Keep
+          # their kernel, userspace and firmware on that guest architecture;
+          # packaging tools and QEMU itself still run natively on the host.
+          # These are guest payload files, never build-host executables. Use
+          # the pinned x86 package outputs available from the binary cache;
+          # pkgsCross would rebuild a compiler and kernel for the same guest.
+          x86GuestPkgs = inputs.nixpkgs.legacyPackages.x86_64-linux;
           # The vTPM gate's Linux guest (kernel + busybox initramfs). Only
           # meaningful on Linux, where the gate runs.
           guest-linux-tpm =
-            if pkgs.stdenv.isLinux then import ./nix/guest-linux-tpm.nix { inherit pkgs; } else null;
+            if pkgs.stdenv.isLinux then
+              import ./nix/guest-linux-tpm.nix {
+                inherit pkgs;
+                guestPkgs = x86GuestPkgs;
+              }
+            else
+              null;
 
           backendTools =
             if pkgs.stdenv.isDarwin then
@@ -54,7 +67,7 @@
                 # `OVMF.fd` carries no binaries, it is here so the pair
                 # is realised in the store and the shellHook can name it
                 # exactly (see VMH_OVMF_CODE / VMH_OVMF_VARS below).
-                pkgs.OVMF.fd
+                x86GuestPkgs.OVMF.fd
                 # swtpm backs QEMU's `-tpmdev emulator`. The
                 # qemu_windows_arm backend already drives a full swtpm
                 # lifecycle and its `probeAvailability` fails without
@@ -146,7 +159,10 @@
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
             # The fast-booting libvirt test golden needs a Linux kernel,
             # module tree, and qemu-img, so it is not exported on Darwin.
-            golden-linux-tiny = import ./nix/golden-linux-tiny.nix { inherit pkgs; };
+            golden-linux-tiny = import ./nix/golden-linux-tiny.nix {
+              inherit pkgs;
+              guestPkgs = x86GuestPkgs;
+            };
             # The vTPM gate's guest: a stock kernel plus a busybox
             # initramfs that reports what it sees of /dev/tpm0. Same
             # reason it is Linux-only.
@@ -214,8 +230,8 @@
                 # stable choice; naming the flake's own OVMF makes a UEFI boot
                 # gate assert against the firmware this shell pins. Respects an
                 # operator override.
-                export VMH_OVMF_CODE="''${VMH_OVMF_CODE:-${pkgs.OVMF.fd}/FV/OVMF_CODE.fd}"
-                export VMH_OVMF_VARS="''${VMH_OVMF_VARS:-${pkgs.OVMF.fd}/FV/OVMF_VARS.fd}"
+                export VMH_OVMF_CODE="''${VMH_OVMF_CODE:-${x86GuestPkgs.OVMF.fd}/FV/OVMF_CODE.fd}"
+                export VMH_OVMF_VARS="''${VMH_OVMF_VARS:-${x86GuestPkgs.OVMF.fd}/FV/OVMF_VARS.fd}"
                 # The vTPM gate's guest, pinned the same way. Naming the
                 # store path here is what lets
                 # tests/integration/t_guest_sees_tpm_device.nim run with

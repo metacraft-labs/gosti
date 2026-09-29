@@ -53,15 +53,18 @@
 # family indicator "2.0\0" = `322e3000`, so the marker carries a value
 # that only a real, running, responding TPM 2.0 can produce.
 
-{ pkgs }:
+{
+  pkgs,
+  guestPkgs ? pkgs,
+}:
 
 let
   # A static busybox: no shared-library resolution inside the initramfs.
-  busybox = pkgs.pkgsStatic.busybox;
+  busybox = guestPkgs.pkgsStatic.busybox;
 
   # A stock nixpkgs kernel. Only $out/bzImage is used — the TPM driver
   # stack is builtin, and there is no disk, so no module tree is needed.
-  kernelPkg = pkgs.linuxPackages.kernel;
+  kernelPkg = guestPkgs.linuxPackages.kernel;
   kernelVersion = kernelPkg.modDirVersion;
 
   kernelCmdline = "console=ttyS0 panic=1 loglevel=3";

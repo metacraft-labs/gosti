@@ -33,16 +33,19 @@
 # against the overlay, boots it on KVM, harvests the serial marker, then
 # tears the domain + overlay down leaving no residue.
 
-{ pkgs }:
+{
+  pkgs,
+  guestPkgs ? pkgs,
+}:
 
 let
   # A static busybox: no shared-library resolution inside the initramfs.
-  busybox = pkgs.pkgsStatic.busybox;
+  busybox = guestPkgs.pkgsStatic.busybox;
 
   # A stock nixpkgs kernel + its module tree. virtio_blk is a module in
   # the default nixpkgs kernel, so the initramfs bundles the small
   # virtio module chain and insmods it before touching the disk.
-  kernelPkg = pkgs.linuxPackages.kernel;
+  kernelPkg = guestPkgs.linuxPackages.kernel;
   # The nixpkgs kernel splits its module tree into a separate ``modules``
   # output (``$out`` carries only bzImage + System.map).
   kernelModules = kernelPkg.modules or kernelPkg;
