@@ -33,3 +33,19 @@ VS_BUILDTOOLS_URL=https://aka.ms/vs/17/release/vs_buildtools.exe
 VS_INSTALL_PATH=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
 VS_COMPONENTS=Microsoft.VisualStudio.Workload.VCTools Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.Windows11SDK.26100
 WINDOWS_SDK_VERSION=10.0.26100.0
+
+# Debugging Tools for Windows (cdb.exe, windbg's console engine) from the
+# standalone Windows SDK. VS's Windows11SDK component does not include them,
+# and reprobuild's Windows HCR environment check requires the x64 cdb.exe at
+# Windows Kits\10\Debuggers\x64. The bootstrapper is a VERSIONED download
+# (the GUID path is per release, unlike the VS evergreen link), so it is
+# digest-pinned; its WiX bundle manifest carries the digests of every payload
+# it downloads. Only the debugger feature is installed. Source: the
+# "Installer" link for this version on
+# https://learn.microsoft.com/windows/apps/windows-sdk/downloads (fwlink
+# linkid=2376216 resolves to this URL). Verify a bump with
+#   curl -fsSL -o winsdksetup.exe "$WINDOWS_SDK_SETUP_URL" && sha256sum winsdksetup.exe
+WINDOWS_SDK_SETUP_VERSION=10.0.26100.9169
+WINDOWS_SDK_SETUP_URL=https://download.microsoft.com/download/4c09a46e-b908-42d9-bf27-26cb1779c670/KIT_BUNDLE_WINDOWSSDK_MEDIACREATION/winsdksetup.exe
+WINDOWS_SDK_SETUP_SHA256=680aa29dcfa806d35b4e93ea05a3fa2bdcf2935b65295f996c8e944584dd2836
+WINDOWS_SDK_SETUP_FEATURES=OptionId.WindowsDesktopDebuggers
