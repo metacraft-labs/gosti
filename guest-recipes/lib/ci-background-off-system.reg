@@ -1,0 +1,16 @@
+REGEDIT4
+
+[HKEY_LOCAL_MACHINE\HARDEN_SYS\{{CS}}\Services\wuauserv]
+"Start"=dword:00000004
+
+[HKEY_LOCAL_MACHINE\HARDEN_SYS\{{CS}}\Services\UsoSvc]
+"Start"=dword:00000004
+
+[HKEY_LOCAL_MACHINE\HARDEN_SYS\{{CS}}\Services\WaaSMedicSvc]
+"Start"=dword:00000004
+
+[HKEY_LOCAL_MACHINE\HARDEN_SYS\{{CS}}\Services\DoSvc]
+"Start"=dword:00000004
+
+[HKEY_LOCAL_MACHINE\HARDEN_SYS\{{CS}}\Services\WSearch]
+"Start"=dword:00000004

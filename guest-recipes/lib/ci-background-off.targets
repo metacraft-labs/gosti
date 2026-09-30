@@ -1,0 +1,18 @@
+# Services set to Start=4 (Disabled) OFFLINE on the Windows CI golden by
+# apply-offline-service-payloads.sh (payload `ci-background-off`), one per line.
+# Every VM cloned from that golden runs ONE job and is then destroyed, so
+# background maintenance can only compete with the job for its 4 vCPUs. On
+# 2026-09-30, TiWorker, wuaucltcore and SearchIndexer together had used about
+# 75 CPU-minutes of a job VM within 2 h. Rationale: ../windows-x64-base/ci-toolchain-golden.md.
+#
+# Windows Update: the service, the orchestrator that schedules scans and
+# installs (the UpdateOrchestrator scheduled tasks all go through it), the
+# Medic service that re-enables both, and Delivery Optimization (update
+# download peer-to-peer). UsoSvc and WaaSMedicSvc refuse an ONLINE change even
+# from an elevated administrator, which is why this is an offline edit.
+wuauserv
+UsoSvc
+WaaSMedicSvc
+DoSvc
+# Windows Search (SearchIndexer.exe).
+WSearch

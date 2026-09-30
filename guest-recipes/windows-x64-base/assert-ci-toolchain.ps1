@@ -26,13 +26,21 @@
 
 .PARAMETER ExpectDefenderOff
   Assert the antivirus services are disabled (after the offline hardening).
+
+.PARAMETER ExpectBackgroundServicesOff
+  Assert every service in ci-background-off.targets (Windows Update, its
+  orchestrator and Medic, Delivery Optimization, Windows Search) is present,
+  Disabled and Stopped, that the automatic-update policy is off, and that none
+  of their worker processes is running. Only meaningful after the offline
+  payload, i.e. on the clone.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$StageDir,
     [ValidateSet('utc', 'keep')][string]$ClockMode = 'utc',
     [int]$ExpectLogicalProcessors = 0,
-    [switch]$ExpectDefenderOff
+    [switch]$ExpectDefenderOff,
+    [switch]$ExpectBackgroundServicesOff
 )
 
 $ErrorActionPreference = 'Stop'
@@ -149,6 +157,40 @@ if ($ExpectDefenderOff) {
         if ($s -and $s.Status -eq 'Stopped' -and "$($s.StartType)" -eq 'Disabled') { Ok "$name Stopped/Disabled" }
         elseif (-not $s) { Bad "$name service not found (cannot prove it is off)" }
         else { Bad "$name is $($s.Status)/$($s.StartType)" }
+    }
+}
+
+# -- Background services (Windows Update, Windows Search) ------------------------
+if ($ExpectBackgroundServicesOff) {
+    $targets = @(Get-Content -LiteralPath (Join-Path $StageDir 'ci-background-off.targets') |
+        ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+    if ($targets.Count -eq 0) { Bad 'ci-background-off.targets lists no services' }
+    foreach ($name in $targets) {
+        # Read Start from the registry as well as the SCM. The registry value is
+        # what the offline payload wrote, and the SCM view proves Windows
+        # honoured it at boot.
+        $start = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$name" -Name Start -ErrorAction SilentlyContinue).Start
+        $s = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if (-not $s) { Bad "$name service not found (cannot prove it is off)" }
+        elseif ($s.Status -eq 'Stopped' -and "$($s.StartType)" -eq 'Disabled' -and $start -eq 4) { Ok "$name Stopped/Disabled" }
+        else { Bad "$name is $($s.Status)/$($s.StartType) (Start=$start)" }
+    }
+    $au = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoUpdate -ErrorAction SilentlyContinue).NoAutoUpdate
+    if ($au -eq 1) { Ok 'policy WindowsUpdate\AU NoAutoUpdate=1' } else { Bad "policy WindowsUpdate\AU NoAutoUpdate='$au'" }
+    # The worker processes of the disabled services. TiWorker is not listed:
+    # it belongs to TrustedInstaller, which stays enabled because installing
+    # Windows features needs it.
+    foreach ($proc in 'wuaucltcore', 'MoUsoCoreWorker', 'SearchIndexer') {
+        $running = @(Get-Process -Name $proc -ErrorAction SilentlyContinue)
+        if ($running.Count -eq 0) { Ok "$proc not running" } else { Bad "$proc is running (pid $($running.Id -join ','))" }
+    }
+    # Informational: the scheduled tasks that would start them. With the
+    # services disabled these tasks cannot do any work, so the gate does not
+    # require them disabled. Several of them refuse a change even from SYSTEM.
+    foreach ($path in '\Microsoft\Windows\UpdateOrchestrator\', '\Microsoft\Windows\WindowsUpdate\') {
+        $tasks = @(Get-ScheduledTask -TaskPath $path -ErrorAction SilentlyContinue)
+        $ready = @($tasks | Where-Object { $_.State -ne 'Disabled' })
+        Write-Host "  info  $path $($tasks.Count) task(s), $($ready.Count) not disabled (inert: their services are disabled)"
     }
 }
 

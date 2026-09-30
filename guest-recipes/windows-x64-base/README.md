@@ -703,9 +703,11 @@ domain as long-lived and skips per-gate revert.
   (VS 2022 Build Tools + Windows SDK, WinFsp, long paths, the pinned actions
   runner, the UTC clock contract, antivirus off), built and verified on a
   clone in one script. See [`ci-toolchain-golden.md`](ci-toolchain-golden.md).
-- `../lib/harden-defender-offline.sh` — the qcow2/Linux sibling of
-  `../lib/harden-defender.ps1` (qemu-nbd + ntfs-3g + hivexregedit, same
-  payload files).
+- `../lib/apply-offline-service-payloads.sh` — disables services in a cold
+  qcow2 (qemu-nbd + ntfs-3g + hivexregedit). Payloads: `defender-off` (the
+  same files `../lib/harden-defender.ps1` applies on Hyper-V) and
+  `ci-background-off` (Windows Update, Windows Search).
+  `../lib/harden-defender-offline.sh` is the `defender-off`-only wrapper.
 
 All scripts are POSIX `bash` and self-contained; they accept
 `--help` for usage.

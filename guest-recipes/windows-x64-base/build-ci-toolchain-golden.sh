@@ -10,7 +10,8 @@
 #   * Visual Studio 2022 Build Tools (MSVC x64 + Windows SDK), WinFsp,
 #     LongPathsEnabled=1, the pinned actions runner      provision-ci-toolchain.ps1
 #   * the guest clock contract (RealTimeIsUniversal=1 + UTC) (same, -ClockMode)
-#   * antivirus real-time scanning off, offline            ../lib/harden-defender-offline.sh
+#   * antivirus real-time scanning off, offline            ../lib/apply-offline-service-payloads.sh
+#   * Windows Update + Windows Search off, offline          (same, payload ci-background-off)
 #
 # Every version and digest comes from ci-toolchain.pins. The rationale is in
 # ci-toolchain-golden.md. The procedure is the same boot-a-copy / modify /
@@ -37,6 +38,9 @@
 #                    `utc` is only correct for domains rendered with
 #                    <clock offset='utc'>; see ci-toolchain-golden.md §Clock.
 #   VMH_DISABLE_DEFENDER  1 (default) = offline-disable real-time scanning; 0 = keep
+#   VMH_DISABLE_BACKGROUND_SERVICES  1 (default) = offline-disable Windows Update
+#                    (wuauserv, UsoSvc, WaaSMedicSvc, DoSvc) and Windows Search
+#                    (WSearch); 0 = keep. See ci-toolchain-golden.md §Background services.
 #   VMH_GROW_DISK_GB extra virtual disk GiB added to the image (default 80; 0 = none)
 #   VMH_VCPUS / VMH_MEMORY_MB  work + verify VM size (default 4 / 8192)
 #   VMH_GUEST_PASSWORD  guest admin password (default repro-windows-x64)
@@ -57,6 +61,7 @@ WORK="${VMH_WORK_QCOW2:-/storage/scratch/ci-toolchain-work.qcow2}"
 CACHE="${VMH_CACHE_DIR:-/storage/scratch/ci-golden-cache}"
 CLOCK_MODE="${VMH_CLOCK_MODE:-utc}"
 DISABLE_DEFENDER="${VMH_DISABLE_DEFENDER:-1}"
+DISABLE_BACKGROUND="${VMH_DISABLE_BACKGROUND_SERVICES:-1}"
 GROW_GB="${VMH_GROW_DISK_GB:-80}"
 VCPUS="${VMH_VCPUS:-4}"
 MEMORY_MB="${VMH_MEMORY_MB:-8192}"
@@ -215,7 +220,8 @@ stage_into_guest() { # ip [files...]
   ps_guest "$ip" "-Command \"New-Item -Force -ItemType Directory -Path $GUEST_STAGE | Out-Null\"" >/dev/null
   scp_guest "$ip" "$PINS" "$SCRIPT_DIR/provision-ci-toolchain.ps1" "$SCRIPT_DIR/assert-ci-toolchain.ps1" \
     "$LIB_DIR/assert-git-provisioned.ps1" "$LIB_DIR/assert-pwsh-provisioned.ps1" \
-    "$LIB_DIR/assert-defender-exclusions-sane.ps1" "$@" || fail "scp into guest failed"
+    "$LIB_DIR/assert-defender-exclusions-sane.ps1" "$LIB_DIR/ci-background-off.targets" "$@" \
+    || fail "scp into guest failed"
 }
 
 check_clock() { # ip
@@ -239,10 +245,10 @@ WINFSP_MSI="winfsp-$(pin WINFSP_VERSION).msi"
 
 log "SRC  $SRC_GOLDEN (read-only)"
 log "OUT  $OUT_GOLDEN (side artifact)"
-log "WORK $WORK   clock=$CLOCK_MODE defender-off=$DISABLE_DEFENDER grow=${GROW_GB}G vm=${VCPUS}c/${MEMORY_MB}M"
+log "WORK $WORK   clock=$CLOCK_MODE defender-off=$DISABLE_DEFENDER background-off=$DISABLE_BACKGROUND grow=${GROW_GB}G vm=${VCPUS}c/${MEMORY_MB}M"
 if [[ -n "${VMH_CI_DRY_RUN:-}" ]]; then
   log "plan: fetch -> copy+grow -> boot work VM -> provision -> power-cycle -> gates -> shutdown"
-  log "      -> offline AV disable -> capture -> boot CoW clone -> gates again -> record"
+  log "      -> offline AV + background-service disable -> capture -> boot CoW clone -> gates again -> record"
   exit 0
 fi
 for t in sshpass qemu-img curl sha256sum; do command -v "$t" >/dev/null || fail "missing tool: $t"; done
@@ -348,11 +354,14 @@ wait_off "$WORK_DOMAIN" 900 || fail "work guest did not power off"
 drop_domain "$WORK_DOMAIN"
 fi
 
-# ── step 4: offline antivirus disable ────────────────────────────────────────
-if [[ "$DISABLE_DEFENDER" == 1 ]]; then
-  log "step 4: disabling real-time scanning offline"
-  sudo -n env PATH="$PATH" bash "$LIB_DIR/harden-defender-offline.sh" "$WORK" 2>&1 | sed 's/^/  /'
-  [[ ${PIPESTATUS[0]} == 0 ]] || fail "offline AV hardening failed"
+# ── step 4: offline antivirus + background-service disable ──────────────────
+payloads=()
+[[ "$DISABLE_DEFENDER" == 1 ]] && payloads+=(defender-off)
+[[ "$DISABLE_BACKGROUND" == 1 ]] && payloads+=(ci-background-off)
+if [[ ${#payloads[@]} -gt 0 ]]; then
+  log "step 4: disabling services offline (${payloads[*]})"
+  sudo -n env PATH="$PATH" bash "$LIB_DIR/apply-offline-service-payloads.sh" "$WORK" "${payloads[@]}" 2>&1 | sed 's/^/  /'
+  [[ ${PIPESTATUS[0]} == 0 ]] || fail "offline service hardening failed"
 fi
 
 # ── step 5: capture ──────────────────────────────────────────────────────────
@@ -368,6 +377,7 @@ boot_domain "$VERIFY_DOMAIN" "$VERIFY_OVERLAY" "$VERIFY_NVRAM"
 IP="$(wait_ssh "$VERIFY_DOMAIN")" || fail "clone SSH never came up (did the offline edit break boot? check VNC)"
 stage_into_guest "$IP"
 defx=""; [[ "$DISABLE_DEFENDER" == 1 ]] && defx="-ExpectDefenderOff"
+[[ "$DISABLE_BACKGROUND" == 1 ]] && defx="$defx -ExpectBackgroundServicesOff"
 run_gates "$VERIFY_DOMAIN" "$IP" "$defx" clone
 IP="$GATE_IP"
 check_clock "$IP"
@@ -383,7 +393,7 @@ SUM="$(sudo -n sha256sum "$OUT_GOLDEN" | cut -d' ' -f1)"
   echo "built (UTC):   $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(hostname)"
   echo "source:        $SRC_GOLDEN ($(stat -c '%s bytes, mtime %y' "$SRC_GOLDEN"))"
   echo "recipe:        gosti guest-recipes/windows-x64-base/build-ci-toolchain-golden.sh @ $(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  echo "clock mode:    $CLOCK_MODE    defender off: $DISABLE_DEFENDER    grown: +${GROW_GB}G"
+  echo "clock mode:    $CLOCK_MODE    defender off: $DISABLE_DEFENDER    background off: $DISABLE_BACKGROUND    grown: +${GROW_GB}G"
   echo "vs bootstrap:  sha256 $(sha256sum "$CACHE/vs_buildtools.exe" | cut -d' ' -f1)"
   grep -v '^#' "$PINS" | grep . | sed 's/^/pin:           /'
 } | sudo -n tee "${OUT_GOLDEN%.qcow2}.record.txt"

@@ -38,6 +38,7 @@ OS settings.
 | actions runner at `C:\actions-runner`, version = infra `lib/actions-runner.json` | **base** | GARM's server-rendered Windows bootstrap reuses a staged runner when the directory exists. A stale copy is a runner GitHub rejects. |
 | Clock contract (`RealTimeIsUniversal=1`, zone UTC) | **base** | See [Clock](#clock). |
 | Antivirus real-time scanning off | **base** | See [Antivirus](#antivirus). |
+| Windows Update and Windows Search off | **base** | See [Background services](#background-services). |
 | C: grown by `VMH_GROW_DISK_GB` (default +80 GiB) | **base** | Rust target directories are large. Growth only happens if no partition sits after C:. The build log records the outcome. |
 | WinFsp (`WINFSP_VERSION`) | **project: agent-harbor. Move to an AH5 starting point.** | A kernel-mode driver, so it cannot come from a store. Only agent-harbor's AgentHarborFS tests need it. It is in the base for now because agent-harbor's workflow has no install step for it and fails loudly without it. |
 
@@ -97,9 +98,10 @@ sockets, so a 4-vCPU guest used only 2. The gate asserts
 
 ## Antivirus
 
-`VMH_DISABLE_DEFENDER=1` (the default for this CI recipe) applies
-[`../lib/harden-defender-offline.sh`](../lib/harden-defender-offline.sh) to
-the cold work image before capture. It uses the same registry payload and the
+`VMH_DISABLE_DEFENDER=1` (the default for this CI recipe) applies the
+`defender-off` payload with
+[`../lib/apply-offline-service-payloads.sh`](../lib/apply-offline-service-payloads.sh)
+to the cold work image before capture. It uses the same registry payload and the
 same rationale as the Hyper-V pool's `harden-defender.ps1`
 ([`../lib/harden-defender.README.md`](../lib/harden-defender.README.md)): a
 running guest cannot turn its own real-time scanning off, so the services are
@@ -119,6 +121,68 @@ a list of exclusions is exactly what went stale here before (see the README's
 Defender retrofit). What contains pull-request code is the ephemeral
 lifecycle and the network isolation, not the scanner. A golden meant for
 anything other than ephemeral CI should be built with `VMH_DISABLE_DEFENDER=0`.
+
+## Background services
+
+`VMH_DISABLE_BACKGROUND_SERVICES=1` (the default) applies the
+`ci-background-off` payload in the same offline pass. It sets `Start=4` on the
+services in [`../lib/ci-background-off.targets`](../lib/ci-background-off.targets)
+and sets the `WindowsUpdate\AU NoAutoUpdate=1` policy:
+
+| Service | What it is |
+| ------- | ---------- |
+| `wuauserv` | Windows Update. It spawns `wuaucltcore` and, through servicing, `TiWorker`. |
+| `UsoSvc` | Update Orchestrator. Every `\Microsoft\Windows\UpdateOrchestrator\` scheduled task goes through it. |
+| `WaaSMedicSvc` | Windows Update Medic. It re-enables the two above if only they are disabled. |
+| `DoSvc` | Delivery Optimization (peer-to-peer update downloads). |
+| `WSearch` | Windows Search (`SearchIndexer`). |
+
+**Why.** A clone of this golden runs one job on 4 vCPUs and is then
+destroyed. Updates that a clone installs are thrown away with it, and an index
+of its files is never queried. Both only compete with the job. On
+2026-09-30, one `Rust tests | windows-x64` VM (agent-harbor run 36564749720)
+had spent about 2 h in provisioning. Over that time `TiWorker` used 39
+CPU-minutes, `wuaucltcore` 20 and `SearchIndexer` 15. The job's own
+extraction process used 14.
+
+**Why offline.** `UsoSvc` and `WaaSMedicSvc` refuse `Set-Service` and
+`sc config`, even from an elevated administrator. The same offline hive edit
+that disables Defender is not subject to those ACLs.
+
+**Scheduled tasks are left alone.** The `UpdateOrchestrator` and
+`WindowsUpdate` tasks only start `usoclient` or `wuauserv`, so with the
+services disabled they cannot do any work. Several of them refuse changes even
+from SYSTEM. The gate lists them for information.
+
+**What stays on.** `TrustedInstaller` (Windows Modules Installer, the owner of
+`TiWorker`) stays on demand-start, because `Add-WindowsCapability` and feature
+installs in a job need it. Without Windows Update it has nothing to service
+in the background.
+
+**The gate.** On the clone, `assert-ci-toolchain.ps1
+-ExpectBackgroundServicesOff` requires the following. Every targeted service
+exists, is `Disabled` in the SCM with `Start=4` in the registry, and is
+`Stopped`. The policy value is set. `wuaucltcore`, `MoUsoCoreWorker` and
+`SearchIndexer` are not running.
+
+Security posture: the image is patched at build time and each clone lives for
+one job. Patch currency comes from rebuilding the golden from a current
+source, not from clones updating themselves. A golden for anything other than
+ephemeral CI should be built with `VMH_DISABLE_BACKGROUND_SERVICES=0`.
+
+### Retrofit onto an existing golden
+
+Both payloads are offline edits, so a golden that already carries the
+toolchain does not need the multi-hour provisioning pass. Copy it to the work
+path and resume the recipe at its offline step. That step applies the
+payloads, captures, runs every gate on a fresh CoW clone, and writes the
+record:
+
+```bash
+sudo qemu-img convert -O qcow2 /storage/iso/golden-win11-cloudbase.qcow2 /storage/scratch/ci-toolchain-work.qcow2
+VMH_RESUME_FROM=offline ./build-ci-toolchain-golden.sh
+# -> /storage/iso/golden-win11-cloudbase-ci-<date>.qcow2 (+ .record.txt); then Promote
+```
 
 ## Promote
 
