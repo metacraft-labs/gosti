@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+#
+# Scheduled tasks that assert-ci-toolchain.ps1 -ExpectBackgroundServicesOff
+# STARTS on the clone before it checks the ci-background-off services, so a
+# task that re-enables Windows Update is caught by the gate instead of ~6 min
+# into a job (which is how the first version of this payload slipped through).
+# One task path per line. Measured on 2026-09-30 on a clone of the golden,
+# each started by hand and wuauserv read back 75 s later:
+#   InstallService\ScanForUpdates   re-enabled + started wuauserv (the culprit;
+#                                     fixed by disabling InstallService)
+#   InstallService\SmartRetry, ScanForUpdatesAsUser   no change
+#   UpdateOrchestrator\Schedule Scan, Start Oobe Expedite Work,
+#   WaaSMedic\PerformRemediation      0x80070422 (their service is disabled)
+#   UpdateOrchestrator\USO_UxBroker   0x80070002, no change
+#   WindowsUpdate\Scheduled Start     refuses an on-demand start (it only runs
+#                                     `sc start wuauserv`, which fails while
+#                                     wuauserv is Disabled)
+\Microsoft\Windows\InstallService\ScanForUpdates
+\Microsoft\Windows\InstallService\ScanForUpdatesAsUser
+\Microsoft\Windows\InstallService\SmartRetry
+\Microsoft\Windows\UpdateOrchestrator\Schedule Scan
+\Microsoft\Windows\UpdateOrchestrator\Start Oobe Expedite Work
+\Microsoft\Windows\UpdateOrchestrator\USO_UxBroker
+\Microsoft\Windows\WaaSMedic\PerformRemediation

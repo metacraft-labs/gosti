@@ -137,6 +137,7 @@ and sets the `WindowsUpdate\AU NoAutoUpdate=1` policy:
 | `WaaSMedicSvc` | Windows Update Medic. It re-enables the two above if only they are disabled. |
 | `DoSvc` | Delivery Optimization (peer-to-peer update downloads). |
 | `WSearch` | Windows Search (`SearchIndexer`). |
+| `InstallService` | Microsoft Store Install Service. Its `ScanForUpdates` task re-enables Windows Update (see below). |
 
 **Why.** A clone of this golden runs one job on 4 vCPUs and is then
 destroyed. Updates that a clone installs are thrown away with it, and an index
@@ -150,10 +151,21 @@ extraction process used 14.
 `sc config`, even from an elevated administrator. The same offline hive edit
 that disables Defender is not subject to those ACLs.
 
-**Scheduled tasks are left alone.** The `UpdateOrchestrator` and
-`WindowsUpdate` tasks only start `usoclient` or `wuauserv`, so with the
-services disabled they cannot do any work. Several of them refuse changes even
-from SYSTEM. The gate lists them for information.
+**Scheduled tasks are not edited, but one of them forced `InstallService` into
+the payload.** The `UpdateOrchestrator` and `WindowsUpdate` tasks only start
+`usoclient` or `wuauserv`, so with those services disabled they fail
+(`0x80070422`) and do no work. Several of them refuse changes even from SYSTEM.
+`\Microsoft\Windows\InstallService\ScanForUpdates` is different: it is a COM
+handler that runs inside `taskhostw`, and it switched `wuauserv` back to demand
+start and started it. The first promoted golden with this payload showed it on
+a live clone on 2026-09-30: about 6 min after boot, on the tasks' wall-clock
+trigger, followed by a Windows Update scan every ~15 s and `TiWorker`. The
+cause was found by starting each candidate task by hand on a clone and reading
+`wuauserv` back after 75 s; only `ScanForUpdates` changed it. With
+`InstallService` disabled the same task leaves `wuauserv` Disabled.
+`InstallService` installs Microsoft Store apps, which a CI job does not do.
+The list of tasks and what each did is
+[`../lib/ci-background-off.trigger-tasks`](../lib/ci-background-off.trigger-tasks).
 
 **What stays on.** `TrustedInstaller` (Windows Modules Installer, the owner of
 `TiWorker`) stays on demand-start, because `Add-WindowsCapability` and feature
@@ -161,7 +173,12 @@ installs in a job need it. Without Windows Update it has nothing to service
 in the background.
 
 **The gate.** On the clone, `assert-ci-toolchain.ps1
--ExpectBackgroundServicesOff` requires the following. Every targeted service
+-ExpectBackgroundServicesOff` first starts every task in
+`ci-background-off.trigger-tasks` and waits 90 s. Those tasks fire on
+wall-clock triggers minutes after boot, so a clone that has only just booted
+would pass without them, which is how the `InstallService` case slipped
+through. It fails if none of them can be started. It then requires the
+following. Every targeted service
 exists, is `Disabled` in the SCM with `Start=4` in the registry, and is
 `Stopped`. The policy value is set. `wuaucltcore`, `MoUsoCoreWorker` and
 `SearchIndexer` are not running.

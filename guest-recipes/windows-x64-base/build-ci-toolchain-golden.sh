@@ -233,7 +233,8 @@ stage_into_guest() { # ip [files...]
   ps_guest "$ip" "-Command \"New-Item -Force -ItemType Directory -Path $GUEST_STAGE | Out-Null\"" >/dev/null
   scp_guest "$ip" "$PINS" "$SCRIPT_DIR/provision-ci-toolchain.ps1" "$SCRIPT_DIR/assert-ci-toolchain.ps1" \
     "$LIB_DIR/assert-git-provisioned.ps1" "$LIB_DIR/assert-pwsh-provisioned.ps1" \
-    "$LIB_DIR/assert-defender-exclusions-sane.ps1" "$LIB_DIR/ci-background-off.targets" "$@" \
+    "$LIB_DIR/assert-defender-exclusions-sane.ps1" "$LIB_DIR/ci-background-off.targets" \
+    "$LIB_DIR/ci-background-off.trigger-tasks" "$@" \
     || fail "scp into guest failed"
 }
 

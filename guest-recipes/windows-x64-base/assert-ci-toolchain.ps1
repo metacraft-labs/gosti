@@ -28,9 +28,11 @@
   Assert the antivirus services are disabled (after the offline hardening).
 
 .PARAMETER ExpectBackgroundServicesOff
-  Assert every service in ci-background-off.targets (Windows Update, its
-  orchestrator and Medic, Delivery Optimization, Windows Search) is present,
-  Disabled and Stopped, that the automatic-update policy is off, and that none
+  First start every task in ci-background-off.trigger-tasks (the scheduled
+  tasks that can re-enable Windows Update) and wait 90 s. Then assert every
+  service in ci-background-off.targets (Windows Update, its orchestrator and
+  Medic, Delivery Optimization, Windows Search, the Store Install Service) is
+  present, Disabled and Stopped, that the automatic-update policy is off, and that none
   of their worker processes is running. Only meaningful after the offline
   payload, i.e. on the clone.
 #>
@@ -186,6 +188,34 @@ if ($ExpectBackgroundServicesOff) {
     $targets = @(Get-Content -LiteralPath (Join-Path $StageDir 'ci-background-off.targets') |
         ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
     if ($targets.Count -eq 0) { Bad 'ci-background-off.targets lists no services' }
+    # Start every task known to re-enable Windows Update BEFORE checking, so
+    # the check sees the state a job sees after those tasks have fired, not
+    # the state of a freshly booted clone (they fire minutes after boot, on
+    # wall-clock triggers). A task that refuses an on-demand start is
+    # reported, not failed: it cannot run in a job that way either.
+    $triggerFile = Join-Path $StageDir 'ci-background-off.trigger-tasks'
+    $triggers = @()
+    if (Test-Path -LiteralPath $triggerFile) {
+        $triggers = @(Get-Content -LiteralPath $triggerFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+    }
+    if ($triggers.Count -eq 0) { Bad "no tasks to trigger ($triggerFile missing or empty)" }
+    $started = 0
+    foreach ($t in $triggers) {
+        $cut = $t.LastIndexOf('\')
+        $tp = $t.Substring(0, $cut + 1); $tn = $t.Substring($cut + 1)
+        if (-not (Get-ScheduledTask -TaskPath $tp -TaskName $tn -ErrorAction SilentlyContinue)) { Write-Host "  info  task $t not present"; continue }
+        try { Start-ScheduledTask -TaskPath $tp -TaskName $tn -ErrorAction Stop; $started++; Write-Host "  info  started $t" }
+        catch { Write-Host "  info  $t refused an on-demand start: $($_.Exception.Message.Trim())" }
+    }
+    if ($triggers.Count -gt 0 -and $started -eq 0) { Bad 'none of the trigger tasks could be started, so the check below proves nothing' }
+    # InstallService\ScanForUpdates flipped wuauserv within 75 s when it was
+    # not disabled (2026-09-30); wait longer than that.
+    Start-Sleep -Seconds 90
+    foreach ($t in $triggers) {
+        $cut = $t.LastIndexOf('\')
+        $i = Get-ScheduledTaskInfo -TaskPath $t.Substring(0, $cut + 1) -TaskName $t.Substring($cut + 1) -ErrorAction SilentlyContinue
+        if ($i) { Write-Host ("  info  {0} last result 0x{1:X}" -f $t, $i.LastTaskResult) }
+    }
     foreach ($name in $targets) {
         # Read Start from the registry as well as the SCM. The registry value is
         # what the offline payload wrote, and the SCM view proves Windows
