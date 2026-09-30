@@ -14,6 +14,8 @@
   Installs / sets, from the pins in ci-toolchain.pins (staged alongside):
     1. Visual Studio 2022 Build Tools with VS_COMPONENTS (+ recommended),
        which brings the MSVC x64 toolset and the Windows SDK.
+    1b. The SDK's Debugging Tools for Windows (cdb.exe), from the
+       digest-pinned standalone SDK bootstrapper, debugger feature only.
     2. WinFsp (MSI, digest-checked).
     3. Win32 long paths (LongPathsEnabled=1) and Git's core.longpaths.
     4. The actions runner at C:\actions-runner, re-staged only when the staged
@@ -74,7 +76,8 @@ function Assert-Sha256 {
 
 $pins = Read-Pins (Join-Path $StageDir 'ci-toolchain.pins')
 foreach ($k in 'ACTIONS_RUNNER_VERSION', 'ACTIONS_RUNNER_SHA256_WIN_X64', 'WINFSP_VERSION',
-    'WINFSP_MSI_SHA256', 'VS_INSTALL_PATH', 'VS_COMPONENTS', 'WINDOWS_SDK_VERSION') {
+    'WINFSP_MSI_SHA256', 'VS_INSTALL_PATH', 'VS_COMPONENTS', 'WINDOWS_SDK_VERSION',
+    'WINDOWS_SDK_SETUP_VERSION', 'WINDOWS_SDK_SETUP_SHA256', 'WINDOWS_SDK_SETUP_FEATURES') {
     if (-not $pins.ContainsKey($k)) { throw "ci-toolchain.pins is missing $k" }
 }
 $pf86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
@@ -113,6 +116,35 @@ if (-not $haveVs) {
         throw "VS Build Tools install failed, exit $($p.ExitCode)"
     }
     Log "VS Build Tools installer exit $($p.ExitCode)"
+}
+
+# ---- 1b. Debugging Tools for Windows (cdb.exe) --------------------------------
+# VS's Windows11SDK component installs headers, libs and tools but never the
+# debuggers. The standalone SDK bootstrapper installs just that feature into
+# the same Windows Kits\10 root. It is a versioned download, so it is
+# digest-pinned (and, like every Microsoft installer, Authenticode-signed).
+$cdb = Join-Path $pf86 'Windows Kits\10\Debuggers\x64\cdb.exe'
+if (Test-Path -LiteralPath $cdb) {
+    Log "Debugging Tools already installed: $cdb $((Get-Item $cdb).VersionInfo.FileVersion)"
+} else {
+    $sdkSetup = Join-Path $StageDir 'winsdksetup.exe'
+    if (-not (Test-Path -LiteralPath $sdkSetup)) { throw "winsdksetup.exe not staged in $StageDir" }
+    Assert-Sha256 -Path $sdkSetup -Expected $pins['WINDOWS_SDK_SETUP_SHA256'] -Label "winsdksetup.exe $($pins['WINDOWS_SDK_SETUP_VERSION'])"
+    $sig = Get-AuthenticodeSignature -LiteralPath $sdkSetup
+    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+        throw "winsdksetup.exe signature not valid Microsoft: $($sig.Status) $($sig.SignerCertificate.Subject)"
+    }
+    $sdkLog = Join-Path $env:TEMP 'winsdksetup-debuggers.log'
+    $features = @($pins['WINDOWS_SDK_SETUP_FEATURES'] -split '\s+' | Where-Object { $_ })
+    $sdkArgs = @('/features') + $features + @('/quiet', '/norestart', '/ceip', 'off', '/log', "`"$sdkLog`"")
+    Log "installing Debugging Tools for Windows: winsdksetup.exe $($sdkArgs -join ' ')"
+    $p = Start-Process -FilePath $sdkSetup -ArgumentList $sdkArgs -Wait -PassThru -NoNewWindow
+    if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+        if (Test-Path -LiteralPath $sdkLog) { Log "---- tail $sdkLog"; Get-Content $sdkLog -Tail 40 }
+        throw "winsdksetup.exe failed, exit $($p.ExitCode)"
+    }
+    if (-not (Test-Path -LiteralPath $cdb)) { throw "winsdksetup.exe exited $($p.ExitCode) but $cdb is absent" }
+    Log "Debugging Tools installed (exit $($p.ExitCode)): $cdb $((Get-Item $cdb).VersionInfo.FileVersion)"
 }
 
 # ---- 2. WinFsp ----------------------------------------------------------------

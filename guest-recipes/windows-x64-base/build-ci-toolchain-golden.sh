@@ -7,8 +7,9 @@
 # carries everything a Windows CI job expects the MACHINE to provide (the parts
 # that cannot come from a content-addressed store at job time):
 #
-#   * Visual Studio 2022 Build Tools (MSVC x64 + Windows SDK), WinFsp,
-#     LongPathsEnabled=1, the pinned actions runner      provision-ci-toolchain.ps1
+#   * Visual Studio 2022 Build Tools (MSVC x64 + Windows SDK), the SDK's
+#     Debugging Tools (cdb.exe), WinFsp, LongPathsEnabled=1,
+#     the pinned actions runner                          provision-ci-toolchain.ps1
 #   * the guest clock contract (RealTimeIsUniversal=1 + UTC) (same, -ClockMode)
 #   * antivirus real-time scanning off, offline            ../lib/apply-offline-service-payloads.sh
 #   * Windows Update + Windows Search off, offline          (same, payload ci-background-off)
@@ -205,8 +206,20 @@ run_gate() { # domain label name args
 run_gates() { # domain ip extra-assert-args label
   local dom="$1" extra="$3" label="$4" g
   GATE_IP="$2"
+  local av_off=0
+  if [[ "$DISABLE_DEFENDER" == 1 ]]; then
+    if [[ "$label" == clone ]]; then
+      av_off=1
+    elif ps_guest "$GATE_IP" "-Command \"if ((Get-Service WinDefend -ErrorAction SilentlyContinue).StartType -eq 'Disabled') { exit 0 } else { exit 1 }\"" >/dev/null 2>&1; then
+      # A retrofit onto a golden that already carries the offline AV payload:
+      # the work VM has no Defender to query either. The clone's
+      # -ExpectDefenderOff gate still proves the payload holds.
+      av_off=1
+      log "$label: Defender is already disabled in the source image; skipping the exclusions gate"
+    fi
+  fi
   for g in assert-git-provisioned.ps1 assert-pwsh-provisioned.ps1 assert-defender-exclusions-sane.ps1; do
-    if [[ "$g" == assert-defender-exclusions-sane.ps1 && "$DISABLE_DEFENDER" == 1 && "$label" == clone ]]; then
+    if [[ "$g" == assert-defender-exclusions-sane.ps1 && "$av_off" == 1 ]]; then
       continue  # with the AV services disabled there are no preferences to read
     fi
     run_gate "$dom" "$label" "$g" ""
@@ -242,6 +255,7 @@ check_clock() { # ip
 RUNNER_VER="$(pin ACTIONS_RUNNER_VERSION)"
 RUNNER_ZIP="actions-runner-win-x64-$RUNNER_VER.zip"
 WINFSP_MSI="winfsp-$(pin WINFSP_VERSION).msi"
+SDK_SETUP="winsdksetup-$(pin WINDOWS_SDK_SETUP_VERSION).exe"
 
 log "SRC  $SRC_GOLDEN (read-only)"
 log "OUT  $OUT_GOLDEN (side artifact)"
@@ -263,6 +277,7 @@ fetch() { # url file sha|-
 }
 fetch "https://github.com/actions/runner/releases/download/v$RUNNER_VER/$RUNNER_ZIP" "$RUNNER_ZIP" "$(pin ACTIONS_RUNNER_SHA256_WIN_X64)"
 fetch "$(pin WINFSP_MSI_URL)" "$WINFSP_MSI" "$(pin WINFSP_MSI_SHA256)"
+fetch "$(pin WINDOWS_SDK_SETUP_URL)" "$SDK_SETUP" "$(pin WINDOWS_SDK_SETUP_SHA256)"
 rm -f "$CACHE/vs_buildtools.exe"   # evergreen: always the current bootstrapper, signature-checked in the guest
 fetch "$(pin VS_BUILDTOOLS_URL)" vs_buildtools.exe -
 log "vs_buildtools.exe sha256 $(sha256sum "$CACHE/vs_buildtools.exe" | cut -d' ' -f1) (recorded, not pinned)"
@@ -321,7 +336,9 @@ log "step 3: booting $WORK_DOMAIN"
 boot_domain "$WORK_DOMAIN" "$WORK" "$WORK_NVRAM"
 IP="$(wait_ssh "$WORK_DOMAIN")" || fail "work guest SSH never came up"
 log "work guest at $IP ($(ssh_guest "$IP" hostname | tr -d '\r'))"
-stage_into_guest "$IP" "$CACHE/$RUNNER_ZIP" "$CACHE/$WINFSP_MSI" "$CACHE/vs_buildtools.exe"
+# The guest script expects the SDK bootstrapper under its canonical name.
+cp -f "$CACHE/$SDK_SETUP" "$CACHE/winsdksetup.exe"
+stage_into_guest "$IP" "$CACHE/$RUNNER_ZIP" "$CACHE/$WINFSP_MSI" "$CACHE/vs_buildtools.exe" "$CACHE/winsdksetup.exe"
 grow=""; [[ "$GROW_GB" -gt 0 ]] && grow="-GrowSystemVolume"
 log "provisioning (VS Build Tools is the long leg; budget ${PROVISION_TIMEOUT}s)"
 timeout "$PROVISION_TIMEOUT" sshpass -p "$GUEST_PASSWORD" ssh "${SSH_OPTS[@]}" "admin@$IP" \

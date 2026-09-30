@@ -95,6 +95,27 @@ foreach ($rel in "Include\$sdk\um\windows.h", "Include\$sdk\ucrt\stdio.h", "Lib\
     if (Test-Path -LiteralPath $p) { Ok "Windows SDK $rel" } else { Bad "Windows SDK missing $p" }
 }
 
+# -- Debugging Tools for Windows (cdb.exe) --------------------------------------
+# The exact location reprobuild's HCR drivers probe (find_cdb in
+# tests/windows/hx_w6_*.py): <ProgramFiles(x86)>\Windows Kits\10\Debuggers\x64.
+# Present is not enough: it must be the x64 image, Microsoft-signed, and run.
+$cdb = Join-Path $kits 'Debuggers\x64\cdb.exe'
+if (Test-Path -LiteralPath $cdb) {
+    $fs = [System.IO.File]::OpenRead($cdb)
+    try {
+        $br = New-Object System.IO.BinaryReader($fs)
+        $fs.Position = 0x3C; $pe = $br.ReadInt32()
+        $fs.Position = $pe + 4; $machine = $br.ReadUInt16()
+    } finally { $fs.Dispose() }
+    if ($machine -eq 0x8664) { Ok 'cdb.exe is an x64 image' } else { Bad ("cdb.exe machine type 0x{0:X4}, expected 0x8664 (x64)" -f $machine) }
+    $sig = Get-AuthenticodeSignature -LiteralPath $cdb
+    if ($sig.Status -eq 'Valid' -and $sig.SignerCertificate.Subject -match 'O=Microsoft Corporation') { Ok 'cdb.exe Microsoft signature valid' }
+    else { Bad "cdb.exe signature: $($sig.Status) $($sig.SignerCertificate.Subject)" }
+    $cv = ((& $cdb -version 2>&1) | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $cv -match 'cdb version\s+(\S+)') { Ok "cdb.exe runs: cdb version $($Matches[1]) (FileVersion $((Get-Item $cdb).VersionInfo.FileVersion))" }
+    else { Bad "cdb.exe -version failed (exit $LASTEXITCODE): $cv" }
+} else { Bad "Debugging Tools for Windows missing: no $cdb" }
+
 # -- WinFsp --------------------------------------------------------------------
 # The RUNTIME half only: the kernel driver, its user-mode DLL and the launcher.
 # The MSI's default feature set omits the developer files (inc\, lib\), and

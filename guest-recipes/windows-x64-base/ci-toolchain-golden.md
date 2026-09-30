@@ -34,6 +34,7 @@ OS settings.
 | Item | Layer | Why the image carries it |
 | ---- | ----- | ------------------------ |
 | VS 2022 Build Tools: `Microsoft.VisualStudio.Workload.VCTools`, `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`, `Microsoft.VisualStudio.Component.Windows11SDK.26100`, plus recommended | **base** | MSVC and the SDK cannot be redistributed, so no store can provide them. Any Windows Rust or C++ project needs them. The set is exactly what agent-harbor's "Install required Visual Studio components" step requests, installed with `--includeRecommended` as that step does, so the step's `vs_installer modify` finds nothing to add. |
+| Debugging Tools for Windows (`cdb.exe` at `Windows Kits\10\Debuggers\x64`), SDK `WINDOWS_SDK_SETUP_VERSION`, feature `OptionId.WindowsDesktopDebuggers` only | **base** | Not redistributable, and VS's `Windows11SDK` component never installs the debuggers. reprobuild's Windows HCR lane (`WINDOWS_DIY_HCR_TESTS=1`, `scripts/check_windows_hcr_environment.py`) requires the x64 `cdb.exe` at that exact path and fails setup without it. The standalone SDK bootstrapper is a versioned download, so unlike the VS bootstrapper it is digest-pinned. The gate requires an x64, Microsoft-signed `cdb.exe` that runs `-version`. |
 | `LongPathsEnabled=1` + Git `core.longpaths=true` (system) | **base** | Deep `node_modules` and Cargo target paths exceed `MAX_PATH`. |
 | actions runner at `C:\actions-runner`, version = infra `lib/actions-runner.json` | **base** | GARM's server-rendered Windows bootstrap reuses a staged runner when the directory exists. A stale copy is a runner GitHub rejects. |
 | Clock contract (`RealTimeIsUniversal=1`, zone UTC) | **base** | See [Clock](#clock). |
@@ -171,6 +172,24 @@ source, not from clones updating themselves. A golden for anything other than
 ephemeral CI should be built with `VMH_DISABLE_BACKGROUND_SERVICES=0`.
 
 ### Retrofit onto an existing golden
+
+**When the change is an in-guest install** (a new pin in
+`provision-ci-toolchain.ps1`, such as the Debugging Tools), run the whole
+recipe with the current golden as its source and no further growth.
+Provisioning is idempotent, so VS, WinFsp and the runner are verified rather
+than reinstalled and only the new item is installed. Every gate then runs on
+the work VM and on a fresh clone:
+
+```bash
+VMH_SRC_GOLDEN=/storage/iso/golden-win11-cloudbase.qcow2 VMH_GROW_DISK_GB=0 \
+  ./build-ci-toolchain-golden.sh
+```
+
+On such a source Defender is already disabled, so the work VM skips the
+Defender-exclusions gate (there is no Defender to query); the clone's
+`-ExpectDefenderOff` gate still covers it.
+
+**When the change is offline only** (a service payload):
 
 Both payloads are offline edits, so a golden that already carries the
 toolchain does not need the multi-hour provisioning pass. Copy it to the work
