@@ -10,6 +10,7 @@ on:
   push:
     branches: [main, dev]
   pull_request:
+    branches-ignore: [agents]
 
 permissions:
   contents: read
