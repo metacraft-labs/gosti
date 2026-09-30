@@ -197,7 +197,7 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--cpus <int>` / `--vcpu <int>` | 2 | vCPU count (`--vcpu` is the libvirt spelling). |
 | `--memory-mb <int>` | 4096 | Guest RAM in MiB. |
 | `--memory-gb <int>` | — | Alias for `--memory-mb`, in GiB (converted at parse time). |
-| `--disk-gb <int>` | 50 | Guest disk in GiB. |
+| `--disk-gb <int>` | 50 | Guest disk in GiB. Tart Linux clones are grown to it with `tart set --disk-size` (Tart GB) before boot and the guest root filesystem is verified to follow; an explicit value below the image's size is refused, the omitted default never shrinks. Tart macOS clones keep the image's size. |
 | `--source-image <ref>` | — | Backend-specific base image reference. |
 | `--acceleration <auto\|kvm\|tcg>` | `auto` | Libvirt media-boot execution mode. `tcg` uses QEMU software emulation. |
 

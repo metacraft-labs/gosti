@@ -33,7 +33,7 @@
 ##   by ``tart ip --wait 60 <eph>`` and an SSH readiness poll. Target wall-
 ##   clock ≤30s per revert per the Per-Gate Reset Performance Contract.
 
-import std/[os, osproc, options, streams, strtabs,
+import std/[json, os, osproc, options, streams, strtabs,
             strutils, tables, times]
 import ../types
 import ../auto
@@ -42,6 +42,18 @@ import ../auto
 # Backend type.
 
 type
+  TartDiskSizeTooSmallError* = object of VmHarnessError
+    ## The caller explicitly requested a disk smaller than the golden image's.
+    ## Tart can only grow a disk, and silently booting the larger image would
+    ## hide a sizing mistake, so the clone is refused.
+    requestedGB*: int
+    imageGB*: int
+
+  TartGuestDiskNotGrownError* = object of VmHarnessError
+    ## The clone's disk was grown but the guest's root filesystem still does
+    ## not use the space, even after an in-guest growpart + resize2fs. The job
+    ## would run out of space, so the boot fails here instead, by name.
+
   TartVmListing* = object
     ## One ``local`` row of ``tart list``: the VM name and the run state Tart
     ## reports for it.
@@ -91,6 +103,13 @@ type
     sharedDirs*: seq[TartSharedDir]
       ## Host directories attached through Tart virtiofs and mounted inside
       ## the guest after SSH becomes ready.
+    requestedDiskGB*: int
+      ## Disk size (Tart GB, 10^9 bytes) every per-job clone must have, from
+      ## ``BaselineSpec.diskGB``. Zero keeps the golden's size. Honoured for
+      ## Linux guests only; see ``planTartDiskResize``.
+    diskGBDefaulted*: bool
+      ## ``BaselineSpec.diskGBDefaulted``: whether ``requestedDiskGB`` came
+      ## from a default rather than from the caller.
 
 const
   CirrusLabsMacosGolden* = "ghcr.io/cirruslabs/macos-tahoe-base:latest"
@@ -425,6 +444,85 @@ proc pullTartImage*(b: TartBackend, imageRef: string) =
     raise newVmHarnessError($b.id, lpProvisioning,
       "tart pull " & imageRef & " failed: " & r.stdout & r.stderr)
 
+type
+  TartDiskPlan* = enum
+    ## What to do with a fresh clone's disk before it boots.
+    tdpKeep     ## leave the clone at the golden's size
+    tdpGrow     ## ``tart set <vm> --disk-size <requested>``
+    tdpRefuse   ## the caller asked for less than the golden has
+
+proc planTartDiskResize*(imageGB, requestedGB: int,
+                         defaulted: bool): TartDiskPlan =
+  ## Tart can only grow a disk. A request below the golden's size is a
+  ## mistake when the caller made it (refused) and harmless when it is a
+  ## default the golden already exceeds (kept).
+  if requestedGB <= 0 or requestedGB == imageGB:
+    tdpKeep
+  elif requestedGB > imageGB:
+    tdpGrow
+  elif defaulted:
+    tdpKeep
+  else:
+    tdpRefuse
+
+proc tartDiskSizeGB*(b: TartBackend, name: string): int =
+  ## The VM's disk capacity in Tart GB (10^9 bytes), from the ``Disk`` field
+  ## of ``tart get <vm> --format json``. Raises when Tart cannot report it:
+  ## sizing a disk against an unknown current size is not safe.
+  let r = runProcessCapture(@[b.tartCmd, "get", name, "--format", "json"],
+                            timeoutSec = 30, mergeStderr = false)
+  if r.exitCode != 0:
+    raise newVmHarnessError($b.id, lpRevert,
+      "tart get " & name & " failed: " & r.stdout & r.stderr)
+  try:
+    let disk = parseJson(r.stdout){"Disk"}
+    if disk != nil and disk.kind == JInt:
+      return disk.getInt()
+    if disk != nil and disk.kind == JFloat:
+      return int(disk.getFloat())
+  except JsonParsingError:
+    discard
+  raise newVmHarnessError($b.id, lpRevert,
+    "tart get " & name & " --format json did not report a disk size: " &
+    r.stdout)
+
+proc ensureTartDiskSize*(b: TartBackend, name: string): bool =
+  ## Bring a STOPPED clone's disk to ``requestedDiskGB`` before it boots.
+  ## Returns whether the disk was grown. Raises ``TartDiskSizeTooSmallError``
+  ## for an explicit request below the golden's size; the caller owns the
+  ## clone and must delete it.
+  ##
+  ## Linux guests only. The cirruslabs Linux goldens keep cloud-init's
+  ## growpart/resizefs modules enabled on every boot (their
+  ## ``99_cirruslabs.cfg`` disables all datasources but keeps cloud-init for
+  ## exactly this), so the root filesystem follows the grown disk on the next
+  ## boot; ``ensureGuestRootFsGrown`` verifies that and repairs it otherwise.
+  ## A macOS guest cannot use grown space without a recovery-mode APFS
+  ## repartition, so its clones are left at the golden's size.
+  if b.id != biTartLinuxArm or b.requestedDiskGB <= 0:
+    return false
+  let imageGB = b.tartDiskSizeGB(name)
+  case planTartDiskResize(imageGB, b.requestedDiskGB, b.diskGBDefaulted)
+  of tdpKeep:
+    return false
+  of tdpRefuse:
+    raise (ref TartDiskSizeTooSmallError)(
+      msg: "TartBackend: requested disk size " & $b.requestedDiskGB &
+           " GB is smaller than the image's " & $imageGB & " GB (" &
+           b.goldenImage & "); Tart disks can only grow. Request at least " &
+           $imageGB & " GB.",
+      backend: $b.id, phase: lpRevert,
+      requestedGB: b.requestedDiskGB, imageGB: imageGB)
+  of tdpGrow:
+    let r = runProcessCapture(
+      @[b.tartCmd, "set", name, "--disk-size", $b.requestedDiskGB],
+      timeoutSec = 120)
+    if r.exitCode != 0:
+      raise newVmHarnessError($b.id, lpRevert,
+        "tart set " & name & " --disk-size " & $b.requestedDiskGB &
+        " failed: " & r.stdout & r.stderr)
+    return true
+
 proc runTartVmInBackground*(b: TartBackend, name: string): int =
   ## Spawn ``tart run --no-graphics <name>`` as a detached background
   ## process and return the child's PID. The caller (revertToBaseline)
@@ -546,6 +644,8 @@ proc waitForSshReady*(b: TartBackend, host: string,
 proc scpCopy*(b: TartBackend, host: string, src: string, dest: string,
               toGuest: bool, recursive: bool = true,
               timeoutSec: int = 600)
+
+proc ensureGuestRootFsGrown*(b: TartBackend, vm: VmHandle)
 
 proc mountMacosSharedDirs*(b: TartBackend, vm: VmHandle) =
   if b.sharedDirs.len == 0:
@@ -675,6 +775,8 @@ method provisionBaseline*(b: TartBackend, spec: BaselineSpec) =
     b.goldenImage = spec.sourceImage
   if "ephemeralPrefix" in spec.backendOptions:
     b.ephemeralPrefix = spec.backendOptions["ephemeralPrefix"]
+  b.requestedDiskGB = spec.diskGB
+  b.diskGBDefaulted = spec.diskGBDefaulted
   if b.goldenImage.len == 0:
     raise newVmHarnessError($b.id, lpProvisioning,
       "TartBackend: no golden image configured. Pass --source-image " &
@@ -704,6 +806,12 @@ method revertToBaseline*(b: TartBackend, baselineName: string): VmHandle =
     b.stopTartVm(ephemeral)
     b.deleteTartVm(ephemeral)
   b.cloneTartVm(b.goldenImage, ephemeral)
+  var diskGrown = false
+  try:
+    diskGrown = b.ensureTartDiskSize(ephemeral)
+  except CatchableError:
+    b.deleteTartVm(ephemeral)
+    raise
   let pid = b.runTartVmInBackground(ephemeral)
   b.ephemeralPids[ephemeral] = pid
   var ip: string
@@ -735,6 +843,15 @@ method revertToBaseline*(b: TartBackend, baselineName: string): VmHandle =
     sshUser: b.sshUser,
     sshAuth: SshAuth(kind: saPassword, password: b.sshPassword),
     extra: {"tartRunPid": $pid, "goldenImage": b.goldenImage}.toTable)
+  if diskGrown:
+    handle.extra["diskGB"] = $b.requestedDiskGB
+    try:
+      b.ensureGuestRootFsGrown(handle)
+    except CatchableError:
+      b.stopTartVm(ephemeral)
+      b.deleteTartVm(ephemeral)
+      b.terminateTartRun(ephemeral)
+      raise
   if b.id == biTartMacos:
     try:
       b.mountMacosSharedDirs(handle)
@@ -824,6 +941,66 @@ method execInGuest*(b: TartBackend, vm: VmHandle,
   let code = p.waitForExit(timeout = -1)
   ExecResult(exitCode: code, stdout: stdout, stderr: "",
              elapsedMs: int((epochTime() - start) * 1000))
+
+const
+  GuestRootFsBytesScript = "df -P -k / | awk 'NR==2 {printf \"%.0f\\n\", $2 * 1024}'"
+    ## Size of the guest's root filesystem in bytes.
+  GuestGrowRootFsScript = "set -eu\n" &
+    "src=$(findmnt -n -o SOURCE /)\n" &
+    "part=$(basename \"$src\")\n" &
+    "disk=$(lsblk -n -o PKNAME \"$src\" | head -n1)\n" &
+    "num=$(cat /sys/class/block/\"$part\"/partition)\n" &
+    "sudo -n growpart \"/dev/$disk\" \"$num\" || true\n" &
+    "sudo -n resize2fs \"$src\"\n"
+    ## In-guest fallback for a golden whose cloud-init did not grow the root
+    ## partition: growpart (a no-op exit when already grown) then resize2fs.
+
+proc rootFsGrownEnough*(rootFsBytes: int64, requestedGB: int): bool =
+  ## Whether a root filesystem plausibly spans a disk of ``requestedGB``.
+  ## The partition table, the EFI and /boot partitions and filesystem
+  ## metadata take a share of the disk, so the bar is the requested size less
+  ## 10% or 2 GB, whichever is larger. An ungrown 20 GB golden misses it for
+  ## any request that is worth growing to.
+  let requested = int64(requestedGB) * 1_000_000_000'i64
+  rootFsBytes >= requested - max(requested div 10, 2_000_000_000'i64)
+
+proc guestRootFsBytes(b: TartBackend, vm: VmHandle): int64 =
+  let r = b.execInGuest(vm, initTable[string, string](),
+                        @["/bin/sh", "-c", GuestRootFsBytesScript],
+                        timeoutSec = 60)
+  if r.exitCode != 0:
+    return -1
+  for line in r.stdout.splitLines():
+    try:
+      return parseBiggestInt(line.strip()).int64
+    except ValueError:
+      discard
+  -1
+
+proc ensureGuestRootFsGrown*(b: TartBackend, vm: VmHandle) =
+  ## After a disk grow, confirm the guest's root filesystem uses the space.
+  ## cloud-init's growpart normally has done it before sshd starts; when it
+  ## has not, grow it in the guest, and fail the boot by name if even that
+  ## leaves it short — a job on an ungrown root runs out of space later with
+  ## a far less obvious error.
+  let requestedGB = parseInt(vm.extra.getOrDefault("diskGB", "0"))
+  if requestedGB <= 0:
+    return
+  var size = b.guestRootFsBytes(vm)
+  if rootFsGrownEnough(size, requestedGB):
+    return
+  let grow = b.execInGuest(vm, initTable[string, string](),
+                           @["/bin/sh", "-c", GuestGrowRootFsScript],
+                           timeoutSec = 180)
+  size = b.guestRootFsBytes(vm)
+  if rootFsGrownEnough(size, requestedGB):
+    return
+  raise (ref TartGuestDiskNotGrownError)(
+    msg: "TartBackend: disk of " & vm.name & " was grown to " &
+         $requestedGB & " GB but the guest root filesystem is " &
+         $size & " bytes after growpart/resize2fs (exit " &
+         $grow.exitCode & "): " & grow.stdout & grow.stderr,
+    backend: $b.id, phase: lpStartup)
 
 proc scpCopy*(b: TartBackend, host: string, src: string, dest: string,
               toGuest: bool, recursive: bool = true,
