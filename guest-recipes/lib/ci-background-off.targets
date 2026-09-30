@@ -16,3 +16,11 @@ WaaSMedicSvc
 DoSvc
 # Windows Search (SearchIndexer.exe).
 WSearch
+# Microsoft Store Install Service. Its scheduled task
+# \Microsoft\Windows\InstallService\ScanForUpdates is a COM handler that runs
+# in taskhostw, so disabling the Windows Update services does not stop it, and
+# it switches wuauserv back to demand start and starts it (measured
+# 2026-09-30 on a clone: ~6 min after boot, then a scan every ~15 s and
+# TiWorker). With InstallService disabled the task still runs but leaves
+# wuauserv Disabled. The gate triggers it (ci-background-off.trigger-tasks).
+InstallService
