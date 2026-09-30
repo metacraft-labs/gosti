@@ -90,6 +90,9 @@ const posixTestSpecs: seq[VmHarnessTestSpec] = @[
     binary: "t_cli_ephemeral_vmrun"),
   VmHarnessTestSpec(source: "tests/unit/t_tart_backend.nim",
     binary: "t_tart_backend"),
+  # POSIX-only: its fake `tart`/`ssh` are shell scripts.
+  VmHarnessTestSpec(source: "tests/unit/t_tart_disk_resize.nim",
+    binary: "t_tart_disk_resize"),
   # Runner-Fleet-M3-ARM-Wave MA0 gate: t_vmharness_image_is_honoured (c).
   VmHarnessTestSpec(source: "tests/unit/t_vmharness_image_is_honoured.nim",
     binary: "t_vmharness_image_is_honoured"),

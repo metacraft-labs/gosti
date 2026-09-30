@@ -70,6 +70,13 @@ type
     cpus*: int                   ## defaults to 2 when zero
     memoryMB*: int               ## defaults to 4096 when zero
     diskGB*: int                 ## defaults to 50 when zero
+    diskGBDefaulted*: bool       ## true when ``diskGB`` was filled in by a
+                                 ## default rather than requested by the
+                                 ## caller (the CLI sets it when ``--disk-gb``
+                                 ## is omitted). A backend that clones an
+                                 ## existing image may then keep an image that
+                                 ## is already larger, where an explicitly
+                                 ## requested smaller size is refused.
     guestOs*: GuestOs
     guestArch*: GuestArch
     recipeDir*: string           ## resolved path to ``guest-recipes/<id>/`` when

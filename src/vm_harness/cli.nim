@@ -437,7 +437,9 @@ Common flags:
   --vcpu <int>                    Alias for --cpus (canonical libvirt M4 shape).
   --memory-mb <int>
   --memory-gb <int>               Alias for --memory-mb, expressed in GiB.
-  --disk-gb <int>
+  --disk-gb <int>                 Guest disk size (default 50). Tart Linux
+                                  clones grow to it before boot; an explicit
+                                  size below the image's is refused.
   --network-bridge <name>         libvirt-only: host bridge for the guest NIC
                                   (default: backend's configured value, e.g.
                                   virbr0). Ignored by other backends.
@@ -1095,12 +1097,13 @@ proc probeBackendIds*(opts: CliOpts): seq[BackendId] =
   else:
     @[parseBackendId(opts.backend)]
 
-proc applyDefaults(spec: var BaselineSpec, opts: CliOpts) =
+proc applyDefaults*(spec: var BaselineSpec, opts: CliOpts) =
   spec.name = opts.baseline
   spec.sourceImage = opts.sourceImage
   spec.cpus = if opts.cpus > 0: opts.cpus else: 2
   spec.memoryMB = if opts.memoryMB > 0: opts.memoryMB else: 4096
   spec.diskGB = if opts.diskGB > 0: opts.diskGB else: 50
+  spec.diskGBDefaulted = opts.diskGB <= 0
   if opts.guestSet:
     spec.guestOs = opts.guest
   # M4 libvirt-slice canonical-command extensions. Backends that don't
