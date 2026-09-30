@@ -81,17 +81,26 @@ qemu-nbd --connect="$NBD" --format=qcow2 "$IMG"
 for _ in $(seq 1 30); do ls "${NBD}p"* >/dev/null 2>&1 && break; sleep 1; done
 
 # Find the Windows volume: the NTFS partition that carries the SYSTEM hive.
-for part in "${NBD}p"*; do
-  if ntfs-3g -o ro "$part" "$MNT" 2>/dev/null; then
-    if [[ -f "$MNT/Windows/System32/config/SYSTEM" ]]; then
+# The partition nodes appear one by one, and the wait above ends at the first
+# one. Under host load the NTFS partition (the last) was not there yet when
+# the search ran (2026-09-30), so search again until it turns up.
+for attempt in $(seq 1 20); do
+  command -v udevadm >/dev/null && udevadm settle --timeout=10 >/dev/null 2>&1 || true
+  for part in "${NBD}p"*; do
+    if ntfs-3g -o ro "$part" "$MNT" 2>/dev/null; then
+      if [[ -f "$MNT/Windows/System32/config/SYSTEM" ]]; then
+        umount "$MNT"
+        ntfs-3g "$part" "$MNT" || fail "rw mount of $part failed (hibernated / unclean volume?)"
+        MOUNTED=1
+        log "Windows volume: $part"
+        break
+      fi
       umount "$MNT"
-      ntfs-3g "$part" "$MNT" || fail "rw mount of $part failed (hibernated / unclean volume?)"
-      MOUNTED=1
-      log "Windows volume: $part"
-      break
     fi
-    umount "$MNT"
-  fi
+  done
+  [[ "$MOUNTED" == 1 ]] && break
+  log "no Windows volume among $(echo "${NBD}p"*) yet (attempt $attempt); waiting"
+  sleep 3
 done
 [[ "$MOUNTED" == 1 ]] || fail "no NTFS partition with Windows/System32/config/SYSTEM"
 
