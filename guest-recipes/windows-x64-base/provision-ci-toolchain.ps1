@@ -21,9 +21,12 @@
     5. The guest clock contract (-ClockMode, see below).
     6. Optionally grows C: into unallocated space the host added.
 
-  Antivirus is NOT handled here: a running guest cannot turn its own real-time
-  scanning off (see ../lib/harden-defender.README.md). The host driver does it
-  offline, after shutdown, with ../lib/harden-defender-offline.sh.
+  Antivirus, Windows Update and Windows Search are NOT handled here. A running
+  guest cannot turn its own real-time scanning off
+  (../lib/harden-defender.README.md), and UsoSvc / WaaSMedicSvc refuse an
+  online change. The host driver disables all of them offline, after shutdown,
+  with ../lib/apply-offline-service-payloads.sh (payloads defender-off and
+  ci-background-off).
 
 .PARAMETER StageDir
   Directory holding ci-toolchain.pins and the host-fetched installers.

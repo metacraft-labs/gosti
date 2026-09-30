@@ -1,0 +1,6 @@
+REGEDIT4
+
+[HKEY_LOCAL_MACHINE\HARDEN_SOFT\Policies\Microsoft\Windows\WindowsUpdate]
+
+[HKEY_LOCAL_MACHINE\HARDEN_SOFT\Policies\Microsoft\Windows\WindowsUpdate\AU]
+"NoAutoUpdate"=dword:00000001
