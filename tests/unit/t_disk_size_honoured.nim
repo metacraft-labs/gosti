@@ -3,8 +3,9 @@
 ## Every cloning backend honours the requested per-job disk size.
 ##
 ## A per-job clone used to inherit the golden's disk size whatever
-## ``--disk-gb`` said (libvirt's CoW overlay and qcow2 import, UTM's clone,
-## Hyper-V's differencing clone and qcow2 conversion; the Tart and
+## ``--disk-gb`` said (libvirt's CoW overlay, qcow2 import and media-boot
+## overlay, qemu-boot's overlay, UTM's clone, Hyper-V's differencing clone
+## and qcow2 conversion; the Tart and
 ## Windows-ARM QEMU backends have their own gates). The rules asserted here,
 ## per backend:
 ##
@@ -12,7 +13,9 @@
 ## * a clone already at least that large is not touched — disks never shrink;
 ## * an EXPLICIT request below the golden's size is refused with
 ##   ``DiskSizeTooSmallError`` before anything is created;
-## * a DEFAULTED request below the golden's size keeps the golden's size;
+## * a DEFAULTED request below the golden's size keeps the golden's size,
+##   and for boot-from-media IMAGES a defaulted size (sized for an ISO's blank
+##   disk) never resizes the image at all;
 ## * once the guest is reachable its system volume is grown (growpart +
 ##   resize2fs on Linux, ``Resize-Partition`` on Windows) and VERIFIED, and a
 ##   volume that still does not span the disk fails by name
@@ -22,7 +25,8 @@
 ## a real qcow2 and every size asserted is what ``qemu-img info`` reads back.
 ## The hypervisor front-ends are shell-script fakes passed through each
 ## backend's command fields — ``virsh``/``virt-install`` (libvirt needs a
-## running libvirtd and KVM), ``utmctl`` (UTM exists only on macOS; the fake
+## running libvirtd and KVM), a QEMU that only reads back the disk it was
+## given (a real boot is the host tier's job), ``utmctl`` (UTM exists only on macOS; the fake
 ## clones a bundle the way UTM lays one out, ``<name>.utm/Data/*.qcow2``) —
 ## and so are ``ssh``/``sshpass``, because there is no guest behind them: they
 ## answer the backend's real ``hostname``/``echo ready`` probes and the real
@@ -233,6 +237,98 @@ suite "libvirt":
     b.startAndAwaitReady(vm, timeoutSec = 10)
     check "EncodedCommand" notin readFile(tmp / "ssh.log")
 
+suite "libvirt media boot":
+  test "an explicit size grows the qcow2 overlay and marks the guest":
+    let tmp = createTempDir("vmh-disk-lvm-", "")
+    defer: removeDir(tmp)
+    let b = libvirtFixture(tmp)
+    b.virtInstallCmd = tmp / "virt-install"
+    writeExecutable(b.virtInstallCmd, "#!/bin/sh\nexit 0\n")
+    makeQcow2(tmp / "media.qcow2", 1)
+    let vm = b.bootFromMedia(BootMediaSpec(kind: bmkQcow2,
+      mediaPath: tmp / "media.qcow2", diskGB: 2))
+    check virtualSize(b.domainDiskPath(vm.name)) == 2 * GiB
+    check b.guestDiskBytes[vm.name] == 2 * GiB
+
+  test "the boot default never resizes an image":
+    let tmp = createTempDir("vmh-disk-lvm-", "")
+    defer: removeDir(tmp)
+    let b = libvirtFixture(tmp)
+    b.virtInstallCmd = tmp / "virt-install"
+    writeExecutable(b.virtInstallCmd, "#!/bin/sh\nexit 0\n")
+    makeQcow2(tmp / "media.qcow2", 1)
+    let vm = b.bootFromMedia(BootMediaSpec(kind: bmkQcow2,
+      mediaPath: tmp / "media.qcow2", diskGB: 8, diskGBDefaulted: true))
+    check virtualSize(b.domainDiskPath(vm.name)) == 1 * GiB
+    check vm.name notin b.guestDiskBytes
+
+  test "an explicit size below the image's is refused before any disk exists":
+    let tmp = createTempDir("vmh-disk-lvm-", "")
+    defer: removeDir(tmp)
+    let b = libvirtFixture(tmp)
+    b.virtInstallCmd = tmp / "virt-install"
+    writeExecutable(b.virtInstallCmd, "#!/bin/sh\ntouch '" & tmp &
+                    "/virt-install-ran'\nexit 0\n")
+    makeQcow2(tmp / "media.qcow2", 3)
+    expect DiskSizeTooSmallError:
+      discard b.bootFromMedia(BootMediaSpec(name: BootDomainNamePrefix & "r",
+        kind: bmkQcow2, mediaPath: tmp / "media.qcow2", diskGB: 2))
+    check not fileExists(b.domainDiskPath(BootDomainNamePrefix & "r"))
+    check not fileExists(tmp / "virt-install-ran")
+
+# ---------------------------------------------------------------------------
+# qemu-boot (no in-guest channel: host-side sizing only)
+
+proc qemuBootFixture(tmp: string): QemuBootBackend =
+  ## A fake QEMU that records the virtual size of the disk it was handed
+  ## (read with the real qemu-img), then exits: the overlay lives in the run
+  ## directory, which a failed boot removes.
+  let qemu = tmp / "qemu"
+  writeExecutable(qemu, "#!/bin/sh\n" &
+    "for a in \"$@\"; do case \"$a\" in file=*overlay.qcow2*)\n" &
+    "  f=${a#file=}; f=${f%%,*}\n" &
+    "  qemu-img info -U --output=json \"$f\" > '" & tmp & "/disk.json' ;;\n" &
+    "esac; done\nexit 1\n")
+  newQemuBootBackend(qemuCmd = qemu, stateDir = tmp / "state")
+
+proc recordedSize(tmp: string): int64 =
+  parseQemuImgVirtualSize(readFile(tmp / "disk.json"))
+
+suite "qemu-boot media boot":
+  test "an explicit size grows the qcow2 overlay":
+    let tmp = createTempDir("vmh-disk-qb-", "")
+    defer: removeDir(tmp)
+    let b = qemuBootFixture(tmp)
+    makeQcow2(tmp / "media.qcow2", 1)
+    expect VmHarnessError:
+      discard b.bootFromMedia(BootMediaSpec(kind: bmkQcow2, generation: 1,
+        acceleration: baTcg, mediaPath: tmp / "media.qcow2", diskGB: 2))
+    check recordedSize(tmp) == 2 * GiB
+
+  test "the boot default never resizes an image":
+    let tmp = createTempDir("vmh-disk-qb-", "")
+    defer: removeDir(tmp)
+    let b = qemuBootFixture(tmp)
+    makeQcow2(tmp / "media.qcow2", 1)
+    expect VmHarnessError:
+      discard b.bootFromMedia(BootMediaSpec(kind: bmkQcow2, generation: 1,
+        acceleration: baTcg, mediaPath: tmp / "media.qcow2", diskGB: 8,
+        diskGBDefaulted: true))
+    check recordedSize(tmp) == 1 * GiB
+
+  test "an explicit size below the image's is refused before anything runs":
+    let tmp = createTempDir("vmh-disk-qb-", "")
+    defer: removeDir(tmp)
+    let b = qemuBootFixture(tmp)
+    makeQcow2(tmp / "media.qcow2", 3)
+    let name = QemuBootNamePrefix & "refused"
+    expect DiskSizeTooSmallError:
+      discard b.bootFromMedia(BootMediaSpec(name: name, kind: bmkQcow2,
+        generation: 1, acceleration: baTcg, mediaPath: tmp / "media.qcow2",
+        diskGB: 2))
+    check not fileExists(tmp / "disk.json")
+    check not dirExists(b.runDirFor(name))
+
 # ---------------------------------------------------------------------------
 # UTM
 
@@ -363,10 +459,12 @@ suite "Hyper-V":
     check "Resize-VHD -Path $scratchVhdx" in qcow
     check "-not $false" in qcow
     check qcow.find(" convert -f qcow2") < qcow.find("Resize-VHD")
+    # The boot default (8, sized for an ISO's blank disk) never resizes an
+    # image.
     let defaulted = b.buildNewBootVmCommand(BootMediaSpec(kind: bmkQcow2,
       mediaPath: "C:\\m.qcow2", diskGB: 8, diskGBDefaulted: true),
       BootVmNamePrefix & "x", "p", "C:\\s.vhdx")
-    check "-not $true" in defaulted
+    check "Resize-VHD" notin defaulted
     # The resize lives INSIDE the qcow2 branch: bmkVhdx attaches the caller's
     # own disk, which is never resized.
     let branch = qcow.find("elseif ($kind -eq 'qcow2')")

@@ -2621,16 +2621,27 @@ method bootFromMedia*(b: LibvirtBackend, spec: BootMediaSpec): VmHandle =
     let ovmf = resolveTransientOvmf(spec)
     var attachedMediaPath = spec.mediaPath
     if spec.kind == bmkQcow2:
+      # Decide the size before touching the pool: a refused request
+      # (``DiskSizeTooSmallError``) must not delete or create a disk.
+      let overlayBytes = planQcow2Clone(b.qemuImgCmd, spec.mediaPath,
+        mediaOverlayRequestBytes(spec.diskGB, spec.diskGBDefaulted), false,
+        $b.id, lpStartup)
       createDir(b.imagePoolDir)
       attachedMediaPath = b.domainDiskPath(domainName)
       if fileExists(attachedMediaPath):
         if durable:
           raise newException(VmHarnessError, "durable disk already exists")
         removeFile(attachedMediaPath)
-      let overlay = runProcessCapture(@[
+      var overlayArgs = @[
         b.qemuImgCmd, "create", "-f", "qcow2",
         "-b", absolutePath(spec.mediaPath), "-F", "qcow2",
-        attachedMediaPath], timeoutSec = 120)
+        attachedMediaPath]
+      if overlayBytes > 0:
+        overlayArgs.add($overlayBytes)
+        # ``startAndAwaitReady`` (boot with an in-guest command) then grows
+        # the guest volume and verifies it.
+        b.guestDiskBytes[domainName] = overlayBytes
+      let overlay = runProcessCapture(overlayArgs, timeoutSec = 120)
       if overlay.exitCode != 0:
         raise newVmHarnessError($b.id, lpStartup,
           "LibvirtBackend.bootFromMedia: qemu-img overlay failed (exit " &

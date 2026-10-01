@@ -125,6 +125,14 @@ proc planQcow2Clone*(qemuImgCmd, golden: string, requestedBytes: int64,
     raise newDiskSizeTooSmallError(backend, phase, requestedBytes,
                                    imageBytes, golden)
 
+proc mediaOverlayRequestBytes*(diskGB: int, defaulted: bool): int64 =
+  ## The size a boot-from-media overlay of an existing image is grown to.
+  ## ``BootMediaSpec.diskGB``'s default (8) exists to size a blank install
+  ## disk for an ISO; applied to an image it would grow every small test image
+  ## and then demand that its guest fill the space. So for image media only an
+  ## EXPLICIT size counts.
+  if defaulted or diskGB <= 0: 0'i64 else: gibToBytes(diskGB)
+
 # ---------------------------------------------------------------------------
 # In-guest growth
 

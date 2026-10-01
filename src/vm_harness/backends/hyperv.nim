@@ -745,8 +745,8 @@ proc buildNewBootVmCommand*(b: HyperVBackend, spec: BootMediaSpec,
   let diskGB = if spec.diskGB > 0: spec.diskGB else: 8
   # Only the backend-owned converted copy is resized; a caller's VHDX
   # (bmkVhdx) is their disk and is never touched.
-  let qcow2Sizing = psDiskSizingBlock("scratchVhdx", gibToBytes(diskGB),
-                                      spec.diskGB <= 0 or spec.diskGBDefaulted)
+  let qcow2Sizing = psDiskSizingBlock("scratchVhdx",
+    mediaOverlayRequestBytes(spec.diskGB, spec.diskGBDefaulted), false)
   let mediaPath = spec.mediaPath
   let seedIsoPath = spec.secondaryIsoPath
   let targetDiskPath = spec.targetDiskPath

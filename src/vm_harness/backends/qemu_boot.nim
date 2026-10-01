@@ -84,6 +84,7 @@ import ../types
 import ../auto
 import ../firmware
 import ../serial
+import ../disk_growth
 
 # ---------------------------------------------------------------------------
 # Backend type.
@@ -572,17 +573,20 @@ proc startSwtpmInBackground*(b: QemuBootBackend, runDir, socketPath: string): in
     "QemuBootBackend: swtpm did not create its control socket " &
     socketPath & " within " & $DefaultSwtpmStartTimeoutSec & "s")
 
-proc prepareOverlay(b: QemuBootBackend, runDir, source, sourceFormat: string):
-    tuple[path, format: string] =
+proc prepareOverlay(b: QemuBootBackend, runDir, source, sourceFormat: string,
+                    sizeBytes: int64 = 0): tuple[path, format: string] =
   ## Never boot the caller's image directly: a guest that writes to its
   ## root filesystem would mutate the artifact under test and make the
   ## next run non-reproducible. The overlay lives in the run directory,
   ## so teardown removing that directory is what proves no disk leaked.
+  ## ``sizeBytes`` > 0 gives the overlay a larger virtual size than the
+  ## image (never smaller: see ``planQcow2Clone``).
   let overlay = runDir / "overlay.qcow2"
-  let r = runProcessCapture(@[
-    b.qemuImgCmd, "create", "-f", "qcow2",
-    "-b", absolutePath(source), "-F", sourceFormat, overlay],
-    timeoutSec = 120)
+  var args = @[b.qemuImgCmd, "create", "-f", "qcow2",
+    "-b", absolutePath(source), "-F", sourceFormat, overlay]
+  if sizeBytes > 0:
+    args.add($sizeBytes)
+  let r = runProcessCapture(args, timeoutSec = 120)
   if r.exitCode != 0:
     raise newVmHarnessError($b.id, lpStartup,
       "QemuBootBackend: qemu-img overlay creation failed (exit " &
@@ -614,6 +618,16 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
     if vmName != extractFilename(vmName):
       raise newException(ValueError, "BootMediaSpec.name must be a single path component")
 
+    # The disk-size decision precedes every side effect, so a refused request
+    # (``DiskSizeTooSmallError``) leaves no run directory or process behind.
+    # Only the backend's own overlay is sized; an ISO's blank target disk is
+    # created at ``diskGB`` below.
+    let overlayBytes =
+      if spec.kind in {bmkQcow2, bmkVhdx}:
+        planQcow2Clone(b.qemuImgCmd, spec.mediaPath,
+                       mediaOverlayRequestBytes(spec.diskGB, spec.diskGBDefaulted),
+                       false, $b.id, lpStartup)
+      else: 0'i64
     let runDir = b.runDirFor(vmName)
     let stateParent = parentDir(b.stateDir)
     if stateParent.len > 0:
@@ -716,7 +730,8 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
           launch.diskFormat = "qcow2"
       of bmkQcow2, bmkVhdx:
         let sourceFormat = spec.extra.getOrDefault("diskFormat", "qcow2")
-        let overlay = b.prepareOverlay(runDir, spec.mediaPath, sourceFormat)
+        let overlay = b.prepareOverlay(runDir, spec.mediaPath, sourceFormat,
+                                       overlayBytes)
         launch.diskPath = overlay.path
         launch.diskFormat = overlay.format
       of bmkKernel:
@@ -796,6 +811,10 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
         extra["targetDiskPath"] = launch.diskPath
         extra["preserveBootDisk"] = "true"
       extra["accel"] = $launch.accel
+      if overlayBytes > 0:
+        # No in-guest channel on this backend: the guest grows its own volume
+        # (cloud-init growpart) or the caller does.
+        extra["diskBytes"] = $overlayBytes
       handle = VmHandle(
         backend: b,
         name: vmName,
