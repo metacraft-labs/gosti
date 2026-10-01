@@ -232,6 +232,105 @@ proc runIncus*(b: IncusBackend, sub: openArray[string],
   runProcessCapture(b.incusArgs(sub), timeoutSec = timeoutSec,
                     env = env, stdinData = stdinData)
 
+# ---- create-path timeouts and concurrency -----------------------------------
+#
+# The per-job create path (`init`/`launch`, the pre-start `config set`s and
+# `start`) used fixed timeouts of 120 / 30 / 60 s. On a loaded host incusd
+# serialises its operations and one CLI round-trip alone can take 15 s+, so a
+# create that WOULD have succeeded was killed (exit -1), torn down and retried
+# by the caller (GARM), which piled more operations onto the same incusd
+# (observed on high-mem-server 2026-10-01 at load ~220: every Terraform-lane
+# create failed this way). The timeouts are now operator-tunable with
+# load-tolerant defaults, and creates of one base image can be capped host-wide.
+#
+#   VMH_INCUS_INIT_TIMEOUT_SEC    `incus init|launch`        (default 600)
+#   VMH_INCUS_CONFIG_TIMEOUT_SEC  each pre-start `config set` (default 120)
+#   VMH_INCUS_START_TIMEOUT_SEC   `incus start`               (default 300)
+#   VMH_INCUS_CREATE_CONCURRENCY  max concurrent creates per base image on this
+#                                 host (default 0 = unlimited); excess creates
+#                                 wait for a slot rather than adding incusd load.
+#   VMH_INCUS_CREATE_LOCK_DIR     where the slot lock files live (default
+#                                 $RUNTIME_DIRECTORY, else the temp dir). Every
+#                                 worker sharing a limit must see the same dir;
+#                                 serve's workers inherit its environment.
+const
+  DefaultIncusInitTimeoutSec* = 600
+  DefaultIncusConfigTimeoutSec* = 120
+  DefaultIncusStartTimeoutSec* = 300
+
+proc envSeconds(name: string, default: int): int =
+  ## A positive integer from the environment, else ``default``.
+  let v = getEnv(name).strip()
+  if v.len == 0: return default
+  try:
+    let n = parseInt(v)
+    result = (if n > 0: n else: default)
+  except ValueError:
+    result = default
+
+proc incusInitTimeoutSec*(): int =
+  envSeconds("VMH_INCUS_INIT_TIMEOUT_SEC", DefaultIncusInitTimeoutSec)
+proc incusConfigTimeoutSec*(): int =
+  envSeconds("VMH_INCUS_CONFIG_TIMEOUT_SEC", DefaultIncusConfigTimeoutSec)
+proc incusStartTimeoutSec*(): int =
+  envSeconds("VMH_INCUS_START_TIMEOUT_SEC", DefaultIncusStartTimeoutSec)
+proc incusCreateConcurrency*(): int =
+  envSeconds("VMH_INCUS_CREATE_CONCURRENCY", 0)
+proc incusCreateLockDir*(): string =
+  ## Writable by the serve user: /run/lock is root-only on NixOS, and the serve
+  ## daemon runs unprivileged.
+  result = getEnv("VMH_INCUS_CREATE_LOCK_DIR").strip()
+  if result.len == 0: result = getEnv("RUNTIME_DIRECTORY").strip()
+  if result.len == 0: result = getTempDir()
+
+when defined(posix):
+  import std/posix
+  proc c_flock(fd: cint, op: cint): cint {.importc: "flock",
+                                            header: "<sys/file.h>".}
+  const LockEx = cint(2)
+  const LockNb = cint(4)
+
+  proc createSlotPrefix*(base: string): string =
+    ## Lock-file prefix for one base image: per base image is per GARM
+    ## provider in practice (each provider maps its own image alias).
+    var key = ""
+    for c in base:
+      key.add(if c.isAlphaNumeric or c in {'-', '_', '.'}: c else: '_')
+    incusCreateLockDir() / ("vm-harness-incus-create-" & key)
+
+  proc acquireCreateSlot*(base: string, slots: int,
+                          waitSec: int): cint =
+    ## Take one of ``slots`` host-wide flock slots for creates of ``base``.
+    ## Returns the held fd (close it to release), or -1 when ``slots <= 0``
+    ## (unlimited) or no slot freed up within ``waitSec`` (the create then
+    ## proceeds unthrottled rather than failing the job).
+    if slots <= 0: return -1
+    let prefix = createSlotPrefix(base)
+    let deadline = epochTime() + waitSec.float
+    while true:
+      var opened = 0
+      for i in 0 ..< slots:
+        let fd = posix.open(cstring(prefix & "." & $i & ".lock"),
+                            O_RDWR or O_CREAT or O_CLOEXEC, 0o666)
+        if fd < 0: continue
+        inc opened
+        if c_flock(fd, LockEx or LockNb) == 0:
+          return fd
+        discard posix.close(fd)
+      if opened == 0:
+        # A throttle that silently never engages is worse than a loud one.
+        stderr.writeLine("vm-harness: VMH_INCUS_CREATE_CONCURRENCY=" & $slots &
+          " ignored: cannot open lock files under " & prefix.parentDir)
+        return -1
+      if epochTime() > deadline: return -1
+      sleep(1000)
+
+  proc releaseCreateSlot*(fd: cint) =
+    if fd >= 0: discard posix.close(fd)
+else:
+  proc acquireCreateSlot*(base: string, slots: int, waitSec: int): cint = -1
+  proc releaseCreateSlot*(fd: cint) = discard
+
 proc containerExists*(b: IncusBackend, name: string): bool =
   ## ``incus info <name>`` exits 0 iff the container is defined.
   let r = b.runIncus(@["info", name], timeoutSec = 30)
@@ -545,14 +644,16 @@ proc applyConfig(b: IncusBackend, name: string, spec: EphemeralIncusSpec) =
   ## ``injectAndRunBootstrap``. Keeping the token OUT of the container config
   ## (``incus config show`` would otherwise expose it) is a bonus.
   for k, v in spec.config:
-    let r = b.runIncus(@["config", "set", name, k, v], timeoutSec = 30)
+    let r = b.runIncus(@["config", "set", name, k, v],
+                       timeoutSec = incusConfigTimeoutSec())
     if r.exitCode != 0:
       raise newVmHarnessError($b.id, lpProvisioning,
         "incus config set " & k & " failed (exit " & $r.exitCode & "): " &
         r.stdout)
 
 proc setRequiredConfig(b: IncusBackend, name, key, value: string) =
-  let r = b.runIncus(@["config", "set", name, key, value], timeoutSec = 30)
+  let r = b.runIncus(@["config", "set", name, key, value],
+                     timeoutSec = incusConfigTimeoutSec())
   if r.exitCode != 0:
     raise newVmHarnessError($b.id, lpProvisioning,
       "incus config set " & key & " failed (exit " & $r.exitCode & "): " &
@@ -673,7 +774,13 @@ proc provisionEphemeralClone*(b: IncusBackend,
   for p in spec.profiles:
     launchArgs.add("--profile")
     launchArgs.add(p)
-  let launchRes = b.runIncus(launchArgs, timeoutSec = 120)
+  # Throttle concurrent creates of this base image host-wide (opt-in), so a
+  # burst of retries cannot multiply incusd operations. The wait is bounded by
+  # the init timeout; past it the create proceeds rather than failing.
+  let createSlot = acquireCreateSlot(base, incusCreateConcurrency(),
+                                     incusInitTimeoutSec())
+  defer: releaseCreateSlot(createSlot)
+  let launchRes = b.runIncus(launchArgs, timeoutSec = incusInitTimeoutSec())
   if launchRes.exitCode != 0:
     # Best-effort teardown of any half-built container.
     discard b.deleteContainer(spec.name)
@@ -687,7 +794,8 @@ proc provisionEphemeralClone*(b: IncusBackend,
     if needsPreStartCapabilities:
       if spec.securityNesting or spec.nestedKvm:
         b.applyOperatorCapabilities(spec.name, spec)
-      let startRes = b.runIncus(@["start", spec.name], timeoutSec = 60)
+      let startRes = b.runIncus(@["start", spec.name],
+                                timeoutSec = incusStartTimeoutSec())
       if startRes.exitCode != 0:
         raise newVmHarnessError($b.id, lpStartup,
           "incus start " & spec.name & " failed (exit " &
