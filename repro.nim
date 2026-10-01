@@ -225,7 +225,9 @@ package vm_harness:
         registerImplicitName = false)
       when defined(posix):
         if spec.binary in ["t_qemu_windows_arm_golden_build",
-                           "t_qemu_windows_arm_dead_guest_is_named"]:
+                           "t_qemu_windows_arm_dead_guest_is_named",
+                           "t_disk_size_honoured",
+                           "t_qemu_windows_arm_disk_size"]:
           appendRegisteredActionToolIdentityRefs(execute.id, ["qemu-img", "sleep", "sha256sum", "git"])
       executeActions.add(execute)
       run("test-" & spec.binary, build = execute.id,
