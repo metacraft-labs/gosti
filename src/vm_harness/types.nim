@@ -309,7 +309,11 @@ type
       ## Only consulted when the boot disk is created by the backend (bmkIso);
       ## for bmkVhdx the media IS the disk and this is ignored. The 8 GB default
       ## suits a Linux install ISO; Windows 11 requires >= 64 GB and Setup's
-      ## partitioning step fails on anything smaller.
+      ## partitioning step fails on anything smaller. A backend that converts
+      ## a bmkQcow2 image into a disk of its own (Hyper-V) grows that copy to
+      ## this size when it is larger.
+    diskGBDefaulted*: bool          ## ``diskGB`` is a default rather than a
+      ## request: an image that is already larger is kept instead of refused.
     serialPipeName*: string         ## backend may override; otherwise auto-generated
     serialLogPath*: string          ## host-side path where serial bytes are logged
     extra*: Table[string, string]   ## backend-specific scratch (post-import scripts...)

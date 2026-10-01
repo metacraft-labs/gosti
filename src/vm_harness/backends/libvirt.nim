@@ -88,6 +88,8 @@ import ../serial
 import ../ssh
 import ../cloud_init_seed
 import ../ephemeral_inventory
+import ../disk_growth
+export disk_growth
 when defined(posix):
   import ../process_capture
 export ssh
@@ -164,6 +166,10 @@ type
       ## tolerate before declaring boot failure.
     sshReadyTimeoutSec*: int
       ## How long to retry the post-IP SSH-ready probe.
+    guestDiskBytes*: Table[string, int64]
+      ## Domain name -> disk size (bytes) its guest volume must span, for every
+      ## domain whose disk this backend grew beyond its golden. Consulted by
+      ## ``startAndAwaitReady``, which grows the guest volume and verifies it.
 
 const
   DefaultLibvirtImagePool* = "/var/lib/libvirt/images"
@@ -650,6 +656,13 @@ type
                                  ## (the tiny Linux golden path).
     uefiNvramTemplate*: string   ## OVMF vars template (read-only donor)
     uefiNvram*: string           ## per-job writable OVMF vars copy path
+    diskGB*: int                 ## per-job disk size in GiB. 0 ⇒ the golden's
+                                 ## size. The overlay is given this virtual
+                                 ## size when it exceeds the golden's; an
+                                 ## explicit smaller value is refused with
+                                 ## ``DiskSizeTooSmallError``.
+    diskGBDefaulted*: bool       ## ``diskGB`` is a default, not a request: a
+                                 ## golden that is already larger is kept.
 
 proc configDriveIsoPathFor*(b: LibvirtBackend, name: string): string =
   ## Per-job config-drive ISO path, named ``<domain>.config-drive.iso`` so
@@ -915,6 +928,10 @@ method provisionEphemeralClone*(b: LibvirtBackend,
         "provisionEphemeralClone: domain '" & spec.name &
         "' already exists; per-job clones require a fresh name")
 
+    # Size decision BEFORE anything is created: a refused request leaves
+    # nothing behind to clean up.
+    let cloneBytes = planQcow2Clone(b.qemuImgCmd, spec.goldenImage,
+      gibToBytes(spec.diskGB), spec.diskGBDefaulted, $b.id, lpProvisioning)
     createDir(b.imagePoolDir)
     let overlay = b.overlayPathFor(spec.name)
     # Start from a clean overlay so a stale file from a crashed prior run
@@ -922,11 +939,16 @@ method provisionEphemeralClone*(b: LibvirtBackend,
     if fileExists(overlay):
       try: removeFile(overlay)
       except CatchableError: discard
-    let createArgs = @[b.qemuImgCmd, "create",
+    var createArgs = @[b.qemuImgCmd, "create",
       "-f", "qcow2",
       "-b", spec.goldenImage,
       "-F", "qcow2",
       overlay]
+    if cloneBytes > 0:
+      # A larger virtual size than the backing file: the overlay exposes the
+      # extra space as unallocated, and the guest volume is grown into it.
+      createArgs.add($cloneBytes)
+      b.guestDiskBytes[spec.name] = cloneBytes
     let createRes = runProcessCapture(createArgs, timeoutSec = 60)
     if createRes.exitCode != 0:
       raise newVmHarnessError($b.id, lpProvisioning,
@@ -1446,14 +1468,19 @@ method provisionBaseline*(b: LibvirtBackend, spec: BaselineSpec) =
       if spec.networkBridge.len > 0:
         b.networkBridge = spec.networkBridge
       let diskPath = b.domainDiskPath(spec.name)
+      let cloneBytes = planQcow2Clone(b.qemuImgCmd, spec.sourceImage,
+        gibToBytes(spec.diskGB), spec.diskGBDefaulted, $b.id, lpProvisioning)
       # Clone-on-write: the per-VM qcow2 is a thin overlay over the
       # operator-supplied baseline. Writes are local to the overlay so
       # the baseline stays clean and can back any number of runners.
-      let createArgs = @["qemu-img", "create",
+      var createArgs = @[b.qemuImgCmd, "create",
         "-F", "qcow2",
         "-b", spec.sourceImage,
         "-f", "qcow2",
         diskPath]
+      if cloneBytes > 0:
+        createArgs.add($cloneBytes)
+        b.guestDiskBytes[spec.name] = cloneBytes
       let createRes = runProcessCapture(createArgs, timeoutSec = 60)
       if createRes.exitCode != 0:
         raise newVmHarnessError($b.id, lpProvisioning,
@@ -1774,6 +1801,10 @@ method revertToBaselineWithUserData*(b: LibvirtBackend, baselineName: string,
       goldenImage: golden,
       noCloudSeedIso: seedIso)
     result = b.provisionEphemeralClone(spec)
+    # The clone inherits the baseline disk's (grown) virtual size, and so the
+    # obligation to verify its guest volume spans it.
+    if baselineName in b.guestDiskBytes:
+      b.guestDiskBytes[instanceName] = b.guestDiskBytes[baselineName]
   else:
     raise newException(BackendUnavailableError,
       "LibvirtBackend.revertToBaselineWithUserData requires a Linux host")
@@ -1794,6 +1825,11 @@ method startAndAwaitReady*(b: LibvirtBackend, vm: VmHandle,
                            initTable[string, string](),
                            timeoutSec = 15)
       if r.exitCode == 0 and r.stdout.strip().len > 0:
+        if vm.name in b.guestDiskBytes:
+          # The disk was grown beyond the golden: the guest volume must follow
+          # (cloud-init growpart on Linux, Resize-Partition on Windows), and a
+          # volume that does not fails the start by name.
+          ensureGuestDiskGrown(b, vm, b.sshGuestOs, b.guestDiskBytes[vm.name])
         return
       if isFatalSshTrustFailure(r.stdout):
         raise (ref GuestBootFailureError)(

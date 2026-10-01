@@ -15,6 +15,8 @@ when defined(posix):
   import std/posix
 import ../types
 import ../auto
+import ../disk_growth
+export disk_growth
 
 type
   QemuWindowsArmBackend* = ref object of VmBackend
@@ -35,6 +37,12 @@ type
     baselines*: Table[string, string]
     baselineCpus*: Table[string, int]
     baselineMemoryMB*: Table[string, int]
+    baselineDiskGB*: Table[string, int]
+      ## Requested per-job disk size (GiB) per baseline; 0 or absent keeps the
+      ## golden's size.
+    baselineDiskGBDefaulted*: Table[string, bool]
+      ## Whether that size is a default (a larger golden is then kept) rather
+      ## than an explicit request (a larger golden is then refused).
     qemuPids*: Table[string, int]
     swtpmPids*: Table[string, int]
     instanceLockFds*: Table[string, cint]  ## per-instance lock fds, held for
@@ -974,7 +982,8 @@ proc createGoldenDisk*(qemuImgCmd, buildDir: string, diskGB: int) =
       "qemu-img create (golden disk " & disk & ") failed (exit " &
       $r.exitCode & "): " & r.stdout & r.stderr)
 
-proc createEphemeralOverlay*(baselineDir, destDir, qemuImgCmd: string) =
+proc createEphemeralOverlay*(baselineDir, destDir, qemuImgCmd: string,
+                             sizeBytes: int64 = 0) =
   ## Overlay mode (default): create a thin ``overlay.qcow2`` whose qcow2
   ## backing file is the immutable golden ``windows.qcow2``. The golden is
   ## never copied and is shared read-only across every concurrent instance;
@@ -994,11 +1003,16 @@ proc createEphemeralOverlay*(baselineDir, destDir, qemuImgCmd: string) =
   # instances created after it.
   let backing = expandFilename(base / QwaBaseDiskName)
   let overlay = destDir / QwaOverlayDiskName
-  let createArgs = @[qemuImgCmd, "create",
+  var createArgs = @[qemuImgCmd, "create",
     "-f", "qcow2",
     "-b", backing,
     "-F", "qcow2",
     overlay]
+  if sizeBytes > 0:
+    # ``sizeBytes`` is only ever larger than the golden (``planQcow2Clone``):
+    # the overlay exposes the extra space unallocated for the guest to grow
+    # ``C:`` into.
+    createArgs.add($sizeBytes)
   let r = runProcessCapture(createArgs, timeoutSec = 120)
   if r.exitCode != 0:
     raise newVmHarnessError($biQemuWindowsArm, lpProvisioning,
@@ -1013,14 +1027,24 @@ proc qwaDiskMode*(): string =
   if m == QwaDiskModeClone: QwaDiskModeClone else: QwaDiskModeOverlay
 
 proc createEphemeralInstance*(b: QemuWindowsArmBackend,
-                              baselineDir, destDir: string) =
+                              baselineDir, destDir: string,
+                              diskGB = 0, diskGBDefaulted = false): int64 =
   ## Provision an ephemeral instance disk using the configured disk mode,
   ## then take the per-instance advisory lock so ``prune`` can tell a live
-  ## instance from an orphaned one.
+  ## instance from an orphaned one. Returns the size the disk was grown to,
+  ## or 0 when it kept the golden's. The size decision precedes any file
+  ## being created, so a refused request (``DiskSizeTooSmallError``) leaves
+  ## nothing behind.
+  let golden = validateWindowsArmVmDir(baselineDir) / QwaBaseDiskName
+  result = planQcow2Clone(b.qemuImgCmd, golden, gibToBytes(diskGB),
+                          diskGBDefaulted, $biQemuWindowsArm, lpRevert)
   if qwaDiskMode() == QwaDiskModeClone:
     createEphemeralCopy(baselineDir, destDir)
+    if result > 0:
+      qemuImgResize(b.qemuImgCmd, destDir / QwaBaseDiskName, result,
+                    $biQemuWindowsArm)
   else:
-    createEphemeralOverlay(baselineDir, destDir, b.qemuImgCmd)
+    createEphemeralOverlay(baselineDir, destDir, b.qemuImgCmd, result)
 
 proc acquireInstanceLock*(b: QemuWindowsArmBackend, name, vmDir: string) =
   ## Create + hold ``<vmDir>/.instance.lock`` for the instance's lifetime.
@@ -2588,6 +2612,8 @@ method provisionBaseline*(b: QemuWindowsArmBackend, spec: BaselineSpec) =
   b.baselines[spec.name] = baselineDir
   b.baselineCpus[spec.name] = if spec.cpus > 0: spec.cpus else: 4
   b.baselineMemoryMB[spec.name] = if spec.memoryMB > 0: spec.memoryMB else: 8192
+  b.baselineDiskGB[spec.name] = spec.diskGB
+  b.baselineDiskGBDefaulted[spec.name] = spec.diskGBDefaulted
   if "ephemeralPrefix" in spec.backendOptions:
     b.ephemeralPrefix = spec.backendOptions["ephemeralPrefix"]
 
@@ -2604,7 +2630,9 @@ method revertToBaseline*(b: QemuWindowsArmBackend, baselineName: string): VmHand
   let name = ephemeralName(b.ephemeralPrefix, int64(epochTime() * 1000),
                            getCurrentProcessId())
   let vmDir = ephemeralDirFor(b.stateDir, name)
-  b.createEphemeralInstance(baselineDir, vmDir)
+  let grownBytes = b.createEphemeralInstance(baselineDir, vmDir,
+    b.baselineDiskGB.getOrDefault(baselineName, 0),
+    b.baselineDiskGBDefaulted.getOrDefault(baselineName, false))
   b.acquireInstanceLock(name, vmDir)
   let cpus = if baselineName in b.baselineCpus: b.baselineCpus[baselineName] else: 4
   let memoryMB =
@@ -2699,7 +2727,7 @@ method revertToBaseline*(b: QemuWindowsArmBackend, baselineName: string): VmHand
       "the instance was refused rather than handed out able to reboot " &
       "itself: " & restored.detail)
 
-  VmHandle(
+  result = VmHandle(
     backend: b,
     name: name,
     baseline: baselineName,
@@ -2712,6 +2740,16 @@ method revertToBaseline*(b: QemuWindowsArmBackend, baselineName: string): VmHand
             "rebootAction": QwaOneShotRebootAction,
             "firmwareBoots": $firstBoot.firmwareBoots,
             "sshReadySec": $int(firstBoot.elapsedSec)}.toTable)
+  if grownBytes > 0:
+    # The disk is larger than the golden's: extend C: over it in the guest
+    # and verify, or refuse the instance by name rather than hand out a guest
+    # that runs out of space mid-job.
+    result.extra["diskBytes"] = $grownBytes
+    try:
+      ensureGuestDiskGrown(b, result, goWindows, grownBytes)
+    except CatchableError:
+      b.stopAndCleanup(result, deleteVm = true)
+      raise
 
 method execInGuest*(b: QemuWindowsArmBackend, vm: VmHandle,
                    env: Table[string, string],

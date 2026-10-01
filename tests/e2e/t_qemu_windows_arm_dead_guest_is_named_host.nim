@@ -157,7 +157,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named (host tier)":
                                int64(epochTime() * 1000),
                                getCurrentProcessId())
       let vmDir = ephemeralDirFor(b.stateDir, name)
-      b.createEphemeralInstance(resolved, vmDir)
+      discard b.createEphemeralInstance(resolved, vmDir)
       b.acquireInstanceLock(name, vmDir)
       let swtpmPid = b.startSwtpmInBackground(vmDir)
       let started = b.startQemuWithAllocatedPortUsing(vmDir,

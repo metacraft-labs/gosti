@@ -197,7 +197,7 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--cpus <int>` / `--vcpu <int>` | 2 | vCPU count (`--vcpu` is the libvirt spelling). |
 | `--memory-mb <int>` | 4096 | Guest RAM in MiB. |
 | `--memory-gb <int>` | — | Alias for `--memory-mb`, in GiB (converted at parse time). |
-| `--disk-gb <int>` | 50 | Guest disk in GiB. Tart Linux clones are grown to it with `tart set --disk-size` (Tart GB) before boot and the guest root filesystem is verified to follow; an explicit value below the image's size is refused, the omitted default never shrinks. Tart macOS clones keep the image's size. |
+| `--disk-gb <int>` | 50 | Per-job guest disk in GiB (Tart: decimal GB). A clone smaller than this is grown before boot: libvirt overlay / qcow2 import and Windows-ARM QEMU overlay via `qemu-img`, UTM clone via `qemu-img resize`, Hyper-V clone and qcow2 conversion via `Resize-VHD`, Tart Linux via `tart set --disk-size`. Once the guest is reachable its system volume is grown (Linux growpart + resize2fs, Windows `Resize-Partition`) and verified, failing with `GuestDiskNotGrownError` otherwise. Disks never shrink: an explicit value below the image's size is refused (`DiskSizeTooSmallError`); the omitted default keeps a larger image. Tart macOS clones keep the image's size. |
 | `--source-image <ref>` | — | Backend-specific base image reference. |
 | `--acceleration <auto\|kvm\|tcg>` | `auto` | Libvirt media-boot execution mode. `tcg` uses QEMU software emulation. |
 
