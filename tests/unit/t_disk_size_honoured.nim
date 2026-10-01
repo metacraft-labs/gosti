@@ -21,6 +21,11 @@
 ##   volume that still does not span the disk fails by name
 ##   (``GuestDiskNotGrownError``).
 ##
+## HOST CONTRACT. docs/design.md section 4.5 restricts libvirt operations
+## to Linux. Their complete sizing cases run there; other POSIX hosts
+## assert BackendUnavailableError before a disk, virsh or SSH side effect.
+## The shared sizing, guest-growth and other backend cases run on both.
+##
 ## MOCK JUSTIFICATION (workspace policy). ``qemu-img`` is REAL: every image is
 ## a real qcow2 and every size asserted is what ``qemu-img info`` reads back.
 ## The hypervisor front-ends are shell-script fakes passed through each
@@ -157,124 +162,177 @@ proc libvirtFixture(tmp: string): LibvirtBackend =
     sshpassCmd = sshpass, imagePoolDir = tmp / "pool",
     libvirtUri = "qemu:///session")
 
-suite "libvirt":
-  test "a per-job overlay is given the requested size when it is larger":
-    let tmp = createTempDir("vmh-disk-lv-", "")
-    defer: removeDir(tmp)
-    let b = libvirtFixture(tmp)
-    makeQcow2(tmp / "golden.qcow2", 1)
-    let vm = b.provisionEphemeralClone(EphemeralCloneSpec(
-      name: "job-grow", goldenImage: tmp / "golden.qcow2",
-      diskGB: 2, diskGBDefaulted: false))
-    check virtualSize(vm.extra["overlayPath"]) == 2 * GiB
-    check b.guestDiskBytes["job-grow"] == 2 * GiB
-
-  test "a defaulted size below the golden's keeps the golden's":
-    let tmp = createTempDir("vmh-disk-lv-", "")
-    defer: removeDir(tmp)
-    let b = libvirtFixture(tmp)
-    makeQcow2(tmp / "golden.qcow2", 3)
-    let vm = b.provisionEphemeralClone(EphemeralCloneSpec(
-      name: "job-keep", goldenImage: tmp / "golden.qcow2",
-      diskGB: 2, diskGBDefaulted: true))
-    check virtualSize(vm.extra["overlayPath"]) == 3 * GiB
-    check "job-keep" notin b.guestDiskBytes
-
-  test "an explicit size below the golden's is refused before anything exists":
-    let tmp = createTempDir("vmh-disk-lv-", "")
-    defer: removeDir(tmp)
-    let b = libvirtFixture(tmp)
-    makeQcow2(tmp / "golden.qcow2", 3)
-    var raised = false
-    try:
-      discard b.provisionEphemeralClone(EphemeralCloneSpec(
-        name: "job-refuse", goldenImage: tmp / "golden.qcow2",
+when defined(linux):
+  suite "libvirt":
+    test "a per-job overlay is given the requested size when it is larger":
+      let tmp = createTempDir("vmh-disk-lv-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      makeQcow2(tmp / "golden.qcow2", 1)
+      let vm = b.provisionEphemeralClone(EphemeralCloneSpec(
+        name: "job-grow", goldenImage: tmp / "golden.qcow2",
         diskGB: 2, diskGBDefaulted: false))
-    except DiskSizeTooSmallError as e:
-      raised = true
-      check e.requestedBytes == 2 * GiB
-      check e.imageBytes == 3 * GiB
-    check raised
-    check not fileExists(b.overlayPathFor("job-refuse"))
-    check "define" notin readFile(tmp / "virsh.log")
+      check virtualSize(vm.extra["overlayPath"]) == 2 * GiB
+      check b.guestDiskBytes["job-grow"] == 2 * GiB
 
-  test "the qcow2 import path grows the domain disk":
-    let tmp = createTempDir("vmh-disk-lv-", "")
-    defer: removeDir(tmp)
-    let b = libvirtFixture(tmp)
-    makeQcow2(tmp / "golden.qcow2", 1)
-    # virt-install is resolved through PATH on this path.
-    writeExecutable(tmp / "virt-install", "#!/bin/sh\nexit 0\n")
-    let oldPath = getEnv("PATH")
-    putEnv("PATH", tmp & ":" & oldPath)
-    defer: putEnv("PATH", oldPath)
-    b.provisionBaseline(BaselineSpec(name: "win-import",
-      sourceImage: tmp / "golden.qcow2", diskGB: 2))
-    check virtualSize(b.domainDiskPath("win-import")) == 2 * GiB
-    check b.guestDiskBytes["win-import"] == 2 * GiB
+    test "a defaulted size below the golden's keeps the golden's":
+      let tmp = createTempDir("vmh-disk-lv-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      makeQcow2(tmp / "golden.qcow2", 3)
+      let vm = b.provisionEphemeralClone(EphemeralCloneSpec(
+        name: "job-keep", goldenImage: tmp / "golden.qcow2",
+        diskGB: 2, diskGBDefaulted: true))
+      check virtualSize(vm.extra["overlayPath"]) == 3 * GiB
+      check "job-keep" notin b.guestDiskBytes
 
-  test "startAndAwaitReady extends C: of a grown domain and verifies it":
-    let tmp = createTempDir("vmh-disk-lv-", "")
-    defer: removeDir(tmp)
-    let b = libvirtFixture(tmp)
-    b.guestDiskBytes["win-grown"] = 50 * GiB
-    let vm = VmHandle(backend: b, name: "win-grown",
-                      ipAddress: some("192.0.2.30"))
-    writeFile(tmp / "volume", $(49 * GiB))
-    b.startAndAwaitReady(vm, timeoutSec = 10)
-    check "EncodedCommand" in readFile(tmp / "ssh.log")
+    test "an explicit size below the golden's is refused before anything exists":
+      let tmp = createTempDir("vmh-disk-lv-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      makeQcow2(tmp / "golden.qcow2", 3)
+      var raised = false
+      try:
+        discard b.provisionEphemeralClone(EphemeralCloneSpec(
+          name: "job-refuse", goldenImage: tmp / "golden.qcow2",
+          diskGB: 2, diskGBDefaulted: false))
+      except DiskSizeTooSmallError as e:
+        raised = true
+        check e.requestedBytes == 2 * GiB
+        check e.imageBytes == 3 * GiB
+      check raised
+      check not fileExists(b.overlayPathFor("job-refuse"))
+      check "define" notin readFile(tmp / "virsh.log")
 
-    writeFile(tmp / "volume", $(30 * GiB))
-    expect GuestDiskNotGrownError:
+    test "the qcow2 import path grows the domain disk":
+      let tmp = createTempDir("vmh-disk-lv-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      makeQcow2(tmp / "golden.qcow2", 1)
+      # virt-install is resolved through PATH on this path.
+      writeExecutable(tmp / "virt-install", "#!/bin/sh\nexit 0\n")
+      let oldPath = getEnv("PATH")
+      putEnv("PATH", tmp & ":" & oldPath)
+      defer: putEnv("PATH", oldPath)
+      b.provisionBaseline(BaselineSpec(name: "win-import",
+        sourceImage: tmp / "golden.qcow2", diskGB: 2))
+      check virtualSize(b.domainDiskPath("win-import")) == 2 * GiB
+      check b.guestDiskBytes["win-import"] == 2 * GiB
+
+    test "startAndAwaitReady extends C: of a grown domain and verifies it":
+      let tmp = createTempDir("vmh-disk-lv-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      b.guestDiskBytes["win-grown"] = 50 * GiB
+      let vm = VmHandle(backend: b, name: "win-grown",
+                        ipAddress: some("192.0.2.30"))
+      writeFile(tmp / "volume", $(49 * GiB))
       b.startAndAwaitReady(vm, timeoutSec = 10)
+      check "EncodedCommand" in readFile(tmp / "ssh.log")
 
-  test "a domain whose disk was not grown is not touched in the guest":
-    let tmp = createTempDir("vmh-disk-lv-", "")
-    defer: removeDir(tmp)
-    let b = libvirtFixture(tmp)
-    let vm = VmHandle(backend: b, name: "win-plain",
-                      ipAddress: some("192.0.2.31"))
-    b.startAndAwaitReady(vm, timeoutSec = 10)
-    check "EncodedCommand" notin readFile(tmp / "ssh.log")
+      writeFile(tmp / "volume", $(30 * GiB))
+      expect GuestDiskNotGrownError:
+        b.startAndAwaitReady(vm, timeoutSec = 10)
 
-suite "libvirt media boot":
-  test "an explicit size grows the qcow2 overlay and marks the guest":
-    let tmp = createTempDir("vmh-disk-lvm-", "")
-    defer: removeDir(tmp)
-    let b = libvirtFixture(tmp)
-    b.virtInstallCmd = tmp / "virt-install"
-    writeExecutable(b.virtInstallCmd, "#!/bin/sh\nexit 0\n")
-    makeQcow2(tmp / "media.qcow2", 1)
-    let vm = b.bootFromMedia(BootMediaSpec(kind: bmkQcow2,
-      mediaPath: tmp / "media.qcow2", diskGB: 2))
-    check virtualSize(b.domainDiskPath(vm.name)) == 2 * GiB
-    check b.guestDiskBytes[vm.name] == 2 * GiB
+    test "a domain whose disk was not grown is not touched in the guest":
+      let tmp = createTempDir("vmh-disk-lv-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      let vm = VmHandle(backend: b, name: "win-plain",
+                        ipAddress: some("192.0.2.31"))
+      b.startAndAwaitReady(vm, timeoutSec = 10)
+      check "EncodedCommand" notin readFile(tmp / "ssh.log")
 
-  test "the boot default never resizes an image":
-    let tmp = createTempDir("vmh-disk-lvm-", "")
-    defer: removeDir(tmp)
-    let b = libvirtFixture(tmp)
-    b.virtInstallCmd = tmp / "virt-install"
-    writeExecutable(b.virtInstallCmd, "#!/bin/sh\nexit 0\n")
-    makeQcow2(tmp / "media.qcow2", 1)
-    let vm = b.bootFromMedia(BootMediaSpec(kind: bmkQcow2,
-      mediaPath: tmp / "media.qcow2", diskGB: 8, diskGBDefaulted: true))
-    check virtualSize(b.domainDiskPath(vm.name)) == 1 * GiB
-    check vm.name notin b.guestDiskBytes
+  suite "libvirt media boot":
+    test "an explicit size grows the qcow2 overlay and marks the guest":
+      let tmp = createTempDir("vmh-disk-lvm-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      b.virtInstallCmd = tmp / "virt-install"
+      writeExecutable(b.virtInstallCmd, "#!/bin/sh\nexit 0\n")
+      makeQcow2(tmp / "media.qcow2", 1)
+      let vm = b.bootFromMedia(BootMediaSpec(kind: bmkQcow2,
+        mediaPath: tmp / "media.qcow2", diskGB: 2))
+      check virtualSize(b.domainDiskPath(vm.name)) == 2 * GiB
+      check b.guestDiskBytes[vm.name] == 2 * GiB
 
-  test "an explicit size below the image's is refused before any disk exists":
-    let tmp = createTempDir("vmh-disk-lvm-", "")
-    defer: removeDir(tmp)
-    let b = libvirtFixture(tmp)
-    b.virtInstallCmd = tmp / "virt-install"
-    writeExecutable(b.virtInstallCmd, "#!/bin/sh\ntouch '" & tmp &
-                    "/virt-install-ran'\nexit 0\n")
-    makeQcow2(tmp / "media.qcow2", 3)
-    expect DiskSizeTooSmallError:
-      discard b.bootFromMedia(BootMediaSpec(name: BootDomainNamePrefix & "r",
-        kind: bmkQcow2, mediaPath: tmp / "media.qcow2", diskGB: 2))
-    check not fileExists(b.domainDiskPath(BootDomainNamePrefix & "r"))
-    check not fileExists(tmp / "virt-install-ran")
+    test "the boot default never resizes an image":
+      let tmp = createTempDir("vmh-disk-lvm-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      b.virtInstallCmd = tmp / "virt-install"
+      writeExecutable(b.virtInstallCmd, "#!/bin/sh\nexit 0\n")
+      makeQcow2(tmp / "media.qcow2", 1)
+      let vm = b.bootFromMedia(BootMediaSpec(kind: bmkQcow2,
+        mediaPath: tmp / "media.qcow2", diskGB: 8, diskGBDefaulted: true))
+      check virtualSize(b.domainDiskPath(vm.name)) == 1 * GiB
+      check vm.name notin b.guestDiskBytes
+
+    test "an explicit size below the image's is refused before any disk exists":
+      let tmp = createTempDir("vmh-disk-lvm-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      b.virtInstallCmd = tmp / "virt-install"
+      writeExecutable(b.virtInstallCmd, "#!/bin/sh\ntouch '" & tmp &
+                      "/virt-install-ran'\nexit 0\n")
+      makeQcow2(tmp / "media.qcow2", 3)
+      expect DiskSizeTooSmallError:
+        discard b.bootFromMedia(BootMediaSpec(name: BootDomainNamePrefix & "r",
+          kind: bmkQcow2, mediaPath: tmp / "media.qcow2", diskGB: 2))
+      check not fileExists(b.domainDiskPath(BootDomainNamePrefix & "r"))
+      check not fileExists(tmp / "virt-install-ran")
+
+else:
+  # The production operations deliberately require Linux (design §4.5).
+  # Command stand-ins cannot make that host contract disappear. Exercise
+  # the refusal before side effects here; the exact nine disk/growth cases
+  # above remain Linux gates with all their original assertions.
+  suite "libvirt refuses operations on non-Linux hosts":
+    test "a clone is refused before creating an overlay or invoking virsh":
+      let tmp = createTempDir("vmh-disk-lv-host-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      expect BackendUnavailableError:
+        discard b.provisionEphemeralClone(EphemeralCloneSpec(
+          name: "job-refuse", goldenImage: tmp / "golden.qcow2", diskGB: 2))
+      check not fileExists(b.overlayPathFor("job-refuse"))
+      check not fileExists(tmp / "virsh.log")
+      check b.guestDiskBytes.len == 0
+
+    test "an import is refused before creating the domain disk":
+      let tmp = createTempDir("vmh-disk-lv-host-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      expect BackendUnavailableError:
+        b.provisionBaseline(BaselineSpec(name: "win-import",
+          sourceImage: tmp / "golden.qcow2", diskGB: 2))
+      check not fileExists(b.domainDiskPath("win-import"))
+      check not fileExists(tmp / "virsh.log")
+      check b.guestDiskBytes.len == 0
+
+    test "guest growth is refused before executing SSH":
+      let tmp = createTempDir("vmh-disk-lv-host-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      b.guestDiskBytes["win-grown"] = 50 * GiB
+      let vm = VmHandle(backend: b, name: "win-grown",
+                        ipAddress: some("192.0.2.30"))
+      expect BackendUnavailableError:
+        b.startAndAwaitReady(vm, timeoutSec = 10)
+      check not fileExists(tmp / "ssh.log")
+      check b.guestDiskBytes["win-grown"] == 50 * GiB
+
+    test "media boot is refused before creating a disk or invoking virsh":
+      let tmp = createTempDir("vmh-disk-lv-host-", "")
+      defer: removeDir(tmp)
+      let b = libvirtFixture(tmp)
+      let name = BootDomainNamePrefix & "refused"
+      expect BackendUnavailableError:
+        discard b.bootFromMedia(BootMediaSpec(name: name, kind: bmkQcow2,
+          mediaPath: tmp / "media.qcow2", diskGB: 2))
+      check not fileExists(b.domainDiskPath(name))
+      check not fileExists(tmp / "virsh.log")
+      check b.guestDiskBytes.len == 0
 
 # ---------------------------------------------------------------------------
 # qemu-boot (no in-guest channel: host-side sizing only)
