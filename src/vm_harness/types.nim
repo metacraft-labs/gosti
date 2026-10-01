@@ -70,6 +70,13 @@ type
     cpus*: int                   ## defaults to 2 when zero
     memoryMB*: int               ## defaults to 4096 when zero
     diskGB*: int                 ## defaults to 50 when zero
+    diskGBDefaulted*: bool       ## true when ``diskGB`` was filled in by a
+                                 ## default rather than requested by the
+                                 ## caller (the CLI sets it when ``--disk-gb``
+                                 ## is omitted). A backend that clones an
+                                 ## existing image may then keep an image that
+                                 ## is already larger, where an explicitly
+                                 ## requested smaller size is refused.
     guestOs*: GuestOs
     guestArch*: GuestArch
     recipeDir*: string           ## resolved path to ``guest-recipes/<id>/`` when
@@ -302,7 +309,12 @@ type
       ## Only consulted when the boot disk is created by the backend (bmkIso);
       ## for bmkVhdx the media IS the disk and this is ignored. The 8 GB default
       ## suits a Linux install ISO; Windows 11 requires >= 64 GB and Setup's
-      ## partitioning step fails on anything smaller.
+      ## partitioning step fails on anything smaller. For image media
+      ## (bmkQcow2, and qemu-boot's bmkVhdx) an EXPLICIT size grows the
+      ## backend's own overlay/copy of the image when it is larger, and a size
+      ## below the image's is refused (``DiskSizeTooSmallError``).
+    diskGBDefaulted*: bool          ## ``diskGB`` is the default, not a request:
+      ## image media then keep their own size.
     serialPipeName*: string         ## backend may override; otherwise auto-generated
     serialLogPath*: string          ## host-side path where serial bytes are logged
     extra*: Table[string, string]   ## backend-specific scratch (post-import scripts...)

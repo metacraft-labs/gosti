@@ -32,6 +32,7 @@ import ./vm_harness/guest_scripts
 import ./vm_harness/serial
 import ./vm_harness/firmware
 import ./vm_harness/cloud_init_seed
+import ./vm_harness/disk_growth
 import ./vm_harness/backends/noop
 import ./vm_harness/backends/mock
 import ./vm_harness/backends/process_helpers
@@ -61,6 +62,7 @@ export crud
 export orchestrator
 export guest_scripts
 export serial
+export disk_growth
 export firmware
 export cloud_init_seed
 export noop

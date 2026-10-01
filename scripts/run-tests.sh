@@ -89,6 +89,15 @@ run_nim r --hints:off tests/unit/t_windows_golden_recipe_hardening.nim
 # `latest` resolution, staged-version + digest verification, version stamp.
 run_nim r --hints:off tests/unit/t_linux_runner_recipe_pin.nim
 run_nim r --hints:off tests/unit/t_tart_backend.nim
+# Tart per-job clones honour --disk-gb: grown with `tart set --disk-size`
+# before boot, an explicit shrink refused by name, and the guest root
+# filesystem verified (and grown in-guest) after boot.
+run_nim r --hints:off tests/unit/t_tart_disk_resize.nim
+# The same disk-size rules for libvirt (overlay + qcow2 import), UTM and
+# Hyper-V, and the shared in-guest growth (Resize-Partition / growpart),
+# with real qemu-img; then the Windows-ARM QEMU per-job path end to end.
+run_nim r --hints:off tests/unit/t_disk_size_honoured.nim
+run_nim r --hints:off tests/unit/t_qemu_windows_arm_disk_size.nim
 # Runner-Fleet-M3-ARM-Wave MA0 gate: t_vmharness_image_is_honoured, assertion
 # (c) — a registry-constructed tart backend with no image configured RAISES
 # rather than substituting a default. Assertions (a) and (b) are provider-side

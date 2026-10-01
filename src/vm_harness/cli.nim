@@ -437,7 +437,10 @@ Common flags:
   --vcpu <int>                    Alias for --cpus (canonical libvirt M4 shape).
   --memory-mb <int>
   --memory-gb <int>               Alias for --memory-mb, expressed in GiB.
-  --disk-gb <int>
+  --disk-gb <int>                 Per-job guest disk size (default 50). A
+                                  clone smaller than this is grown before boot
+                                  and its system volume grown in the guest; an
+                                  explicit size below the image's is refused.
   --network-bridge <name>         libvirt-only: host bridge for the guest NIC
                                   (default: backend's configured value, e.g.
                                   virbr0). Ignored by other backends.
@@ -1095,12 +1098,21 @@ proc probeBackendIds*(opts: CliOpts): seq[BackendId] =
   else:
     @[parseBackendId(opts.backend)]
 
-proc applyDefaults(spec: var BaselineSpec, opts: CliOpts) =
+const DefaultDiskGB* = 50
+  ## The per-job disk size when ``--disk-gb`` is omitted. It is marked as a
+  ## default (``diskGBDefaulted``), so a golden that is already larger keeps
+  ## its size; only an explicit ``--disk-gb`` below a golden's is refused.
+
+proc effectiveDiskGB*(opts: CliOpts): int =
+  if opts.diskGB > 0: opts.diskGB else: DefaultDiskGB
+
+proc applyDefaults*(spec: var BaselineSpec, opts: CliOpts) =
   spec.name = opts.baseline
   spec.sourceImage = opts.sourceImage
   spec.cpus = if opts.cpus > 0: opts.cpus else: 2
   spec.memoryMB = if opts.memoryMB > 0: opts.memoryMB else: 4096
-  spec.diskGB = if opts.diskGB > 0: opts.diskGB else: 50
+  spec.diskGB = effectiveDiskGB(opts)
+  spec.diskGBDefaulted = opts.diskGB <= 0
   if opts.guestSet:
     spec.guestOs = opts.guest
   # M4 libvirt-slice canonical-command extensions. Backends that don't
@@ -1339,6 +1351,7 @@ proc cmdBoot(opts: CliOpts; installMode = false): int =
     videoModel: opts.videoModel,
     sshForwardPort: sshForwardPort,
     diskGB: (if opts.diskGB > 0: opts.diskGB else: 8),
+    diskGBDefaulted: opts.diskGB <= 0,
     serialPipeName: "",
     serialLogPath: outputDir / "boot.serial.log",
     extra: extra)
@@ -1610,7 +1623,9 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
     tpmEnabled: true,
     switchName: getEnv("VMH_HYPERV_SWITCH"),
     configDriveIso: getEnv("VMH_HYPERV_CONFIG_DRIVE"),
-    userData: userData)
+    userData: userData,
+    diskGB: effectiveDiskGB(opts),
+    diskGBDefaulted: opts.diskGB <= 0)
   logEvent(opts.logFormat, "info", "ephemeral hyperv: clone+boot",
            {"backend": $biHyperv, "name": opts.baseline,
             "golden": golden})
@@ -1924,7 +1939,9 @@ proc cmdRunEphemeral(opts: CliOpts): int =
     configDriveIso: configDriveIso,
     uefiLoader: opts.uefiLoader,
     uefiNvramTemplate: opts.uefiNvramTemplate,
-    uefiNvram: uefiNvram)
+    uefiNvram: uefiNvram,
+    diskGB: effectiveDiskGB(opts),
+    diskGBDefaulted: opts.diskGB <= 0)
   let expectMarker = if opts.cmd.len > 0: opts.cmd[0] else: ""
   let timeoutSec = if opts.timeoutSec > 0: opts.timeoutSec else: 120
   logEvent(opts.logFormat, "info", "ephemeral clone: boot",

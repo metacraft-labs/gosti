@@ -40,6 +40,8 @@ import std/[options, os, osproc, streams, strtabs,
             strutils, tables, times]
 import ../types
 import ../auto
+import ../disk_growth
+export disk_growth
 
 # ---------------------------------------------------------------------------
 # Backend type.
@@ -89,6 +91,16 @@ type
     probeTimeoutSec*: int
       ## Hard ceiling for ``utmctl list`` during availability probing.
       ## Default 15.
+    qemuImgCmd*: string
+      ## ``qemu-img``, used to read and grow a clone's qcow2 disk.
+    utmDocumentsDir*: string
+      ## Where UTM keeps its ``<name>.utm`` bundles. Default: UTM's sandbox
+      ## documents directory, or ``VM_HARNESS_UTM_DOCUMENTS_DIR``.
+    requestedDiskGB*: int
+      ## Per-job disk size (GiB) from ``BaselineSpec.diskGB``; 0 keeps the
+      ## golden's.
+    diskGBDefaulted*: bool
+      ## ``BaselineSpec.diskGBDefaulted``.
 
 const
   DefaultGoldenBundleName* = "repro-windows-arm-base"
@@ -103,6 +115,12 @@ const
     ## secret — the guest is a disposable per-gate clone that only
     ## listens on UTM's NAT — but consumers shipping a non-default
     ## golden should override it.
+
+proc defaultUtmDocumentsDir*(): string =
+  ## ``VM_HARNESS_UTM_DOCUMENTS_DIR``, else UTM's sandboxed documents folder.
+  let d = getEnv("VM_HARNESS_UTM_DOCUMENTS_DIR")
+  if d.len > 0: d
+  else: getHomeDir() / "Library/Containers/com.utmapp.UTM/Data/Documents"
 
 proc newUtmBackend*(utmctlCmd: string = "utmctl",
                     sshpassCmd: string = "sshpass",
@@ -136,7 +154,9 @@ proc newUtmBackend*(utmctlCmd: string = "utmctl",
     bootTimeoutSec: bootTimeoutSec,
     sshReadyTimeoutSec: sshReadyTimeoutSec,
     startTimeoutSec: startTimeoutSec,
-    probeTimeoutSec: probeTimeoutSec)
+    probeTimeoutSec: probeTimeoutSec,
+    qemuImgCmd: "qemu-img",
+    utmDocumentsDir: defaultUtmDocumentsDir())
 
 # ---------------------------------------------------------------------------
 # Process helper. Same shape as the one used inline by tart.nim — kept
@@ -393,6 +413,43 @@ proc waitForSshReady*(b: UtmBackend, host: string,
   false
 
 # ---------------------------------------------------------------------------
+# Per-job disk size.
+
+proc utmBundleDiskImages*(b: UtmBackend, vmName: string): seq[string] =
+  ## The qcow2 drives of ``<utmDocumentsDir>/<vmName>.utm``. UTM keeps each
+  ## drive image in the bundle's ``Data/`` directory (ISOs attached as
+  ## removable drives are ``.iso`` and are not listed).
+  let data = b.utmDocumentsDir / (vmName & ".utm") / "Data"
+  if not dirExists(data):
+    return @[]
+  for kind, path in walkDir(data):
+    if kind in {pcFile, pcLinkToFile} and path.toLowerAscii.endsWith(".qcow2"):
+      result.add(path)
+
+proc ensureUtmDiskSize*(b: UtmBackend, vmName: string): int64 =
+  ## Grow a STOPPED clone's disk to ``requestedDiskGB`` with ``qemu-img
+  ## resize``. Returns the new size, or 0 when the clone kept the golden's.
+  ## Raises ``DiskSizeTooSmallError`` for an explicit request below the
+  ## golden's. A clone whose single disk image cannot be located fails an
+  ## explicit request by name and leaves a defaulted one at the golden's size.
+  if b.requestedDiskGB <= 0:
+    return 0
+  let images = b.utmBundleDiskImages(vmName)
+  if images.len != 1:
+    if b.diskGBDefaulted:
+      return 0
+    raise newVmHarnessError($b.id, lpRevert,
+      "UtmBackend: cannot size the disk of " & vmName & ": expected exactly " &
+      "one qcow2 drive under " & b.utmDocumentsDir / (vmName & ".utm") /
+      "Data" & ", found " & $images.len & " (set VM_HARNESS_UTM_DOCUMENTS_DIR " &
+      "if UTM keeps its bundles elsewhere)")
+  let disk = images[0]
+  result = planQcow2Clone(b.qemuImgCmd, disk, gibToBytes(b.requestedDiskGB),
+                          b.diskGBDefaulted, $b.id, lpRevert)
+  if result > 0:
+    qemuImgResize(b.qemuImgCmd, disk, result, $b.id)
+
+# ---------------------------------------------------------------------------
 # VmBackend method overrides.
 
 method probeAvailability*(b: UtmBackend): bool =
@@ -432,6 +489,8 @@ method provisionBaseline*(b: UtmBackend, spec: BaselineSpec) =
   ## backend's default ``goldenBundleName`` for the rest of the session.
   if spec.sourceImage.len > 0:
     b.goldenBundleName = spec.sourceImage
+  b.requestedDiskGB = spec.diskGB
+  b.diskGBDefaulted = spec.diskGBDefaulted
   if b.goldenBundleName.len == 0:
     raise newVmHarnessError($b.id, lpProvisioning,
       "UtmBackend: no golden bundle name configured (set BaselineSpec." &
@@ -465,6 +524,12 @@ method revertToBaseline*(b: UtmBackend, baselineName: string): VmHandle =
       b.stopUtmVm(v.uuid)
       b.deleteUtmVm(v.uuid)
   b.cloneUtmVm(b.goldenBundleName, ephemeral)
+  var grownBytes = 0'i64
+  try:
+    grownBytes = b.ensureUtmDiskSize(ephemeral)
+  except CatchableError:
+    b.deleteUtmVm(ephemeral)
+    raise
   b.startUtmVm(ephemeral)
   let ip = b.waitForUtmIp(ephemeral, b.bootTimeoutSec)
   if not b.waitForSshReady(ip, b.sshReadyTimeoutSec):
@@ -486,6 +551,14 @@ method revertToBaseline*(b: UtmBackend, baselineName: string): VmHandle =
     sshUser: b.sshUser,
     sshAuth: SshAuth(kind: saPassword, password: b.sshPassword),
     extra: {"goldenBundle": b.goldenBundleName}.toTable)
+  if grownBytes > 0:
+    result.extra["diskBytes"] = $grownBytes
+    try:
+      ensureGuestDiskGrown(b, result, goWindows, grownBytes)
+    except CatchableError:
+      b.stopUtmVm(ephemeral)
+      b.deleteUtmVm(ephemeral)
+      raise
 
 method execInGuest*(b: UtmBackend, vm: VmHandle,
                    env: Table[string, string],

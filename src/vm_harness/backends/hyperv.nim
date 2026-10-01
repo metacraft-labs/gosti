@@ -47,6 +47,8 @@ import ../auto
 import ../output
 import ../serial
 import ./process_helpers
+import ../disk_growth
+export disk_growth
 
 type
   HyperVBackend* = ref object of VmBackend
@@ -654,6 +656,57 @@ proc psQuote(s: string): string {.inline.} =
   ## Single-quote-escape a string for PowerShell single-quoted interp.
   s.replace("'", "''")
 
+const
+  DiskGrownMarker* = "VMH_DISK_GROWN="
+  DiskTooSmallMarker* = "VMH_DISK_TOO_SMALL"
+
+proc psDiskSizingBlock*(pathVar: string, wantBytes: int64,
+                        defaulted: bool): string =
+  ## PowerShell that grows the VHDX at ``$<pathVar>`` to ``wantBytes`` when
+  ## it is smaller (``Resize-VHD``, VM off), never shrinks it, and throws a
+  ## ``VMH_DISK_TOO_SMALL`` line for an explicit request below its size — a
+  ## defaulted one keeps the larger disk. Emits ``VMH_DISK_GROWN=<bytes>``
+  ## when it grew, so the caller knows the guest volume has to follow.
+  if wantBytes <= 0:
+    return ""
+  let defaultedFlag = if defaulted: "$true" else: "$false"
+  "$vmhWantBytes = [int64]" & $wantBytes & "\n" &
+  "$vmhHaveBytes = (Get-VHD -Path $" & pathVar & ").Size\n" &
+  "if ($vmhWantBytes -gt $vmhHaveBytes) {\n" &
+  "  Resize-VHD -Path $" & pathVar & " -SizeBytes $vmhWantBytes\n" &
+  "  Write-Output \"" & DiskGrownMarker & "$vmhWantBytes\"\n" &
+  "} elseif ($vmhWantBytes -lt $vmhHaveBytes -and -not " & defaultedFlag & ") {\n" &
+  "  throw \"" & DiskTooSmallMarker & " requested=$vmhWantBytes image=$vmhHaveBytes\"\n" &
+  "}\n"
+
+proc parseDiskGrown*(output: string): int64 =
+  ## The ``VMH_DISK_GROWN=<bytes>`` value, or 0.
+  for line in output.splitLines():
+    let t = line.strip()
+    if t.startsWith(DiskGrownMarker):
+      try: return parseBiggestInt(t[DiskGrownMarker.len .. ^1]).int64
+      except ValueError: discard
+  0
+
+proc parseDiskTooSmall*(output: string): tuple[found: bool,
+                                               requested, image: int64] =
+  ## The ``VMH_DISK_TOO_SMALL requested=<n> image=<n>`` refusal, if present.
+  let i = output.find(DiskTooSmallMarker)
+  if i < 0:
+    return (false, 0'i64, 0'i64)
+  result.found = true
+  for tok in output[i .. ^1].splitWhitespace():
+    let t = tok.strip(chars = {'"', '\'', '.', ','})
+    try:
+      if t.startsWith("requested="):
+        result.requested = parseBiggestInt(t[10 .. ^1]).int64
+      elif t.startsWith("image="):
+        result.image = parseBiggestInt(t[6 .. ^1]).int64
+    except ValueError:
+      discard
+    if result.requested > 0 and result.image > 0:
+      break
+
 proc newBootVmName(prefix: string = BootVmNamePrefix): string =
   ## Generate a fresh ``repro-test-boot-<hex>`` name. The hex suffix
   ## uses the low bits of epochTime() so two concurrent harness sessions
@@ -690,6 +743,10 @@ proc buildNewBootVmCommand*(b: HyperVBackend, spec: BootMediaSpec,
   let wantTpm = spec.tpmEnabled and generation == 2
   let tpmFlag = if wantTpm: "$true" else: "$false"
   let diskGB = if spec.diskGB > 0: spec.diskGB else: 8
+  # Only the backend-owned converted copy is resized; a caller's VHDX
+  # (bmkVhdx) is their disk and is never touched.
+  let qcow2Sizing = psDiskSizingBlock("scratchVhdx",
+    mediaOverlayRequestBytes(spec.diskGB, spec.diskGBDefaulted), false)
   let mediaPath = spec.mediaPath
   let seedIsoPath = spec.secondaryIsoPath
   let targetDiskPath = spec.targetDiskPath
@@ -753,12 +810,13 @@ if ($kind -eq 'iso') {{
   }}
   $dir = Split-Path -Parent $scratchVhdx
   if (-not (Test-Path $dir)) {{ New-Item -ItemType Directory -Force -Path $dir | Out-Null }}
-  # No $diskGB here on purpose: the converted image's size comes from the
-  # source qcow2, so honouring diskGB would mean a separate resize step.
+  # The converted image starts at the source qcow2's size; the sizing block
+  # below grows it to $diskGB when that is larger.
   & $qemuImg.Source convert -f qcow2 -O vhdx -o subformat=dynamic $mediaPath $scratchVhdx
   if ($LASTEXITCODE -ne 0) {{
     throw "qemu-img failed to convert QCOW2 to VHDX (exit $LASTEXITCODE)"
   }}
+{qcow2Sizing}
   # qemu-img marks its Windows output as an NTFS sparse file. Hyper-V
   # rejects sparse VHDX attachments even when the VHDX itself uses the
   # dynamic subformat, so clear and verify the host filesystem flag.
@@ -926,7 +984,7 @@ method bootFromMedia*(b: HyperVBackend, spec: BootMediaSpec): VmHandle =
                 "-ExecutionPolicy", "Bypass", "-Command", psCreate]
     let r = runProcessCapture(cmd, timeoutSec = 180)
     if r.exitCode != 0:
-      # Best-effort cleanup of any half-built VM + scratch dir.
+      let tooSmall = parseDiskTooSmall(r.stdout)
       try:
         let psCleanup = &"""try {{ Remove-VM -Name '{psQuote(vmName)}' -Force -ErrorAction SilentlyContinue | Out-Null }} catch {{}}"""
         discard runProcessCapture(@[$b.powershellLauncher, "-NoLogo",
@@ -935,6 +993,9 @@ method bootFromMedia*(b: HyperVBackend, spec: BootMediaSpec): VmHandle =
                                   timeoutSec = 30)
         if dirExists(baseTmp): removeDir(baseTmp)
       except CatchableError: discard
+      if tooSmall.found:
+        raise newDiskSizeTooSmallError($b.id, lpStartup, tooSmall.requested,
+                                       tooSmall.image, spec.mediaPath)
       raise newVmHarnessError($b.id, lpStartup,
         "HyperVBackend.bootFromMedia: VM creation failed: " & r.stdout)
     var extra = initTable[string, string]()
@@ -1139,6 +1200,11 @@ type
                                  ## injected + started in-guest over PowerShell
                                  ## Direct on the `--keep` path rather than via a
                                  ## config drive. Empty ⇒ no in-guest bootstrap.
+    diskGB*: int                 ## per-job disk size in GiB; 0 ⇒ the golden's.
+                                 ## Grown with `Resize-VHD` when larger; an
+                                 ## explicit smaller value is refused.
+    diskGBDefaulted*: bool       ## `diskGB` is a default: a larger golden is
+                                 ## kept rather than refused.
 
 proc ephemeralClonePathFor*(spec: HyperVEphemeralCloneSpec): string =
   ## Resolve the per-job clone disk path: honour `spec.clonePath` when set,
@@ -1176,6 +1242,8 @@ proc buildEphemeralCloneCommand*(b: HyperVBackend,
   let wantTpm = spec.tpmEnabled and generation == 2
   let tpmFlag = if wantTpm: "$true" else: "$false"
   let useDiff = if spec.useDifferencing: "$true" else: "$false"
+  let cloneSizing = psDiskSizingBlock("clone", gibToBytes(spec.diskGB),
+                                      spec.diskGBDefaulted)
   result = &"""$ErrorActionPreference = 'Stop'
 Import-Module Hyper-V -ErrorAction Stop
 $vmName  = '{psQuote(spec.name)}'
@@ -1215,7 +1283,7 @@ if ($useDiff) {{
 }} else {{
   Copy-Item -LiteralPath $golden -Destination $clone -Force
 }}
-
+{cloneSizing}
 $mem = [int64]$memMB * 1MB
 New-VM -Name $vmName -Generation $gen -MemoryStartupBytes $mem -VHDPath $clone | Out-Null
 # NO CHECKPOINTS on a per-job clone. Client Hyper-V enables AUTOMATIC
@@ -1471,6 +1539,7 @@ proc provisionEphemeralClone*(b: HyperVBackend,
                       "-ExecutionPolicy", "Bypass", "-Command", psCreate]
     let cr = runProcessCapture(createCmd, timeoutSec = 300)
     if cr.exitCode != 0:
+      let tooSmall = parseDiskTooSmall(cr.stdout)
       # Best-effort teardown of any half-built VM + clone disk.
       try:
         discard runProcessCapture(@[$b.powershellLauncher, "-NoLogo",
@@ -1478,6 +1547,9 @@ proc provisionEphemeralClone*(b: HyperVBackend,
           buildEphemeralDestroyCommand(spec.name, clonePath)],
           timeoutSec = 300)
       except CatchableError: discard
+      if tooSmall.found:
+        raise newDiskSizeTooSmallError($b.id, lpProvisioning,
+          tooSmall.requested, tooSmall.image, spec.goldenVhdx)
       raise newVmHarnessError($b.id, lpProvisioning,
         "HyperVBackend.provisionEphemeralClone: VM creation failed (exit " &
         $cr.exitCode & "): " & cr.stdout)
@@ -1486,6 +1558,9 @@ proc provisionEphemeralClone*(b: HyperVBackend,
     extra["ephemeral"] = "true"
     extra["clonePath"] = clonePath
     extra["goldenVhdx"] = spec.goldenVhdx
+    let grown = parseDiskGrown(cr.stdout)
+    if grown > 0:
+      extra["diskBytes"] = $grown
     var vm = VmHandle(
       backend: b,
       name: spec.name,
@@ -1703,6 +1778,14 @@ proc launchGuestRunnerBootstrap(b: HyperVBackend, vm: VmHandle, userData: string
       "launchGuestRunnerBootstrap: in-guest bootstrap task failed (exit " &
       $r.exitCode & "): " & r.stdout & r.stderr)
 
+proc growEphemeralGuestDisk*(b: HyperVBackend, vm: VmHandle) =
+  ## A clone whose VHDX was grown must have ``C:`` extended over it; do it
+  ## over PowerShell Direct and verify, raising ``GuestDiskNotGrownError``.
+  let grown = vm.extra.getOrDefault("diskBytes", "0")
+  let bytes = try: parseBiggestInt(grown).int64 except ValueError: 0'i64
+  if bytes > 0:
+    ensureGuestDiskGrown(b, vm, goWindows, bytes)
+
 proc runEphemeralHyperVJob*(b: HyperVBackend, spec: HyperVEphemeralCloneSpec,
                             probeArgv: seq[string] = @[],
                             probeEnv: Table[string, string] =
@@ -1734,6 +1817,7 @@ proc runEphemeralHyperVJob*(b: HyperVBackend, spec: HyperVEphemeralCloneSpec,
       if spec.userData.len > 0 and b.credentialCachePath.len > 0:
         try:
           b.startAndAwaitReady(vm, timeoutSec)
+          b.growEphemeralGuestDisk(vm)
           # A guest on a NAT switch cannot reach the controller's metadata
           # API directly; relay it through the host and point the bootstrap
           # there. No switch ⇒ isolated guest ⇒ nothing to relay.
@@ -1757,6 +1841,7 @@ proc runEphemeralHyperVJob*(b: HyperVBackend, spec: HyperVEphemeralCloneSpec,
       # signal — the host-lifecycle ops RA4 proves.
       if probeArgv.len > 0 and b.credentialCachePath.len > 0:
         b.startAndAwaitReady(vm, timeoutSec)
+        b.growEphemeralGuestDisk(vm)
         let r = b.execInGuest(vm, probeEnv, probeArgv, timeoutSec = timeoutSec)
         verdict = r.exitCode
     except CatchableError:

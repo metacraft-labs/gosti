@@ -90,6 +90,14 @@ const posixTestSpecs: seq[VmHarnessTestSpec] = @[
     binary: "t_cli_ephemeral_vmrun"),
   VmHarnessTestSpec(source: "tests/unit/t_tart_backend.nim",
     binary: "t_tart_backend"),
+  # POSIX-only: its fake `tart`/`ssh` are shell scripts.
+  VmHarnessTestSpec(source: "tests/unit/t_tart_disk_resize.nim",
+    binary: "t_tart_disk_resize"),
+  # POSIX-only: shell-script hypervisor fakes over a real qemu-img.
+  VmHarnessTestSpec(source: "tests/unit/t_disk_size_honoured.nim",
+    binary: "t_disk_size_honoured"),
+  VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_disk_size.nim",
+    binary: "t_qemu_windows_arm_disk_size"),
   # Runner-Fleet-M3-ARM-Wave MA0 gate: t_vmharness_image_is_honoured (c).
   VmHarnessTestSpec(source: "tests/unit/t_vmharness_image_is_honoured.nim",
     binary: "t_vmharness_image_is_honoured"),
@@ -217,7 +225,9 @@ package vm_harness:
         registerImplicitName = false)
       when defined(posix):
         if spec.binary in ["t_qemu_windows_arm_golden_build",
-                           "t_qemu_windows_arm_dead_guest_is_named"]:
+                           "t_qemu_windows_arm_dead_guest_is_named",
+                           "t_disk_size_honoured",
+                           "t_qemu_windows_arm_disk_size"]:
           appendRegisteredActionToolIdentityRefs(execute.id, ["qemu-img", "sleep", "sha256sum", "git"])
       executeActions.add(execute)
       run("test-" & spec.binary, build = execute.id,

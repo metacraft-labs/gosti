@@ -58,3 +58,19 @@ test gate is removed. The catalog Clang at canonical nixpkgs `addf7cf5` compiles
 and links a real C probe using system and CoreFoundation headers with a clean
 environment, confirming it carries its SDK. Refreshed dev `af517b4` and searched
 open and deleted compiler/SDK issues before extending this record.
+
+## New disk-size fixtures omit the existing tool declarations
+
+At `52d9140`, the complete native Linux ARM64 catalog passes, but
+[Reprobuild job 110446412757](https://github.com/metacraft-labs/gosti/actions/runs/36885118114/job/110446412757)
+fails `t_disk_size_honoured` and `t_qemu_windows_arm_disk_size` because their
+isolated execution PATH has no `qemu-img`. Both fixtures intentionally use
+real qcow2 images. `emitTestPair` attaches the image tool and golden-fixture
+utilities only to the two older golden tests; the newly registered disk-size
+tests were omitted from that list. The local macOS graph passed with the
+development shell's ambient tools, which did not establish the isolated case.
+
+Attach the same declared POSIX tools to these two new execution edges. Preserve
+the real image operations and all disk-size assertions. Refreshed `agents` and
+`dev`, searched open and archived `qemu-img` records, and extended this existing
+dependency-provisioning issue rather than opening a duplicate.
