@@ -46,6 +46,7 @@ run_nim r --hints:off tests/unit/t_guest_scripts.nim
 run_nim r --hints:off tests/unit/t_cli_probe.nim
 run_nim r --hints:off tests/unit/t_cli_boot.nim
 run_nim r --hints:off tests/unit/t_cli_incus.nim
+run_nim r --hints:off tests/unit/t_incus_create_tuning.nim
 # GARM instance-lifecycle gate: `ephemeral-list` makes kept ephemeral
 # instances visible and fails CLOSED (an unenumerable backend is an error,
 # never an empty list), and incus `ephemeral-destroy` retries a transiently
