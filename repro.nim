@@ -80,6 +80,8 @@ const portableTestSpecs: seq[VmHarnessTestSpec] = @[
 const posixTestSpecs: seq[VmHarnessTestSpec] = @[
   VmHarnessTestSpec(source: "tests/unit/t_cli_incus.nim",
     binary: "t_cli_incus"),
+  VmHarnessTestSpec(source: "tests/unit/t_incus_create_tuning.nim",
+    binary: "t_incus_create_tuning"),
   VmHarnessTestSpec(source: "tests/integration/t_incus_ephemeral_capabilities.nim",
     binary: "t_incus_ephemeral_capabilities"),
   VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_swtpm_startup.nim",
