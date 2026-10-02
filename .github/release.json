@@ -20,7 +20,7 @@
       ],
       "hostedRunner": "ubuntu-24.04",
       "runnerMigration": {
-        "version": "0.1.0",
+        "version": "0.1.1",
         "owner": "zah",
         "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-24-ci-runner-mode-policy-conflicts-with-hosted-runner-ban.md"
       }
@@ -38,7 +38,7 @@
       ],
       "hostedRunner": "macos-26",
       "runnerMigration": {
-        "version": "0.1.0",
+        "version": "0.1.1",
         "owner": "zah",
         "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-24-ci-runner-mode-policy-conflicts-with-hosted-runner-ban.md"
       }
@@ -52,7 +52,7 @@
       ],
       "hostedRunner": "windows-2025",
       "runnerMigration": {
-        "version": "0.1.0",
+        "version": "0.1.1",
         "owner": "zah",
         "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-24-ci-runner-mode-policy-conflicts-with-hosted-runner-ban.md"
       },
@@ -70,7 +70,7 @@
       ],
       "runnerReason": "Temporary native Windows ARM64 release migration while the two-slot fleet queue is pending.",
       "runnerMigration": {
-        "version": "0.1.0",
+        "version": "0.1.1",
         "owner": "zah",
         "followup": "https://github.com/metacraft-labs/metacraft-specs/blob/latest/issues/2026-09-29-windows-arm64-release-runner-migration.md"
       }
@@ -82,5 +82,11 @@
       "sha256": "4dae6fdcd2bb0bb6c37b5f97c33c2be954da743985369cddac3546e3218bffb8"
     }
   },
-  "unsignedReleaseVersion": "0.1.0"
+  "versionChecks": [
+    {
+      "file": "src/vm_harness/backends/qemu_windows_arm.nim",
+      "pattern": "QwaVmHarnessVersion\\*\\s*=\\s*\"([^\"]+)\""
+    }
+  ],
+  "unsignedReleaseVersion": "0.1.1"
 }
