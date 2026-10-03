@@ -383,3 +383,26 @@ The first ARM comparison did not reach tests because its supplemental workflow
 omitted the production x64-emulation architecture setting. That diagnostic
 configuration is corrected; run `37139647990` repeats the same product source
 on ARM. Production platform gates and their assertions remain unchanged.
+
+
+## Reconfiguring a native fixture must preserve its executable
+
+At `ede6c8fdef98c8638dc113f51a381f4552cbd3a2`, full Windows ARM emulation
+[run 37140405939](https://github.com/metacraft-labs/gosti/actions/runs/37140405939)
+reports 133 successful actions, one failure and two blocked timing programs.
+The valid API response case passes. The following invalid-response case fails
+in `commandFixture`: copying the same test binary over `curl.exe` returns
+Windows sharing violation, before the recipe or its assertions execute.
+Artifact `11282367351` retains the stack and failure report. The other four
+platform lanes pass. Refreshed `agents`/`dev` and searched open and archived
+fixture and `curl.exe` records before adding this evidence.
+
+LOCAL-1 and LOCAL-4 require these portable recipe assertions to run unchanged.
+The fixture executable is identical between the two calls; only its JSON
+response changes. Reuse an existing executable only after byte-for-byte
+comparison with the importing test binary. If absent or different, retain
+the ordinary copy and its failure behavior. Always write the requested sidecar.
+A regression must invoke both configurations through a real process, prove the
+second call preserves the executable modification time, and prove a different
+existing executable is replaced. No cleanup failure, lock or assertion may be
+ignored. Windows ARM qualification remains necessary.
