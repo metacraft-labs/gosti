@@ -269,3 +269,31 @@ with native execution and real io-mon injection on Windows, retaining their
 hashes, all assertions, and the serial one-worker negative control. Only
 that comparison can attribute the delay to the daemon, process startup, or
 monitor initialization; current timings alone cannot.
+
+## Isolated Repro action evidence
+
+Shared-actions run `37132358264` at `975ca4bc` measured Gosti `9fd0842` with the
+same Reprobuild `1f85ace0`, GCC 16.1 and `windows-osproc-jobobject` backend as
+full CI. Its retained artifact `11277683601` records both actions successful;
+the actual test output has all five fast requests at 58–85 ms. The diagnostic
+itself waited for an inherited output pipe after Repro had written its report;
+its replacement uses Gosti's existing foreground capture script, matching CI.
+That diagnostic cancellation is not a failed product assertion.
+
+Together with the standalone native/debug-monitor/release-monitor controls at
+shared-actions `79b77ac`, this narrows the full-suite delay to the concurrent
+execution context. Schedule the Tart and serve-concurrency measurement programs
+after all test compilations and other test executions, then one at a time.
+Retain the shared catalog, automatic monitoring, original deadlines and all
+assertions. The deliberate dispatch-lock mutation still fails `< 2.5`; no
+serialized server becomes acceptable. Full Windows CI must qualify this ordering.
+
+Replacement diagnostic `37133661896` at shared-actions `ad5b16c` completed
+successfully for Gosti `9fd0842`: both focused Repro actions and both direct
+executions passed, including all four Tart cases and both concurrency cases.
+
+Local macOS qualification of `79cc9a9` plus the ordering change completed all
+148 actions and launched all 74 programs. Its 788 passing cases and six existing
+skips match the preceding full native/Repro qualification exactly. The action
+trace places Tart after the other 146 actions, and serve concurrency after
+Tart completes. No fixture source, assertion, deadline or monitor policy changed.

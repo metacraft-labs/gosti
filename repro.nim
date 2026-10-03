@@ -132,8 +132,10 @@ package vm_harness:
         extraOutputs = @["build/test-tpm-guest"])
       appendRegisteredActionToolIdentityRefs(tpmGuest.id, ["nix"])
 
-    proc emitTestPair(spec: TestSpec;
-                      buildActions, executeActions: var seq[BuildActionDef]) =
+    var testPrograms: seq[tuple[spec: TestSpec, binary: NimUnittestBinary]] = @[]
+
+    proc emitTestBuild(spec: TestSpec;
+                       buildActions: var seq[BuildActionDef]) =
       let output = testBinDir & spec.binary & exeSuffix
       let edge = buildNimUnittest.build(
         source = spec.source,
@@ -150,7 +152,12 @@ package vm_harness:
       when defined(linux):
         appendRegisteredActionToolIdentityRefs(edge.action.id, ["pcre-config", "uname"])
       buildActions.add(edge.action)
-      var executionAfter: seq[BuildActionDef] = @[]
+      testPrograms.add((spec, edge.testBinary))
+
+    proc emitTestExecution(spec: TestSpec; binary: NimUnittestBinary;
+                           executeActions: var seq[BuildActionDef];
+                           after: seq[BuildActionDef]) =
+      var executionAfter = after
       var executionEnv: seq[(string, string)] = @[]
       var executionInputs: seq[string] = @[]
       when defined(linux):
@@ -158,7 +165,7 @@ package vm_harness:
           executionAfter.add(tpmGuest)
           executionInputs.add("build/test-tpm-guest")
           executionEnv.add(("VMH_TPM_GUEST_DIR", "build/test-tpm-guest"))
-      let execute = edge.testBinary.run(
+      let execute = binary.run(
         actionId = "vm_harness.test_execute." & spec.binary,
         after = executionAfter,
         extraInputs = executionInputs,
@@ -190,7 +197,21 @@ package vm_harness:
     for directory in ["tests/unit", "tests/integration", "tests/e2e"]:
       providerDirectoryInput(directory)
     for spec in loadTestCatalog(".").selectedTests("test"):
-      emitTestPair(spec, testBuildActions, testExecuteActions)
+      emitTestBuild(spec, testBuildActions)
+
+    # These fixtures measure dispatch latency or bound real child-process
+    # startup. Full Windows CI overlaps them with compiler processes and misses
+    # their existing deadlines; the same monitored actions pass in isolation.
+    # Finish compilation and the other tests first, then run these one at a time.
+    # Monitoring, time limits and every assertion remain exactly the same.
+    const timingTests = ["t_tart_backend", "t_vmharness_serve_concurrency"]
+    for timingPhase in [false, true]:
+      for program in testPrograms:
+        if (program.spec.binary in timingTests) == timingPhase:
+          let after =
+            if timingPhase: testBuildActions & testExecuteActions
+            else: newSeq[BuildActionDef]()
+          emitTestExecution(program.spec, program.binary, testExecuteActions, after)
 
     discard collect("test-builds", testBuildActions)
     discard collect("test", testExecuteActions)
