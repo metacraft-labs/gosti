@@ -26,6 +26,8 @@
 ## preserve identical executable bytes/timestamps, and replace stale bytes.
 ## Windows holds a real read-sharing handle during reconfiguration, so the
 ## regression does not depend on translation-cache timing to deny an overwrite.
+## A real BASH_ENV startup script prepends a competing native API stand-in to
+## prove that wrapper/startup PATH changes cannot select the network curl.
 
 import std/[json, os, osproc, streams, strtabs, strutils, times, unittest]
 import ../native_command_fixture
@@ -45,16 +47,32 @@ proc functionBody(text, name: string): string =
   doAssert finish > start, "unterminated function " & name
   text[start + 1 .. finish + 2]
 
-proc runBash(script: string, path = ""): tuple[output: string, code: int] =
+proc runBash(script: string, path = "", startupFile = ""):
+    tuple[output: string, code: int] =
   let dir = getTempDir() / "t_linux_runner_recipe_pin"
   createDir(dir)
   let file = dir / "probe.sh"
-  writeFile(file, script)
+  var fixtureSetup = ""
+  if path.len > 0:
+    # Git for Windows' bin/bash.exe wrapper prepends its own commands before
+    # launching usr/bin/bash.exe. Establish the fixture after that startup.
+    # cd/pwd are Bash builtins and also translate native Windows paths.
+    fixtureSetup = "fixture_bin=$(cd -- " &
+      quoteShellPosix(path.replace('\\', '/')) & " && pwd -P) || exit 1\n" &
+      "export PATH=\"$fixture_bin:$PATH\"\n" &
+      "fixture_curl=$(command -v curl) || exit 1\n" &
+      "if [[ ! \"$fixture_curl\" -ef \"$fixture_bin/curl" &
+      (when defined(windows): ".exe" else: "") & "\" ]]; then\n" &
+      "  printf 'wrong curl fixture: %s\\n' \"$fixture_curl\" >&2\n" &
+      "  exit 1\nfi\n"
+  writeFile(file, fixtureSetup & script)
   let env = newStringTable(when defined(windows): modeCaseInsensitive
                            else: modeCaseSensitive)
   for key, value in envPairs(): env[key] = value
   if path.len > 0:
     env["PATH"] = path & $PathSep & getEnv("PATH")
+  if startupFile.len > 0:
+    env["BASH_ENV"] = startupFile.replace('\\', '/')
   let bash = findExe("bash")
   let child = startProcess(bash, args = @[file.replace('\\', '/')],
     env = env, options = {poStdErrToStdOut})
@@ -133,6 +151,37 @@ echo "[$(runner_minor_lag '' 2.337.0)]"
     let second = runBash(latest & "latest_runner_release\n", directory)
     check second.code == 0
     check second.output.strip == "2.338.0"
+
+  test "Bash startup cannot replace the selected API fixture":
+    let directory = fakeCurlDir("{\n  \"tag_name\": \"v2.338.0\"\n}\n")
+    let intendedLog = directory / ("selected-" & $getCurrentProcessId() & ".log")
+    removeFile(intendedLog)
+    defer: removeFile(intendedLog)
+    discard commandFixture(directory / "curl", %*{
+      "output": "{\n  \"tag_name\": \"v2.338.0\"\n}\n",
+      "log": intendedLog})
+    let competing = getTempDir() /
+      ("t_linux_runner competing ' command-" & $getCurrentProcessId())
+    createDir(competing)
+    defer: removeDir(competing)
+    let competingLog = competing / "invoked.log"
+    discard commandFixture(competing / "curl", %*{
+      "output": "{\n  \"tag_name\": \"v9.999.0\"\n}\n",
+      "log": competingLog})
+    let startup = competing / "startup env.sh"
+    let startupLog = competing / "startup selection.log"
+    writeFile(startup,
+      "startup_bin=$(cd -- " & quoteShellPosix(competing.replace('\\', '/')) &
+      " && pwd -P) || exit 1\n" &
+      "export PATH=\"$startup_bin:$PATH\"\n" &
+      "command -v curl > " & quoteShellPosix(startupLog.replace('\\', '/')) & "\n")
+    let r = runBash(latest & "latest_runner_release\n", directory, startup)
+    require fileExists(startupLog)
+    check "competing ' command-" in readFile(startupLog)
+    check r.code == 0
+    check r.output.strip == "2.338.0"
+    check fileExists(intendedLog)
+    check not fileExists(competingLog)
 
   test "a different existing fixture image is replaced":
     let directory = getTempDir() / "t_linux_runner_recipe_pin_curl"

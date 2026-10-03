@@ -454,3 +454,13 @@ separate invocation logs; the intended one must run and the competing one must
 not. Removing the post-startup PATH setup must fail this control without ever
 contacting the real API. Test paths must retain spaces/quoting support. Runtime
 Windows qualification still decides whether this addresses the observed failure.
+
+
+At `04e669b` plus the startup-selection patch, all eleven recipe cases pass on
+macOS. All ten preexisting case bodies are byte-identical. The new real Bash
+startup control uses paths with spaces and an apostrophe and checks separate
+invocation logs. Restoring only the old pre-startup setup makes it return
+`9.999.0`, leaves the intended invocation log absent and records the competing
+fixture call; its three assertions fail. No external network request is needed
+for this negative control. Windows-targeted C generation passes. The live ARM
+trace is still pending and is not claimed as confirmation of the original cause.
