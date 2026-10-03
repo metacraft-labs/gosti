@@ -123,6 +123,11 @@ const posixTestSpecs: seq[VmHarnessTestSpec] = @[
   # CLI's own JSON report.
   VmHarnessTestSpec(source: "tests/unit/t_m3_tart_orphan_dirs_reclaimed.nim",
     binary: "t_m3_tart_orphan_dirs_reclaimed"),
+  # gosti#69: the serve daemon closes each worker stdio fd exactly once.
+  # POSIX-only: it asserts on raw descriptor numbers (fcntl/fstat), and on
+  # Windows osproc owns those handle closes. No port, no wall clock.
+  VmHarnessTestSpec(source: "tests/unit/t_serve_worker_fd_hygiene.nim",
+    binary: "t_serve_worker_fd_hygiene"),
 ]
 
 # Runner-Fleet-M3-ARM-Wave MA12 gate:
@@ -130,7 +135,7 @@ const posixTestSpecs: seq[VmHarnessTestSpec] = @[
 # deliberate rather than an omission. This graph builds the "deterministic,
 # host-independent suite" (see the module doc); the serve DAEMON gates —
 # `t_vmharness_serve_roundtrip`, `t_vmharness_serve_concurrency`,
-# `t_vmharness_serve_enrollment` — are none of them here either, because each
+# `t_vmharness_serve_enrollment`, `t_vmharness_serve_sequential_crud` — are none of them here either, because each
 # binds a TCP port, re-execs itself as several processes, and measures wall
 # clock. MA12's gate does all three and additionally holds real hung workers
 # for tens of seconds, so it belongs exactly where its siblings already are:
