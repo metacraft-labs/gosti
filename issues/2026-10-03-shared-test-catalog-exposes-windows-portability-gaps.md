@@ -139,3 +139,26 @@ batch measured 5.437 seconds against its existing 2.5-second bound; the saturate
 pool also timed out instead of returning 503. No timeout or correctness
 requirement has been relaxed, and neither Windows runtime failure is attributed
 solely from its timing.
+
+## Fixture host contract and portable coverage
+
+At `04a7afa`, the native and Reprobuild macOS suites each pass 786 cases,
+with six unchanged platform skips, 142 successful actions and 71 launched
+programs. Their case names and outcomes match exactly.
+
+The remaining QWA fixture compile errors arise from the macOS-host backend's
+Unix monitor and QMP sockets. Windows ARM in the name denotes the guest;
+`QemuWindowsArmBackend.hostPlatform` is `hpMacosArm`, and its availability
+probe is false outside macOS. The deterministic lifecycle fixture also runs
+on Linux using those real POSIX boundaries. It does not implement a Windows
+host backend.
+
+Repair design: declare the actual POSIX prerequisite in the shared catalog
+for the Unix socket/lifecycle fixtures. First move portable disk-size policy,
+guest-growth and Hyper-V command contracts into their own all-platform test
+program. Likewise extract portable golden policy, recipe, manifest, argv and
+filesystem cases from the QWA lifecycle fixture into an all-platform program.
+Preserve every moved test body and every existing POSIX lifecycle assertion;
+compare the combined case inventory before and after. Keep the existing
+all-platform QWA backend and overlay controls. Do not replace the actual Unix
+socket exchanges with synthetic success or claim Windows host support.
