@@ -92,3 +92,20 @@ At `a1f6774` plus this patch, all three command cases pass on macOS and Windows
 C generation succeeds. A real PowerShell run on this Mac installs the built
 CLI, verifies both byte-identical aliases and their help, and rejects a missing
 source. This is not a claim of native Windows execution.
+
+## Real Windows qcow2 prerequisite
+
+The Reprobuild test actions now declare `qemu-img` on Windows too. The Windows
+CI environment installs the actual UCRT64 image utility and its dependencies
+through MSYS2's pinned setup action before capturing the Reprobuild environment.
+Only its native binary directory is exposed. The existing x64-emulation lane on
+ARM64 hosts is retained. MSYS2 authenticates the packages through pacman; the
+Reprobuild action records the resolved executable identity.
+
+The required real layer-GC suite passes through Reprobuild on macOS at
+`2ceccc8` plus this declaration patch (two successful launched actions), and
+workflow actionlint passes. Native Windows provisioning and execution still
+require the next Windows CI run. No qcow2 fixture is replaced or skipped.
+
+Sources: [MSYS2 setup action](https://github.com/msys2/setup-msys2),
+[QEMU image utility package](https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-qemu-image-util).

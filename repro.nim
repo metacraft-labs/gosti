@@ -13,8 +13,8 @@ import repro_project_dsl
 import repro_dsl_stdlib/foreign_env
 import repro_dsl_stdlib/packages/sh
 import ct_test_nim_unittest
+import ./repro_support/qemu_img as qemuImageTools
 when defined(posix):
-  import ./repro_support/qemu_img as qemuImageTools
   import ./repro_support/tar as testTar
   import ./repro_support/xorriso
 import repro_dsl_stdlib/nixpkgs_pin
@@ -64,8 +64,8 @@ package vm_harness:
     "dirname"
     "awk"
     "tar"
+    "qemu-img"
     when defined(posix):
-      "qemu-img"
       "sleep"
       "sha256sum"
       "git >=2"
@@ -170,10 +170,10 @@ package vm_harness:
       appendRegisteredActionToolIdentityRefs(execute.id,
         ["nim", backendCompiler, "sh", "bash", "cat", "cp", "chmod", "ln",
          "mkdir", "rm", "sed", "grep", "head", "tail", "cut", "tr", "dirname",
-         "awk", "tar"])
+         "awk", "tar", "qemu-img"])
       when defined(posix):
         appendRegisteredActionToolIdentityRefs(execute.id,
-          ["qemu-img", "sleep", "sha256sum", "git"])
+          ["sleep", "sha256sum", "git"])
         if spec.binary == "t_libvirt_backend":
           appendRegisteredActionToolIdentityRefs(execute.id, ["xorriso"])
       when defined(linux):
