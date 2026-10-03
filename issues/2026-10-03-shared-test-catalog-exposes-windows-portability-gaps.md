@@ -297,3 +297,23 @@ Local macOS qualification of `79cc9a9` plus the ordering change completed all
 skips match the preceding full native/Repro qualification exactly. The action
 trace places Tart after the other 146 actions, and serve concurrency after
 Tart completes. No fixture source, assertion, deadline or monitor policy changed.
+
+
+## Saturation response transport failure at afcaf89
+
+Full Windows x64 run `37134778300`, job `111237481247`, at
+`afcaf890dfbd21568eb58642b5ed95b257a6c42b` has 133 successful actions,
+one failure and two blocked timing programs. The failure is now the saturation
+case in `t_vmharness_serve_survives_a_hung_request`: `timedOut=true` and status
+zero. The elapsed `< 2.5` assertion passes despite the probe's six-second read
+budget, so the shared `except CatchableError` path may have caught an immediate
+transport error. The one-hung-worker, recovery and shutdown cases all pass.
+Tart and serve concurrency are blocked by this prerequisite failure; they did
+not execute and are not counted as passing.
+
+Artifact `11278823350` retains the complete failure report. Add the caught
+exception and elapsed time to the existing saturation checkpoint before
+attributing this to contention or changing scheduling. Keep every deadline,
+worker, request and assertion. The acceptor currently sends 503 and closes the
+socket without reading request bytes; connection reset is a hypothesis pending
+a real transport diagnostic, not an established root cause.

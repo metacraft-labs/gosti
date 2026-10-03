@@ -127,6 +127,7 @@ type ProbeOutcome = object
   timedOut: bool        ## no response within the probe budget
   status: int           ## HTTP status when one arrived (0 if none)
   elapsed: float
+  error: string        ## distinguish a transport error from an expired budget
 
 proc probeLiveness(host: string, port: int, budgetSec: float): ProbeOutcome =
   ## Issue ONE bounded liveness request and report what came back.
@@ -174,8 +175,9 @@ proc probeLiveness(host: string, port: int, budgetSec: float): ProbeOutcome =
     if parts.len >= 2 and parts[0].startsWith("HTTP/"):
       result.status = parseInt(parts[1])
       result.timedOut = false
-  except CatchableError:
+  except CatchableError as e:
     result.timedOut = true
+    result.error = $e.name & ": " & e.msg
   finally:
     try: sock.close() except CatchableError: discard
     result.elapsed = epochTime() - t0
@@ -269,6 +271,8 @@ suite "t_vmharness_serve_survives_a_hung_request":
       # left this connection in the accept backlog and the client timed out.
       # The fixed daemon answers immediately with a diagnostic 503.
       let saturated = probeLiveness("127.0.0.1", port, ProbeBudgetSec)
+      checkpoint("saturation probe: status=" & $saturated.status &
+        " elapsed=" & $saturated.elapsed & " error=" & saturated.error)
       check not saturated.timedOut          # <- fails on the unfixed daemon
       check saturated.status == SaturatedStatus
       # Immediate, not "eventually": the reply must come from the acceptor, not
