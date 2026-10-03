@@ -120,6 +120,12 @@ run_nim r --hints:off tests/unit/t_serve_protocol.nim
 # RA6 enrollment/identity + capability manifest: pure crypto vectors, the
 # capability deciders against fixtures, and the sign/verify state machine.
 run_nim r --hints:off tests/unit/t_serve_enrollment.nim
+# gosti#69: the daemon closes each worker stdio fd exactly once. A stray second
+# close of the merged stdout/stderr fd shut whatever another request had just
+# opened on that number ("worker stream error: Bad file descriptor").
+# Deterministic: a cleanup-stage seam reoccupies the freed numbers. POSIX-only
+# (the file compiles to an empty suite on Windows).
+run_nim r --hints:off tests/unit/t_serve_worker_fd_hygiene.nim
 
 # Backend-independent lifecycle and CLI coverage.
 run_nim r --hints:off tests/integration/t_noop_lifecycle.nim
@@ -163,6 +169,12 @@ run_nim r --hints:off tests/e2e/t_vmharness_serve_client_disconnect_no_spin.nim
 # and the pre-MA12 thread-pool-only daemon passes layer 1 but fails layer 2.
 # Hermetic — the worker is a trivial self-exec hang/quick role, no backend.
 run_nim r --hints:off tests/e2e/t_vmharness_serve_survives_a_hung_request.nim
+# gosti#69 gate: back-to-back CRUD requests never hit the previous request's
+# teardown. Deterministic half: with a pause injected at the start of worker
+# cleanup, a client that stops at `exit` must not see it before the pause
+# ends (exit is written only after cleanup). Plus a 200-request sequential
+# hammer on a 3-thread daemon. Hermetic (mock CRUD backend).
+run_nim r --hints:off tests/e2e/t_vmharness_serve_sequential_crud.nim
 # RA6 enrollment gate: a remote client reads the daemon's SIGNED identity +
 # capability manifest over /v1/manifest and verifies it against a trust store;
 # unenrolled/expired/revoked/tampered identities are rejected. Hermetic (noop).

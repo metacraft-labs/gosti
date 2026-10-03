@@ -73,6 +73,10 @@ it always selects the audited `/dev/kvm` mapping.
 {"v":"1","type":"exit","code":0}          ← terminal
 ```
 
+The `exit` event is written only after the daemon has reaped the worker and
+closed its pipes, so a client may send its next request as soon as it sees
+`exit` without racing the previous request's teardown (gosti#69).
+
 `{"type":"error","message":"…"}` is emitted if the daemon cannot start the
 worker. The worker's stdout and stderr are **merged** in RA1 (follow-up:
 framed stdout/stderr separation).

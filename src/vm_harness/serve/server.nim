@@ -454,6 +454,73 @@ proc setSendTimeout(client: Socket, seconds: int) =
   except CatchableError:
     discard
 
+const WorkerSpawnOptions* = {poStdErrToStdOut}
+  ## How ``handleExec`` spawns every worker: stderr MERGED into stdout. On
+  ## POSIX that makes osproc's ``outHandle`` and ``errHandle`` the SAME file
+  ## descriptor, which is what ``releaseWorkerStdio`` has to respect.
+
+type
+  WorkerCleanupStage* = enum
+    ## Points in a worker's teardown at which ``workerCleanupHook`` runs.
+    wcsBegin          ## the request's work is done, cleanup is about to start
+    wcsStdoutClosed   ## the merged stdout/stderr pipe has just been closed
+
+var workerCleanupHook*: proc(stage: WorkerCleanupStage) {.nimcall, gcsafe.}
+  ## TEST SEAM. nil in production, and nothing in the daemon sets it. Tests
+  ## use it to act at an exact point of the teardown instead of racing it:
+  ## ``t_serve_worker_fd_hygiene`` reoccupies the just-freed descriptor
+  ## numbers at ``wcsStdoutClosed``; ``t_vmharness_serve_sequential_crud``
+  ## pauses at ``wcsBegin`` to prove the client cannot see ``exit`` before the
+  ## teardown is over. Set it before ``runServe`` starts its threads.
+
+proc runCleanupHook(stage: WorkerCleanupStage) =
+  let h = workerCleanupHook
+  if h != nil: h(stage)
+
+proc releaseWorkerStdio*(p: Process) =
+  ## Close the parent's ends of a worker's stdio pipes, EACH EXACTLY ONCE.
+  ## ``p`` must have been spawned with ``WorkerSpawnOptions`` and already
+  ## reaped. Never raises.
+  ##
+  ## Why "exactly once" needs care (gosti#69). A descriptor NUMBER is reused
+  ## by the very next ``open``/``pipe``/``accept`` in ANY thread of the
+  ## daemon, so a second close of a number we already closed shuts whatever
+  ## another request's handler has just opened there: its read loop or write
+  ## then fails with EBADF, which the client saw as
+  ## "worker stream error: Bad file descriptor". The old teardown did that on
+  ## every exec, twice over:
+  ##
+  ##   * after ``outputStream.close()`` it called ``errorStream``, which, the
+  ##     stream not existing yet, ``fdopen``s ``errHandle``. Under
+  ##     ``poStdErrToStdOut`` that IS the stdout fd we just closed, so this
+  ##     adopts whatever now sits on the number and the ``close`` that
+  ##     followed closed it;
+  ##   * when that ``fdopen`` failed instead (number still free), the error
+  ##     stream stayed nil and ``osproc.close`` then ran its fallback
+  ##     ``close(errHandle)``: the same number, closed raw.
+  ##
+  ## So on POSIX: close stdin's stream (a no-op if the handler already closed
+  ## it: ``FileStream.close`` forgets its ``File`` on the first call), close
+  ## stdout's stream (which is also stderr's fd), and STOP. ``errorStream`` is
+  ## never touched, and ``osproc.close`` is never called: on POSIX it does
+  ## nothing but these same closes, plus the stale raw close above.
+  ##
+  ## Both streams are closed explicitly because ``close(p)`` alone used to be
+  ## all we did and it did NOT release the pipes (measured on
+  ## high-mem-server: one leaked pipe pair per exec, up to "Too many open
+  ## files"); ``t_serve_worker_fd_hygiene`` checks nothing leaks either.
+  ##
+  ## Windows keeps ``osproc.close``: there it owns the stdout/stderr handle
+  ## closes, ASSERTS the caller did not close those streams (an
+  ## AssertionDefect, not catchable, crash-looped the daemon on
+  ## win-ci-bare-001), and already closes a merged handle only once.
+  try: p.inputStream.close() except CatchableError: discard
+  when defined(windows):
+    try: p.close() except CatchableError: discard
+  else:
+    try: p.outputStream.close() except CatchableError: discard
+    runCleanupHook(wcsStdoutClosed)
+
 proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
                 slot: int) =
   ## Parse the forwarded argv, spawn the worker (the same vm-harness
@@ -505,7 +572,7 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
   var p: Process
   try:
     p = startProcess(exe, workingDir = ctx.cfg.workDir, args = args,
-                     options = {poStdErrToStdOut})
+                     options = WorkerSpawnOptions)
   except CatchableError as e:
     if userDataPath.len > 0:
       try: removeFile(userDataPath) except CatchableError: discard
@@ -523,13 +590,22 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
   execDeadlineAt[slot].store(getTime().toUnix() + budget)
   execKillToken[slot].store(processKillToken(p))
 
+  # The terminal events are only RECORDED inside the try: they are written
+  # after the ``finally`` below has torn the worker down (gosti#69). A client
+  # that acts on ``exit`` sends its next request at once; writing ``exit``
+  # first let that request's handler open fds while this one was still
+  # closing them, which turned any stray close into somebody else's EBADF.
+  # After the teardown there is nothing left here for a next request to race.
+  let pid = p.processID
+  var code = 1
+  var streamFailed = false
+  var streamError = ""
   try:
     # Feed optional stdin, then close it so stdin-reading workers don't hang.
     if parsed.stdin.len > 0:
       p.inputStream.write(parsed.stdin)
     p.inputStream.close()
     let outStream = p.outputStream
-    let pid = p.processID
     var line = ""
     # Once the client is gone this loop keeps DRAINING the worker — blocked on
     # the pipe, not on the socket — so the worker runs to completion instead
@@ -541,35 +617,19 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
         daemonLog(ctx, "exec client gone (" & cs.why & "); letting worker " &
                   $pid & " run to completion, output discarded")
         cs.discardLine(line)
-    let code = p.waitForExit()
-    # Distinguish "the worker exited" from "we killed it for overrunning".
-    # Without this the client sees only a signal exit status and has to guess,
-    # which is precisely the misattribution MA8 removed from the run path.
-    if execWasReaped[slot].load():
-      cs.emit(errorEvent(
-        "vm-harness serve: exec exceeded its " & $budget &
-        "s deadline and the worker was killed " &
-        "(raise it with serve --exec-deadline-sec)") & "\n")
-    cs.emit(exitEvent(code) & "\n")
-    if cs.gone:
-      var msg = "worker " & $pid & " (client gone) exited " & $code & "; " &
-                $cs.dropped & " output line(s) not delivered"
-      if cs.tail.len > 0:
-        msg.add(", last " & $cs.tail.len & ":")
-        for t in cs.tail:
-          msg.add("\n    " & t)
-      daemonLog(ctx, msg)
+    code = p.waitForExit()
   except CatchableError as e:
-    cs.emit(errorEvent("worker stream error: " & e.msg) & "\n")
-    cs.emit(exitEvent(1) & "\n")
+    streamFailed = true
+    streamError = e.msg
   finally:
+    runCleanupHook(wcsBegin)
     # Disarm BEFORE reaping the process object, so the reaper cannot kill a
     # token this slot no longer owns.
     execKillToken[slot].store(0)
     execDeadlineAt[slot].store(0)
-    # CLOSE THE STREAMS EXPLICITLY, THEN THE PROCESS. `close(p)` alone does NOT
-    # release the stdio pipes this process opened: on POSIX it reaps the child
-    # and frees the handle, but the parent's read/write ends of the pipes
+    # CLOSE THE STREAMS EXPLICITLY, in ``releaseWorkerStdio``. `close(p)`
+    # alone did NOT release the stdio pipes this process opened: on POSIX it
+    # reaps the child and frees the handle, but the parent's read/write ends of the pipes
     # `startProcess` created stay open. MEASURED on high-mem-server: the daemon
     # held complete pipe PAIRS — fd 10 read and fd 11 write of the same inode —
     # one pair per exec, with zero live workers, climbing at the exec rate
@@ -609,25 +669,37 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
       discard p.waitForExit()
     except CatchableError:
       discard
-    try: p.inputStream.close() except CatchableError: discard
-    # POSIX ONLY. On Windows `osproc.close` itself closes the stdout/stderr
-    # handles and ASSERTS the caller did not ("You may NOT close outputStream
-    # and errorStream"); with poStdErrToStdOut both streams also wrap the SAME
-    # handle. Closing them here raised an AssertionDefect — a Defect, so the
-    # `except CatchableError` guards did not catch it — and the daemon died
-    # after serving each exec (observed on win-ci-bare-001: crash-looping on
-    # GARM's ephemeral-destroy teardowns). The Windows close path does not leak
-    # the pipes this guards against, so there is nothing to compensate for.
-    when not defined(windows):
-      try: p.outputStream.close() except CatchableError: discard
-      try: p.errorStream.close() except CatchableError: discard
-    try: p.close() except CatchableError: discard
+    releaseWorkerStdio(p)
     # Delete the user-data seed as soon as the worker exits: the backend has
     # already read it (incus copies it into ``cloud-init.user-data``), so the
     # token-bearing file must not linger on disk.
     if userDataPath.len > 0:
       try: removeFile(userDataPath) except CatchableError: discard
-    cs.finish()
+
+  # The worker is reaped and every one of its fds is closed: only now may the
+  # client learn that the request is over.
+  if streamFailed:
+    cs.emit(errorEvent("worker stream error: " & streamError) & "\n")
+    cs.emit(exitEvent(1) & "\n")
+  else:
+    # Distinguish "the worker exited" from "we killed it for overrunning".
+    # Without this the client sees only a signal exit status and has to guess,
+    # which is precisely the misattribution MA8 removed from the run path.
+    if execWasReaped[slot].load():
+      cs.emit(errorEvent(
+        "vm-harness serve: exec exceeded its " & $budget &
+        "s deadline and the worker was killed " &
+        "(raise it with serve --exec-deadline-sec)") & "\n")
+    cs.emit(exitEvent(code) & "\n")
+    if cs.gone:
+      var msg = "worker " & $pid & " (client gone) exited " & $code & "; " &
+                $cs.dropped & " output line(s) not delivered"
+      if cs.tail.len > 0:
+        msg.add(", last " & $cs.tail.len & ":")
+        for t in cs.tail:
+          msg.add("\n    " & t)
+      daemonLog(ctx, msg)
+  cs.finish()
 
 proc handleConnection(ctx: ServeContext, client: Socket, slot: int) =
   var req: HttpRequest
