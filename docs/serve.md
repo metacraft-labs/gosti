@@ -131,6 +131,18 @@ always answer. When no handler is free the answer is an immediate
 rather than silence — actionable for the caller and, unlike a timeout,
 detectable by a health probe.
 
+The saturation response must survive a request arriving in multiple TCP
+segments. After writing the 503, the acceptor shuts down the send side and
+drains incoming bytes without blocking. Closing immediately with unread bytes
+can reset the connection and discard the response (RFC 9112 section 9.6).
+The acceptor retains at most 64 rejected sockets, for at most one second each,
+and reads at most 4 KiB per socket per pass. It checks pending closures at
+least every 50 ms while idle. At capacity it retires the oldest retained
+socket; failed response writes close immediately. This bounds resource use
+without assigning rejection cleanup to an already saturated worker pool.
+Normal dispatch and shutdown must remain prompt even when rejected peers
+never send, read or close their side.
+
 `--exec-deadline-sec <n>` (default **46800**, thirteen hours) bounds ONE
 `/v1/exec`: a worker that overruns is killed and the client is told so in the
 event stream. The default is sized ABOVE the longest legitimate operation, not

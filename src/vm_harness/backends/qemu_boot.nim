@@ -599,25 +599,25 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
   ## The returned handle MUST be passed to ``stopAndCleanup`` — from a
   ## ``finally``/``defer``, not from the happy path only. Call
   ## ``captureSerial`` on it to drive assertions.
+  if spec.kind == bmkRootfsTar:
+    raise newException(BackendUnavailableError,
+      "QemuBootBackend.bootFromMedia does not support bmkRootfsTar")
+  if spec.mediaPath.len == 0:
+    raise newException(ValueError, "BootMediaSpec.mediaPath is empty")
+  if not fileExists(spec.mediaPath):
+    raise newException(IOError,
+      "BootMediaSpec.mediaPath does not exist: " & spec.mediaPath)
+
+  let vmName = if spec.name.len > 0: spec.name
+               else: newQemuBootVmName(b.namePrefix)
+  if not vmName.startsWith(b.namePrefix):
+    raise newException(ValueError,
+      "BootMediaSpec.name must start with '" & b.namePrefix &
+      "' so a stale-process sweep can recognise it (got '" & vmName & "')")
+  if vmName != extractFilename(vmName):
+    raise newException(ValueError, "BootMediaSpec.name must be a single path component")
+
   when defined(posix):
-    if spec.kind == bmkRootfsTar:
-      raise newException(BackendUnavailableError,
-        "QemuBootBackend.bootFromMedia does not support bmkRootfsTar")
-    if spec.mediaPath.len == 0:
-      raise newException(ValueError, "BootMediaSpec.mediaPath is empty")
-    if not fileExists(spec.mediaPath):
-      raise newException(IOError,
-        "BootMediaSpec.mediaPath does not exist: " & spec.mediaPath)
-
-    let vmName = if spec.name.len > 0: spec.name
-                 else: newQemuBootVmName(b.namePrefix)
-    if not vmName.startsWith(b.namePrefix):
-      raise newException(ValueError,
-        "BootMediaSpec.name must start with '" & b.namePrefix &
-        "' so a stale-process sweep can recognise it (got '" & vmName & "')")
-    if vmName != extractFilename(vmName):
-      raise newException(ValueError, "BootMediaSpec.name must be a single path component")
-
     # The disk-size decision precedes every side effect, so a refused request
     # (``DiskSizeTooSmallError``) leaves no run directory or process behind.
     # Only the backend's own overlay is sized; an ISO's blank target disk is

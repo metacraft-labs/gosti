@@ -1,0 +1,317 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+# Shared inventory: tier (test/host/specialized), platform (all/posix/linux), source.
+# Test files retain their existing per-case platform guards.
+
+# Host-independent unit tests.
+test all tests/unit/t_nimcache_is_worktree_local.nim
+test all tests/unit/t_output_envelope.nim
+test all tests/unit/t_auto_selection.nim
+# GOSTI2 PR-1: the generic-CRUD façade contract (JSON schema + exit codes),
+# every verb driven through the noop backend in-process. Hermetic.
+test all tests/unit/t_crud_facade.nim
+# GOSTI2 PR-2: the same façade driven through the FULL deterministic mock
+# backend (backends/mock.nim) — round-trips every verb and asserts the
+# lifecycle state machine, snapshot persistence + guest-fs restore, and the
+# canned/deterministic VmInfo/SshEndpoint/ExecResult. Hermetic (in-memory).
+test all tests/unit/t_crud_facade_mock.nim
+# GOSTI2 PR-3 + honor-userdata follow-up: the CRUD create surface growth
+# (--user-data/--mount/--ssh-user, exec --cwd/--run-as/--timeout) and the
+# BACKEND-AWARE fail-closed guard (--user-data allowed only for a backend whose
+# honorsUserData() is true; libvirt honors it, the mock does not). Hermetic.
+test all tests/unit/t_crud_surface_growth.nim
+# Cross-invocation crud state (design doc §8.6): the store's location chain,
+# name validation, record round-trip, locks (busy + stale-owner break), and
+# each real backend's instancePresence decision ("gone" only on a successful
+# answer). Hermetic (temp dir + pure functions).
+test all tests/unit/t_crud_store.nim
+# ... and end to end: every verb as a SEPARATE CLI process against the
+# file-backed mock — lifecycle, vanished-instance reconciliation, fault
+# injection, lock-busy, store isolation, noop persistence, and the
+# consumer fixture script. Hermetic.
+test all tests/e2e/t_crud_store_roundtrip.nim
+# GOSTI2 honor-userdata: libvirt BUILDS a NoCloud "cidata" seed from the
+# caller's cloud-init user-data and ATTACHES it to the domain XML as a
+# read-only CD-ROM. Pure-function gate (seed round-trip + domain-XML render +
+# capability signal) — no libvirtd, no VM. Live cloud-init boot is a follow-up.
+test all tests/unit/t_libvirt_nocloud_seed.nim
+test all tests/unit/t_libvirt_baseline_off.nim
+test all tests/unit/t_guest_scripts.nim
+test all tests/unit/t_cli_probe.nim
+test all tests/unit/t_cli_boot.nim
+test all tests/unit/t_cli_incus.nim
+test all tests/unit/t_incus_create_tuning.nim
+# GARM instance-lifecycle gate: `ephemeral-list` makes kept ephemeral
+# instances visible and fails CLOSED (an unenumerable backend is an error,
+# never an empty list), and incus `ephemeral-destroy` retries a transiently
+# busy ZFS delete and exits non-zero while the container still exists.
+test all tests/unit/t_ephemeral_inventory.nim
+test all tests/unit/t_ssh_serialization.nim
+test all tests/unit/t_hyperv_parsers.nim
+test all tests/unit/t_hyperv_boot_media.nim
+test all tests/unit/t_hyperv_ephemeral_clone.nim
+test all tests/unit/t_pool_algorithms.nim
+test all tests/unit/t_libvirt_snapshot_args.nim
+test all tests/unit/t_wsl_parsers.nim
+test all tests/unit/t_utm_parsers.nim
+test all tests/unit/t_tart_shared_dirs.nim
+test all tests/unit/t_qemu_windows_arm_backend.nim
+test posix tests/unit/t_qemu_windows_arm_swtpm_startup.nim
+test all tests/unit/t_qemu_windows_arm_overlay.nim
+# Runner-Fleet-M3-ARM-Wave MA3 gate: t_qemu_windows_arm_golden_build, UNIT
+# TIER — the install argv, the rebuild-safety guards, the free-space
+# precondition, and the install -> sysprep -> power-off -> finalize ->
+# manifest orchestration driven end to end against a fake QEMU that binds the
+# real forwarded port and serves a real monitor socket. The HOST tier (a real
+# Windows install, and two clones with distinct machine SIDs) is
+# tests/e2e/t_qemu_windows_arm_golden_build_host.nim, run by
+# scripts/run-host-tests.sh; it skips with an explicit message naming every
+# precondition it lacks.
+# Unix monitor/QMP and shell lifecycle for the macOS-host backend; Linux
+# runs the same real POSIX boundary fixture. Portable contracts run everywhere.
+test all tests/unit/t_qemu_windows_arm_golden_contracts.nim
+test posix tests/unit/t_qemu_windows_arm_golden_build.nim
+# Runner-Fleet-M3-ARM-Wave MA8 gate: t_qemu_windows_arm_dead_guest_is_named,
+# UNIT TIER — a per-job boot whose QEMU exits before SSH is reached fails in
+# SECONDS naming the exited process and its exit status, instead of being
+# polled to the 300s SSH deadline and then blamed on sshd. Shares MA3/MA4's
+# fake QEMU (tests/unit/qwa_fake_qemu.nim). The HOST tier restores -no-reboot
+# on a real golden -- the known reproducer, measured at 5m38s before this --
+# and is tests/e2e/t_qemu_windows_arm_dead_guest_is_named_host.nim, run by
+# scripts/run-host-tests.sh.
+test posix tests/unit/t_qemu_windows_arm_dead_guest_is_named.nim
+test all tests/unit/t_qemu_boot_backend.nim
+test all tests/unit/t_tpm_device_args.nim
+test all tests/unit/t_windows_golden_recipe_hardening.nim
+# The Linux runner recipe's actions-runner pin: stale-pin warning helpers,
+# `latest` resolution, staged-version + digest verification, version stamp.
+test all tests/unit/t_linux_runner_recipe_pin.nim
+test all tests/unit/t_tart_backend.nim
+# Tart per-job clones honour --disk-gb: grown with `tart set --disk-size`
+# before boot, an explicit shrink refused by name, and the guest root
+# filesystem verified (and grown in-guest) after boot.
+test all tests/unit/t_tart_disk_resize.nim
+# The same disk-size rules for libvirt (overlay + qcow2 import), UTM and
+# Hyper-V, and the shared in-guest growth (Resize-Partition / growpart),
+# with real qemu-img; then the Windows-ARM QEMU per-job path end to end.
+# Keep shared decisions, guest-growth and Hyper-V command checks on Windows.
+test all tests/unit/t_disk_size_contracts.nim
+# Remaining lifecycle doubles require executable POSIX shell scripts.
+test posix tests/unit/t_disk_size_honoured.nim
+test posix tests/unit/t_qemu_windows_arm_disk_size.nim
+# Runner-Fleet-M3-ARM-Wave MA0 gate: t_vmharness_image_is_honoured, assertion
+# (c) — a registry-constructed tart backend with no image configured RAISES
+# rather than substituting a default. Assertions (a) and (b) are provider-side
+# and are run by the nix check of the same name in metacraft-labs/nixos-modules.
+test all tests/unit/t_vmharness_image_is_honoured.nim
+test all tests/unit/t_lima_backend.nim
+test all tests/unit/t_prune.nim
+# Runner-Fleet-M3-ARM-Wave MA7 (hygiene half) gate:
+# t_m3_tart_orphan_dirs_reclaimed — `tart list` omits a VM with no disk.img,
+# so `tart delete` cannot address one and every CLI-driven reaper is blind to
+# it; m3 had leaked 600 such directories / 14.6 GiB. This gates the
+# filesystem sweep that reclaims them AND, mostly, that each of its four
+# guards independently spares a VM that is alive.
+test all tests/unit/t_m3_tart_orphan_dirs_reclaimed.nim
+test all tests/unit/t_layer_gc.nim
+test all tests/unit/t_design_reprobuild_adapter_section.nim
+test all tests/unit/t_uefi_iso_validator.nim
+test all tests/unit/t_serve_protocol.nim
+# RA6 enrollment/identity + capability manifest: pure crypto vectors, the
+# capability deciders against fixtures, and the sign/verify state machine.
+test all tests/unit/t_serve_enrollment.nim
+# gosti#69: the daemon closes each worker stdio fd exactly once. A stray second
+# close of the merged stdout/stderr fd shut whatever another request had just
+# opened on that number ("worker stream error: Bad file descriptor").
+# Deterministic: a cleanup-stage seam reoccupies the freed numbers. POSIX-only
+# (the file compiles to an empty suite on Windows).
+test all tests/unit/t_serve_worker_fd_hygiene.nim
+
+# Backend-independent lifecycle and CLI coverage.
+test all tests/integration/t_noop_lifecycle.nim
+test all tests/e2e/t_vm_harness_smoke.nim
+test all tests/e2e/t_vm_harness_finally_cleanup_on_panic.nim
+test all tests/e2e/t_vm_harness_auto_backend_selection.nim
+# RA1 remoting: a remote client drives provision->run->destroy against a
+# `vm-harness serve` daemon over the authenticated endpoint (noop backend).
+test all tests/e2e/t_vmharness_serve_roundtrip.nim
+# vm-harness -> gosti rename (design doc §6.0): the real CLI installed by the
+# shared layout script is `bin/gosti` + a `bin/vm-harness` symlink, both names
+# behave identically, and a daemon started as `vm-harness serve` (how the
+# deployed units start it) still serves execs. Hermetic (noop backend).
+test all tests/e2e/t_gosti_command_names.nim
+# GOSTI2 PR-1 follow-up: the generic-CRUD `--json` envelope and exit code are
+# byte-identical over the local CLI (child process, stdout only) and over
+# serve's POST /v1/exec (one `log` line + matching `exit`). Hermetic (noop).
+test all tests/e2e/t_crud_serve_parity.nim
+# Concurrency gate: a slow /v1/exec must NOT serialize other connections
+# (the central-GARM driver fires many simultaneous calls). Fails against the
+# old serial accept loop, passes against the thread-pool loop. Hermetic (the
+# worker is a trivial self-exec sleep/quick role — no backend).
+# Fixed socket-handle storage, bounded dispatch, and producer lifetime.
+test all tests/unit/t_serve_dispatch_queue.nim
+test all tests/e2e/t_vmharness_serve_concurrency.nim
+# A teardown whose client vanishes (GARM SIGKILLs/cancels its provider) must
+# still run to completion on the daemon host. Hermetic (self-exec worker).
+test all tests/e2e/t_vmharness_serve_teardown_survives_disconnect.nim
+# ... and must cost the daemon nothing while it does: no CPU spin on the dead
+# socket, the worker keeps being drained (it outputs more than a pipe holds),
+# and every worker is reaped — zero zombie/leftover children after a mix of
+# abandoned and completed execs. Falsifiable: routing writes back through
+# std/net's send(Socket, string) fails all three. Hermetic (self-exec worker).
+test all tests/e2e/t_vmharness_serve_client_disconnect_no_spin.nim
+# Runner-Fleet-M3-ARM-Wave MA12 gate:
+# t_vmharness_serve_survives_a_hung_request — the daemon must survive a HUNG
+# request, not merely a slow one. Three layers: one hung /v1/exec does not
+# stop a concurrent request (the thread pool); a FULLY SATURATED pool answers
+# 503 immediately instead of letting connections rot in the listen backlog
+# (the production wedge — `Recv-Q 4097` on a LISTEN socket, twice, once for 19
+# hours); and the daemon recovers once the hangs drain. Falsifiable in both
+# directions: VMH_HUNG_TEST_THREADS=1 makes layer 1 fail (serial-equivalent),
+# and the pre-MA12 thread-pool-only daemon passes layer 1 but fails layer 2.
+# Hermetic — the worker is a trivial self-exec hang/quick role, no backend.
+test all tests/e2e/t_vmharness_serve_survives_a_hung_request.nim
+# gosti#69 gate: back-to-back CRUD requests never hit the previous request's
+# teardown. Deterministic half: with a pause injected at the start of worker
+# cleanup, a client that stops at `exit` must not see it before the pause
+# ends (exit is written only after cleanup). Plus a 200-request sequential
+# hammer on a 3-thread daemon. Hermetic (mock CRUD backend).
+test all tests/e2e/t_vmharness_serve_sequential_crud.nim
+# RA6 enrollment gate: a remote client reads the daemon's SIGNED identity +
+# capability manifest over /v1/manifest and verifies it against a trust store;
+# unenrolled/expired/revoked/tampered identities are rejected. Hermetic (noop).
+test all tests/e2e/t_vmharness_serve_enrollment.nim
+
+# Backend contracts that do not require a live hypervisor.
+test all tests/integration/t_libvirt_backend.nim
+test all tests/integration/t_cli_libvirt_flags.nim
+test all tests/integration/t_incus_ephemeral_capabilities.nim
+test all tests/integration/t_durable_media.nim
+
+# Live boot-smoke falsifiability gates. These really boot QEMU, but under
+# TCG against a 512-byte synthetic guest that halts in under a second, so
+# they need no hypervisor and no prebuilt artifact. They exit early with a
+# printed reason on non-Linux hosts; on Linux they never skip.
+test all tests/integration/t_boot_smoke_harness_fails_on_missing_line.nim
+test all tests/integration/t_boot_smoke_harness_tears_down_on_failure.nim
+
+# Live vTPM gate. Boots a real Linux guest (stock nixpkgs kernel + busybox
+# initramfs, `nix/guest-linux-tpm.nix`) with and without a swtpm-backed TPM
+# and asserts what the guest itself reports about /dev/tpm0. Needs
+# $VMH_TPM_GUEST_DIR, which the dev shell exports; on Linux it never skips.
+test all tests/integration/t_guest_sees_tpm_device.nim
+# These gates require a real host hypervisor or daemon. They are intentionally
+# separate from the ephemeral Nix CI matrix: a Tart macOS guest is not itself
+# a supported Tart/UTM/Lima host, and a plain Incus guest is not a libvirt or
+# nested-Incus host.
+
+# Windows host: Hyper-V and WSL.
+host all tests/integration/t_hyperv_lifecycle.nim
+host all tests/integration/t_wsl_lifecycle.nim
+host all tests/e2e/t_vm_harness_hyperv_m69_feature_capability_passes.nim
+host all tests/e2e/t_vm_harness_wsl_m69_passwd_user_passes.nim
+host all tests/e2e/t_vm_harness_wsl_systemd_boot.nim
+host all tests/e2e/t_vm_harness_hyperv_systemd_boot.nim
+# RA4 remoting on a SECOND Windows host: a remote client drives a per-job
+# ephemeral Hyper-V VM (New-VHD/New-VM-from-golden -> boot -> JIT-probe ->
+# Remove-VM, no residue) through `vm-harness serve`. Needs a golden VHDX in
+# $VMH_HYPERV_GOLDEN; self-skips off-Windows / without Hyper-V / without it.
+host all tests/e2e/t_vmharness_serve_win_hyperv.nim
+
+# macOS host: Tart, UTM, and Lima.
+host all tests/integration/t_tart_lifecycle.nim
+host all tests/e2e/t_vm_harness_tart_linux_arm_smoke.nim
+host all tests/e2e/t_vm_harness_tart_macos_smoke.nim
+host all tests/e2e/t_vm_harness_tart_cleanup_on_failure.nim
+# RA5 remoting on the macOS/tart host (m3): a remote client drives a per-job
+# ephemeral tart guest (clone-from-golden -> boot -> in-guest probe -> destroy,
+# no residue) through `vm-harness serve`. Defaults to the cheap Linux-ARM
+# golden; set VMH_TART_SERVE_MACOS=1 for the macOS golden. Self-skips off-macOS
+# / without tart+sshpass.
+host all tests/e2e/t_vmharness_serve_macos_tart.nim
+
+# Runner-Fleet-M3-ARM-Wave MA3 gate: t_qemu_windows_arm_golden_build, HOST
+# TIER. Opt-in behind VMH_WINDOWS_ARM_GOLDEN_HOST_TEST=1 plus the two ISO
+# paths, because one run is a real ~60 minute Windows install. With any
+# precondition missing it SKIPS and names each one; it never passes quietly.
+host all tests/e2e/t_qemu_windows_arm_golden_build_host.nim
+# Runner-Fleet-M3-ARM-Wave MA4 gate: t_qemu_windows_arm_per_job_boot, HOST
+# TIER. Boots an EXISTING golden through the per-job path a CI job uses and
+# requires SSH plus a real command. ~2 minutes, no opt-in flag: it needs only
+# a finished golden, and it is the gate that would have caught `-no-reboot`
+# making every per-job instance die 38s in. Skips loudly, naming the golden
+# path it looked at, when there is none.
+host all tests/e2e/t_qemu_windows_arm_per_job_boot_host.nim
+# Runner-Fleet-M3-ARM-Wave MA8 gate: t_qemu_windows_arm_dead_guest_is_named,
+# HOST TIER. Boots the same existing golden with the KNOWN REPRODUCER on the
+# argv -- the pre-MA4 vector, reconstructed from the shipped one, which makes a
+# generalized golden's QEMU exit rc=0 ~38s in -- and requires the harness to
+# report a dead PROCESS in seconds. The same reproducer took 5m38s and blamed
+# SSH before MA8. ~1 minute, no opt-in flag; skips loudly when there is no
+# golden.
+host all tests/e2e/t_qemu_windows_arm_dead_guest_is_named_host.nim
+# Runner-Fleet-M3-ARM-Wave MA12 gate:
+# t_vmharness_serve_survives_a_hung_request, HOST TIER. READ-ONLY, and safe
+# against a daemon serving live CI: it starts nothing and sends no /v1/exec.
+# It asserts the two things that were true on both wedged production hosts and
+# that no hermetic test can see — the DEPLOYED listener answers an
+# unauthenticated probe within the same budget the watchdog gives it, and its
+# accept backlog is not saturated (`Recv-Q` below `Send-Q` on the LISTEN
+# socket; the incident showed 4097 against 4096). Probes
+# $VMH_SERVE_HOST_ADDR, default 127.0.0.1:8873. Skips loudly, naming the
+# address it looked at, when no daemon is deployed there; the backlog layer
+# additionally skips off-Linux, where the accept queue is not observable.
+host all tests/e2e/t_vmharness_serve_survives_a_hung_request_host.nim
+host all tests/integration/t_utm_lifecycle.nim
+host all tests/e2e/t_vm_harness_utm_windows_arm_smoke.nim
+host all tests/e2e/t_vm_harness_utm_windows_dism_works_under_prism.nim
+host all tests/integration/t_lima_lifecycle.nim
+host all tests/e2e/t_vm_harness_lima_linux_smoke.nim
+host all tests/e2e/t_vm_harness_lima_revert_under_30s.nim
+
+# Linux host: libvirt and Incus.
+host all tests/e2e/t_vmharness_libvirt_ephemeral_run.nim
+# Campaign WR0: the libvirt snapshot surface. Both self-skip loudly when
+# their prerequisites are absent -- the conformance gate needs
+# VMH_LIBVIRT_SCRATCH=1 on a /session URI (it DEFINES a throwaway domain),
+# and the live gate needs an operator-provided running guest in
+# VMH_LIBVIRT_WARM_DOMAIN. See each file's header.
+host all tests/e2e/t_libvirt_snapshot_surface_conformance.nim
+host all tests/e2e/t_libvirt_live_snapshot_restore.nim
+host all tests/e2e/t_windows_golden_jit_boot.nim
+host all tests/e2e/t_vmharness_incus_ephemeral_run.nim
+# RA1 remoting against a real backend: remote client drives an ephemeral
+# incus container through `vm-harness serve` (launch -> probe -> destroy).
+host all tests/e2e/t_vmharness_serve_roundtrip_incus.nim
+# §7.4 layered base images: snapshot -> publish -> export -> import -> launch.
+host all tests/e2e/t_incus_layered_base_image.nim
+
+# Previously Reprobuild-only deterministic CLI coverage.
+test posix tests/unit/t_cli_ephemeral_vmrun.nim
+# Incus bootstrap contract: uses the existing fake-command seam, no daemon.
+test all tests/unit/t_cli_incus_bootstrap.nim
+# Catalog validation and real filesystem drift controls.
+test all tests/unit/t_test_catalog.nim
+
+# Specialized gates remain under their own harnesses. They need a prepared
+# guest image or Reprobuild provider compile environment; do not run these
+# implicitly as part of the deterministic suite or the existing host runner.
+# The Incus JIT gate also documents a superseded cloud-init premise; its
+# Linux retargeting is a separate follow-up, never deterministic coverage.
+specialized all tests/e2e/t_incus_linux_jit_boot.nim
+specialized all tests/e2e/t_rp5c1_vm_harness_provider_via_protocol.nim
+specialized all tests/e2e/t_s2_network_and_attachment.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_drm_present.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_gen_switch.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_gnome.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_hyprland.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_kernel_boot.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_macos_via_darling.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_multi_de.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_multi_de_sddm.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_multi_distro.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_mvp_foreign.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_plasma.nim
+specialized all tests/e2e/t_vm_harness_hyperv_reproos_windows_via_wine.nim
+specialized all tests/e2e/t_vm_harness_hyperv_windows_installer_smoke.nim
+specialized all tests/e2e/t_vm_harness_resources.nim

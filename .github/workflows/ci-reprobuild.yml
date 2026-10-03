@@ -91,6 +91,30 @@ jobs:
           private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
           owner: metacraft-labs
 
+      # Layer-GC and disk-size tests require real qcow2 images on every OS.
+      # Keep the existing x64-emulation contract on Windows ARM64 hosts.
+      - name: Install Windows QEMU image tools
+        if: runner.os == 'Windows'
+        id: qemu-msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-qemu-image-util
+          location: ${{ runner.temp }}/gosti-qemu
+
+      - name: Expose the real QEMU image utility
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          GOSTI_MSYS2_DIR: ${{ steps.qemu-msys2.outputs.msys2-location }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $qemuBin = Join-Path $env:GOSTI_MSYS2_DIR 'ucrt64/bin'
+          & (Join-Path $qemuBin 'qemu-img.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'qemu-img or its runtime DLLs are unavailable' }
+          $qemuBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Setup reprobuild environment
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@93de03f82560d545ea345b9810123135ca875674
         with:
@@ -98,7 +122,7 @@ jobs:
           # Exercise the published bootstrap repairs before a new CLI release.
           # Windows ARM64 keeps the existing emulated x64 Reprobuild tools.
           repro-from-source: true
-          repro-build-pin: 90dc43218b00f2a1a7de94c174fb849f21b3a377
+          repro-build-pin: 1f85ace0037d0a70e966fe8eee645d766522b1ab
           gh-token: ${{ steps.ci-token.outputs.token }}
           substituters: ${{ vars.SUBSTITUTERS }}
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}

@@ -13,6 +13,8 @@ import std/[algorithm, hashes, json, monotimes, net, options, os, osproc, stream
             strutils, tables, times]
 when defined(posix):
   import std/posix
+elif defined(windows):
+  import std/winlean
 import ../types
 import ../auto
 import ../disk_growth
@@ -143,7 +145,7 @@ const
     ## with ``/unattend:`` pointing here, so the two must agree.
   QwaGoldenManifestName* = "golden-manifest.json"
   QwaGoldenManifestSchema* = "vm-harness/qemu-windows-arm-golden/1"
-  QwaVmHarnessVersion* = "0.1.1"
+  QwaVmHarnessVersion* = "0.1.2"
     ## Recorded in each golden's manifest. Kept in step with the ``version``
     ## field of ``vm_harness.nimble``, which the unit gate compares against.
   QwaDefaultGoldenDeadlineSec* = 90 * 60
@@ -491,6 +493,20 @@ proc pidAlive*(pid: int): bool =
     if rc == 0:
       return true
     return errno == EPERM
+  elif defined(windows):
+    # A process handle becomes signaled on exit, including exit code 259
+    # (STILL_ACTIVE). Querying only its exit code would misclassify that case.
+    # Only a missing PID proves absence; denied access or a failed wait must
+    # preserve the directory that prune is considering deleting.
+    if uint64(pid) > uint64(high(uint32)):
+      return false
+    let process = winlean.openProcess(winlean.DWORD(winlean.SYNCHRONIZE),
+      winlean.WINBOOL(0), winlean.DWORD(pid))
+    if process == 0:
+      const ErrorInvalidParameter = 87'i32
+      return winlean.getLastError() != ErrorInvalidParameter
+    defer: discard winlean.closeHandle(process)
+    return winlean.waitForSingleObject(process, 0) != winlean.WAIT_OBJECT_0
   else:
     return false
 
@@ -2107,8 +2123,14 @@ proc fileSha256*(path: string): string =
       continue
     if r.exitCode == 0:
       let fields = r.stdout.strip().splitWhitespace()
-      if fields.len > 0 and fields[0].len == 64:
-        return fields[0].toLowerAscii()
+      if fields.len > 0:
+        # GNU checksum output starts with '\\' when its filename is escaped.
+        # Windows separators and literal POSIX backslashes both trigger it.
+        let digest = if fields[0].startsWith("\\"): fields[0][1 .. ^1]
+                     else: fields[0]
+        if digest.len == 64 and
+            digest.allCharsInSet({'0'..'9', 'a'..'f', 'A'..'F'}):
+          return digest.toLowerAscii()
   raise newVmHarnessError($biQemuWindowsArm, lpProvisioning,
     "cannot compute a SHA-256 for " & path &
     ": neither shasum nor sha256sum produced a digest")

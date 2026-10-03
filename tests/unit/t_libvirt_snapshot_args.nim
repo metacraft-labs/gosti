@@ -17,7 +17,7 @@
 ## one that does not is a single flag, and getting it wrong produces a
 ## snapshot that looks fine and then BOOTS on restore instead of resuming.
 
-import std/[strutils, unittest]
+import std/[os, strutils, unittest]
 import vm_harness
 
 const DomblklistSample = """
@@ -87,7 +87,7 @@ suite "libvirt snapshot: artifact paths and spec escaping":
     # (WIN-EDC8DG9PTDT / 172.27.94.244 on two guests at once).
     let b = newLibvirtBackend(imagePoolDir = "/storage/libvirt")
     check b.memoryStatePathFor("win-warm-0", "pool-baseline-0") ==
-      "/storage/libvirt/win-warm-0.pool-baseline-0.memstate"
+      "/storage/libvirt" / "win-warm-0.pool-baseline-0.memstate"
     check b.memoryStatePathFor("win-warm-1", "pool-baseline-0") !=
       b.memoryStatePathFor("win-warm-0", "pool-baseline-0")
     check b.memoryStatePathFor("win-warm-0", "pool-baseline-1") !=
@@ -99,9 +99,9 @@ suite "libvirt snapshot: artifact paths and spec escaping":
     let b = newLibvirtBackend(imagePoolDir = "/storage/libvirt",
                               snapshotStateDir = "/fast-nvme/warm")
     check b.effectiveSnapshotStateDir == "/fast-nvme/warm"
-    check b.memoryStatePathFor("m", "s") == "/fast-nvme/warm/m.s.memstate"
+    check b.memoryStatePathFor("m", "s") == "/fast-nvme/warm" / "m.s.memstate"
     check b.snapshotDiskPathFor("m", "s", "vda") ==
-      "/fast-nvme/warm/m.s.vda.qcow2"
+      "/fast-nvme/warm" / "m.s.vda.qcow2"
 
   test "an unset snapshotStateDir falls back to the image pool":
     let b = newLibvirtBackend(imagePoolDir = "/storage/libvirt")
@@ -124,7 +124,7 @@ suite "libvirt snapshot: snapshot-create-as argv":
     check argv[0] == "snapshot-create-as"
     check "--live" in argv
     check "--memspec" in argv
-    check "file=/storage/libvirt/win-warm-0.warm.memstate,snapshot=external" in
+    check ("file=" & ("/storage/libvirt" / "win-warm-0.warm.memstate") & ",snapshot=external") in
       argv
     # --disk-only would mean "no vm state" and silently give up the resume.
     check "--disk-only" notin argv
@@ -140,7 +140,7 @@ suite "libvirt snapshot: snapshot-create-as argv":
   test "writable disks get an external overlay; shared media gets snapshot=no":
     let argv = b.buildSnapshotCreateArgs("win-warm-0", "warm", devs,
                                          live = true)
-    check "vda,snapshot=external,file=/storage/libvirt/win-warm-0.warm.vda.qcow2" in
+    check ("vda,snapshot=external,file=" & ("/storage/libvirt" / "win-warm-0.warm.vda.qcow2")) in
       argv
     # Explicit rather than implicit: libvirt would otherwise try to snapshot
     # the shared install ISOs attached as cdroms.

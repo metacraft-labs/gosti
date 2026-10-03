@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
 ## Runner-Fleet-M3-ARM-Wave MA8 gate: ``t_qemu_windows_arm_dead_guest_is_named``
-## — UNIT TIER. Runs anywhere; needs no hypervisor, no Windows and no ISO.
+## — UNIT TIER, POSIX hosts. Needs no hypervisor, guest Windows or ISO.
+## Exercises the macOS-host backend with real Unix monitor/QMP boundaries.
 ##
 ## The host tier of the same gate lives in
 ## ``tests/e2e/t_qemu_windows_arm_dead_guest_is_named_host.nim`` and is wired

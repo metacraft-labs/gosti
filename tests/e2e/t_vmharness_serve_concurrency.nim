@@ -136,8 +136,15 @@ suite "t_vmharness_serve_concurrency":
     let t0 = epochTime()
     for k in 0 ..< 5:
       var got = ""
+      let requestStarted = epochTime()
+      var firstLogSeconds = -1.0
       let code = client.execStream(@["quick"], proc(ev: ExecEvent) =
-        if ev.kind == ekLog: got.add(ev.line))
+        if ev.kind == ekLog:
+          if firstLogSeconds < 0:
+            firstLogSeconds = epochTime() - requestStarted
+          got.add(ev.line))
+      echo "fast request ", k, ": first log seconds=", firstLogSeconds,
+        ", total seconds=", epochTime() - requestStarted
       check code == 0
       check "quick-ok" in got
     let elapsed = epochTime() - t0

@@ -127,8 +127,10 @@ type ProbeOutcome = object
   timedOut: bool        ## no response within the probe budget
   status: int           ## HTTP status when one arrived (0 if none)
   elapsed: float
+  error: string        ## distinguish a transport error from an expired budget
 
-proc probeLiveness(host: string, port: int, budgetSec: float): ProbeOutcome =
+proc probeLiveness(host: string, port: int, budgetSec: float;
+    fragmentDelayMs = 0): ProbeOutcome =
   ## Issue ONE bounded liveness request and report what came back.
   ##
   ## WHAT IS PROBED, and why it is not `/v1/info`. The probe is an
@@ -156,7 +158,15 @@ proc probeLiveness(host: string, port: int, budgetSec: float): ProbeOutcome =
   var sock = newSocket()
   try:
     sock.connect(host, Port(port), timeout = int(budgetSec * 1000))
-    sock.sendRequest("GET", "/v1/info", host & ":" & $port)
+    if fragmentDelayMs == 0:
+      sock.sendRequest("GET", "/v1/info", host & ":" & $port)
+    else:
+      # A real segmented request: the server must not reset our send side
+      # while the remaining headers are in flight.
+      sock.sendAll("GET /v1/info HTTP/1.1\r\n")
+      sleep(fragmentDelayMs)
+      sock.sendAll("Host: " & host & ":" & $port &
+        "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
     # Read just enough to carry the status line and take the status off it.
     #
     # EXACTLY `StatusPrefixLen` bytes, not "up to": Nim's timeout overload of
@@ -174,8 +184,9 @@ proc probeLiveness(host: string, port: int, budgetSec: float): ProbeOutcome =
     if parts.len >= 2 and parts[0].startsWith("HTTP/"):
       result.status = parseInt(parts[1])
       result.timedOut = false
-  except CatchableError:
+  except CatchableError as e:
     result.timedOut = true
+    result.error = $e.name & ": " & e.msg
   finally:
     try: sock.close() except CatchableError: discard
     result.elapsed = epochTime() - t0
@@ -269,6 +280,8 @@ suite "t_vmharness_serve_survives_a_hung_request":
       # left this connection in the accept backlog and the client timed out.
       # The fixed daemon answers immediately with a diagnostic 503.
       let saturated = probeLiveness("127.0.0.1", port, ProbeBudgetSec)
+      checkpoint("saturation probe: status=" & $saturated.status &
+        " elapsed=" & $saturated.elapsed & " error=" & saturated.error)
       check not saturated.timedOut          # <- fails on the unfixed daemon
       check saturated.status == SaturatedStatus
       # Immediate, not "eventually": the reply must come from the acceptor, not
@@ -278,6 +291,53 @@ suite "t_vmharness_serve_survives_a_hung_request":
       # saturation rather than after the hangs drained.
       for h in hangers:
         check h.running
+
+  test "a saturated pool preserves the 503 for segmented requests":
+    if poolSize < 2:
+      skip()
+    else:
+      for delayMs in [1, 10, 50]:
+        let observed = probeLiveness("127.0.0.1", port, ProbeBudgetSec, delayMs)
+        checkpoint("segmented probe: delay=" & $delayMs & "ms status=" &
+          $observed.status & " elapsed=" & $observed.elapsed &
+          " error=" & observed.error)
+        check not observed.timedOut
+        check observed.status == SaturatedStatus
+        check observed.elapsed < 2.5
+      for h in hangers: check h.running
+
+  test "silent rejected peers cannot block accepting or retain sockets forever":
+    if poolSize < 2:
+      skip()
+    else:
+      var silent: seq[Socket]
+      try:
+        # Exceed the documented 64 retained-socket cap. These peers neither
+        # send requests nor read responses until after the drain deadline.
+        for i in 0 ..< 80:
+          let peer = newSocket()
+          silent.add(peer)
+          peer.connect("127.0.0.1", Port(port), timeout = 2000)
+        let observed = probeLiveness("127.0.0.1", port, ProbeBudgetSec, 50)
+        checkpoint("probe with silent peers: " & $observed)
+        check not observed.timedOut
+        check observed.status == SaturatedStatus
+        check observed.elapsed < 2.5
+        sleep(1500) # Beyond the documented one-second retention bound.
+        for peer in silent:
+          var response = ""
+          var ended = false
+          for i in 0 ..< 4096:
+            var byte = ""
+            if peer.recv(byte, 1, timeout = 1000) == 0:
+              ended = true
+              break
+            response.add(byte)
+          check response.startsWith("HTTP/1.1 503 ")
+          check ended
+        for h in hangers: check h.running
+      finally:
+        for peer in silent: peer.close()
 
   test "layer 3: the daemon recovers once the hung requests drain":
     # Let every hanging exec finish on its own (they are `sleep`s, not

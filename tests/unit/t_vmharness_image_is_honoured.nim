@@ -36,14 +36,14 @@
 ## smoke tests and local experiments; that distinction is asserted here too, so
 ## the fail-loud behaviour cannot be widened or narrowed unnoticed.
 
-import std/[strutils, tables, tempfiles, os, unittest]
+## Mock justification: a native no-op Tart command permits image-selection
+## checks without installing Tart or booting a guest. The process is real.
+
+import std/[json, strutils, tables, tempfiles, os, unittest]
+import ../native_command_fixture
 import vm_harness/auto
 import vm_harness/backends/tart
 import vm_harness/types
-
-proc writeExecutable(path, body: string) =
-  writeFile(path, body)
-  setFilePermissions(path, {fpUserRead, fpUserWrite, fpUserExec})
 
 proc emptySpec(name: string): BaselineSpec =
   result = BaselineSpec(name: name)
@@ -105,8 +105,7 @@ suite "t_vmharness_image_is_honoured (c): tart golden image selection":
   test "provisionBaseline adopts sourceImage over a default":
     let tmp = createTempDir("vmh-tart-unit-", "")
     defer: removeDir(tmp)
-    let tart = tmp / "tart"
-    writeExecutable(tart, "#!/bin/sh\nexit 0\n")
+    let tart = commandFixture(tmp / "tart", %*{})
 
     let backend = newTartBackend(guestOs = goMacos, tartCmd = tart)
     var spec = emptySpec("macos-tart-runner")
@@ -121,8 +120,7 @@ suite "t_vmharness_image_is_honoured (c): tart golden image selection":
     # tart lane at all.
     let tmp = createTempDir("vmh-tart-unit-", "")
     defer: removeDir(tmp)
-    let tart = tmp / "tart"
-    writeExecutable(tart, "#!/bin/sh\nexit 0\n")
+    let tart = commandFixture(tmp / "tart", %*{})
 
     let backend = TartBackend(newBackend(biTartMacos))
     backend.tartCmd = tart
