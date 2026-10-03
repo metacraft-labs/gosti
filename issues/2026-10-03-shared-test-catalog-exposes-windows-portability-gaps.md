@@ -317,3 +317,22 @@ attributing this to contention or changing scheduling. Keep every deadline,
 worker, request and assertion. The acceptor currently sends 503 and closes the
 socket without reading request bytes; connection reset is a hypothesis pending
 a real transport diagnostic, not an established root cause.
+
+
+### Saturation response teardown reproduced on macOS
+
+At `c7cd6fa1f3002ae39baf542d2f5578e6e4bbf9dc`, the actual compiled daemon
+with four real sleeping workers resets a valid request sent in two writes.
+Three repetitions each at 1, 10 and 50 ms between the request line and headers
+raise `BrokenPipeError(32)` before the client can consume the 503. Three
+zero-delay controls receive 503. The workers finish and authenticated shutdown
+succeeds. This independently reproduces an actual transport defect; the pending
+Windows diagnostic must still attribute its original failure.
+
+`rejectSaturated` sends its response without consuming the request, and the
+acceptor immediately closes. RFC 9112 section 9.6 describes the resulting TCP
+reset risk and staged close. The existing `docs/serve.md` saturation contract
+requires a prompt usable 503. Extend that contract with bounded nonblocking
+receive-side draining after the response and a send-side shutdown, retaining
+the unchanged timing assertions. Tests must exercise segmented requests,
+nonreading peers, saturation recovery and shutdown against the real daemon.
