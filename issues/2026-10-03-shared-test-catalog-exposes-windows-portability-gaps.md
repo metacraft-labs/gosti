@@ -432,3 +432,25 @@ configuration written and read by actual child processes, and Bash command
 resolution. Preserve every response assertion and the executable-reuse
 control. Do not introduce retries, delays, service changes or a cache bypass
 to make stale response data appear correct.
+
+
+### Establish the fixture after Bash startup
+
+The actual `actions/runner` latest release queried on 2026-10-03 is `v2.337.0`,
+matching the value returned by all three failed direct runs. This makes selection
+of the real network curl a plausible cause, not proof of stale sidecar reads.
+Git for Windows [documents its wrapper](https://gitforwindows.org/git-wrapper.html):
+`Git/bin/bash.exe` adjusts PATH before starting `Git/usr/bin/bash.exe`. The
+full diagnostic at shared `4b8073d` is still checking actual command resolution.
+Do not attribute the failure to data caching without that evidence.
+
+The recipe fixture must establish its selected command directory inside Bash,
+after any wrapper/startup changes, and require that `command -v curl` denotes
+the intended native fixture before invoking the recipe. This is part of the
+existing hermetic API-response boundary, not a change to the recipe itself.
+Preserve all ten current cases and add a real `BASH_ENV` startup script that
+puts a competing native curl first. Both commands are private fixtures with
+separate invocation logs; the intended one must run and the competing one must
+not. Removing the post-startup PATH setup must fail this control without ever
+contacting the real API. Test paths must retain spaces/quoting support. Runtime
+Windows qualification still decides whether this addresses the observed failure.
