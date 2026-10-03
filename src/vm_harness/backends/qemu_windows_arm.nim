@@ -145,7 +145,7 @@ const
     ## with ``/unattend:`` pointing here, so the two must agree.
   QwaGoldenManifestName* = "golden-manifest.json"
   QwaGoldenManifestSchema* = "vm-harness/qemu-windows-arm-golden/1"
-  QwaVmHarnessVersion* = "0.1.1"
+  QwaVmHarnessVersion* = "0.1.2"
     ## Recorded in each golden's manifest. Kept in step with the ``version``
     ## field of ``vm_harness.nimble``, which the unit gate compares against.
   QwaDefaultGoldenDeadlineSec* = 90 * 60

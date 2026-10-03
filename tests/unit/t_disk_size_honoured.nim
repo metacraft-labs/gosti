@@ -410,4 +410,3 @@ suite "UTM":
     b.provisionBaseline(BaselineSpec(name: "golden", diskGB: 50,
                                      diskGBDefaulted: true))
     discard b.revertToBaseline("golden")
-

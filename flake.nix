@@ -130,7 +130,18 @@
 
           vm-harness = pkgs.stdenv.mkDerivation {
             pname = "gosti";
-            version = "0.1.0";
+            version =
+              let
+                declarations = builtins.filter (line: builtins.match "version[[:space:]]*=.*" line != null) (
+                  pkgs.lib.splitString "\n" (builtins.readFile ./vm_harness.nimble)
+                );
+              in
+              assert builtins.length declarations == 1;
+              builtins.head (
+                builtins.match ''version[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*'' (
+                  builtins.head declarations
+                )
+              );
             src = ./.;
             nativeBuildInputs = [ pkgs.nim ];
             buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcre ];
