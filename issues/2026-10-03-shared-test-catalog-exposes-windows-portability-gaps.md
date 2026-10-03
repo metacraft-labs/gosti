@@ -498,3 +498,27 @@ of that same binary also passes all eleven. No instrumentation patch is applied.
 This resolves the observed wrong-command selection while preserving all prior
 response assertions and the executable-reuse controls. Full product CI remains
 required before promotion.
+
+
+## Windows ARM full-suite timing at 6129ea8
+
+Full Repro run `37155937811`, job `111299645990`, executes all 136 actions at
+`6129ea89f80731c1ec9087e78d9058270f0affb2`: 135 succeed and only
+`t_vmharness_serve_concurrency` fails. Its five requests complete in 0.507,
+0.516, 0.469, 0.509 and 0.507 seconds; first logs arrive in 0.350–0.378
+seconds. Their 2.506538-second batch misses the unchanged `< 2.5` bound.
+All command output/exit and slow-worker liveness assertions pass, as does
+shutdown. Artifact `11287768422` retains the failure report. No action is
+cached or blocked.
+
+The current recipe already runs this program after all other compilation and
+test actions. Earlier Windows x64 isolated timing qualification does not
+explain the remaining ARM delay. Repeat the exact monitored program and direct
+execution of the same binary on Windows ARM, preserving the five requests,
+slow-worker interval, batch deadline, automatic monitoring and one-worker
+negative control. Record the process/bootstrap identities. A timing-only
+rerun cannot establish a fix. The full candidate remains unqualified.
+
+Refreshed `agents` and `dev` before adding this evidence to the existing
+concurrency record. The dispatch requirement remains `docs/serve.md` and the
+unchanged real concurrency gate described above.
