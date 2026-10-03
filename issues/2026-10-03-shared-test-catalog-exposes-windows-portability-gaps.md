@@ -415,3 +415,20 @@ reconfiguration case additionally holds a real read-sharing handle that denies
 writes, making overwrite rejection independent of translation-cache timing.
 Windows C generation and local lint pass; runtime qualification is pending.
 The original eight cases and their assertions remain.
+
+
+At `ae5cbfbabdf2796d48cc7cec3065a53fc3db5a72`, supplemental Windows ARM
+[run 37148867357](https://github.com/metacraft-labs/metacraft-github-actions/actions/runs/37148867357)
+passes all ten cases in a launched Repro action, including the real
+read-sharing handle. All three direct executions of that same binary fail the
+second-response and unusable-response assertions: each sees `2.337.0` after
+another response was requested. There is no sharing-violation exception in
+these direct runs. The cause is not yet established; the successful Repro
+execution does not qualify direct execution. Retained `results.json`, the
+Repro report and all three native logs distinguish these outcomes.
+
+The next diagnostic must record the exact executable and sidecar paths, the
+configuration written and read by actual child processes, and Bash command
+resolution. Preserve every response assertion and the executable-reuse
+control. Do not introduce retries, delays, service changes or a cache bypass
+to make stale response data appear correct.
