@@ -346,3 +346,23 @@ recovery and shutdown. Restoring the original server source while compiling
 the same new tests fails both new cases with `Broken pipe`; the original
 recovery and shutdown cases still pass. Normal lint and Windows C generation
 pass. Full native/Reprobuild and native Windows qualification remain required.
+
+
+### ISO prerequisite must fail closed on POSIX
+
+At `d23d90175493ae7ad78f585a8581e4c7bce848f8`, the full native macOS suite
+executes 790 successful cases and six existing platform skips. The full Repro
+graph launches all 148 actions successfully, but its case audit finds 789
+successes and seven skips: the real config-drive ISO case did not run.
+`xorriso` is already declared on that execute action. Its cached provisioning
+receipt points to absent `/nix/store/x49dj1x6zzpdrpfml14qh5652ik9vv15-libisoburn-1.5.6`.
+This matches the existing Reprobuild tool-retention issue. A new persistent
+local root restores that exact declared selector for qualification; this is
+not a fix of Reprobuild's provisioning cache.
+
+LOCAL-1 and LOCAL-4 in the authorized tool-release follow-up requirements
+require honest native/Repro test coverage. On POSIX, where the development
+shell and recipe declare an ISO utility, absence must fail the real ISO case
+instead of silently skipping it. Windows retains its existing optional-tool
+behavior. All ISO layout, volume-label and payload assertions stay unchanged.
+A missing-tool negative control must fail on macOS.
