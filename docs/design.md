@@ -454,6 +454,11 @@ BOTH names, and they are the same file:
 
 Both the flake's `installPhase` and `just build` produce this layout through
 the one script `scripts/install-binaries.sh`, so they cannot disagree.
+Windows releases use `scripts/install-binaries.ps1` to install byte-identical
+`gosti.exe` and `vm-harness.exe` files. This preserves the compatibility name
+without requiring symlink privileges. The command-name integration test runs
+the corresponding production installer on each OS, then checks help output
+and a real daemon started through the compatibility name.
 Behaviour does not depend on the invoked name: argv, exit codes, output, and
 the serve daemon's worker re-exec (it runs the RESOLVED executable) are
 identical. Deliberately NOT renamed by this step, because each is a

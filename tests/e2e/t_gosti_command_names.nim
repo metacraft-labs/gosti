@@ -4,8 +4,10 @@
 ## vm-harness -> gosti rename (docs/design.md §6.0).
 ##
 ## Builds the REAL CLI, installs it with the SAME script the flake's
-## installPhase and `just build` use (scripts/install-binaries.sh), and pins:
-##   1. `bin/gosti` is the executable; `bin/vm-harness` is a symlink to it.
+## installPhase and `just build` use (scripts/install-binaries.sh), or the
+## Windows release's install-binaries.ps1, and pins:
+##   1. POSIX names share a relative symlink; Windows .exe names contain the
+##      same bytes, as required for installation without symlink privileges.
 ##   2. Both names print the same help, which names `gosti`.
 ##   3. A serve daemon started under the COMPATIBILITY name — exactly how the
 ##      deployed `vm-harness serve` units start it — accepts an authenticated
@@ -20,6 +22,7 @@ import std/[json, os, osproc, strutils, tempfiles, unittest]
 import vm_harness
 
 let repoRoot = currentSourcePath().parentDir.parentDir.parentDir
+const suffix = when defined(windows): ".exe" else: ""
 
 proc waitForPort(portFile: string): int =
   for _ in 0 ..< 200:
@@ -31,31 +34,46 @@ proc waitForPort(portFile: string): int =
 
 suite "t_gosti_command_names":
   let work = createTempDir("gosti-names-", "")
-  let built = work / "cli.out"
+  let built = work / ("cli.out" & suffix)
   let bin = work / "bin"
+  let gosti = bin / ("gosti" & suffix)
+  let compatibility = bin / ("vm-harness" & suffix)
   let (buildOut, buildCode) = execCmdEx(
     "nim c --hints:off --path:" & quoteShell(repoRoot / "src") &
     " --nimcache:" & quoteShell(work / "nimcache") &
     " -o:" & quoteShell(built) & " " &
     quoteShell(repoRoot / "src" / "vm_harness" / "cli.nim"))
   if buildCode != 0: echo buildOut
-  let (instOut, instCode) = execCmdEx("bash " &
-    quoteShell(repoRoot / "scripts" / "install-binaries.sh") & " " &
-    quoteShell(built) & " " & quoteShell(bin))
+  let installArgv = when defined(windows):
+    # Windows PowerShell is an OS component. Name its actual executable even
+    # when a monitored action has a tool-only PATH; the monitor still observes
+    # this real child and its script inputs.
+    @[getEnv("SystemRoot") / "System32" / "WindowsPowerShell" / "v1.0" /
+      "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+      "Bypass", "-File", repoRoot / "scripts" / "install-binaries.ps1",
+      "-BuiltCli", built, "-BinDir", bin]
+  else:
+    @["bash", repoRoot / "scripts" / "install-binaries.sh", built, bin]
+  let (instOut, instCode) = execCmdEx(quoteShellCommand(installArgv))
   if instCode != 0: echo instOut
 
-  test "gosti is the binary, vm-harness a symlink to it":
+  test "both installed command names use the native compatibility layout":
     check buildCode == 0
     check instCode == 0
-    check fileExists(bin / "gosti")
-    check not symlinkExists(bin / "gosti")
-    check symlinkExists(bin / "vm-harness")
-    check expandSymlink(bin / "vm-harness") == "gosti"   # relative
-    check sameFile(bin / "vm-harness", bin / "gosti")
+    require fileExists(gosti)
+    check not symlinkExists(gosti)
+    when defined(windows):
+      require fileExists(compatibility)
+      check not symlinkExists(compatibility)
+      check readFile(compatibility) == readFile(gosti)
+    else:
+      check symlinkExists(compatibility)
+      check expandSymlink(compatibility) == "gosti"   # relative
+      check sameFile(compatibility, gosti)
 
   test "both names print the same help, naming gosti":
-    let (g, gc) = execCmdEx(quoteShell(bin / "gosti") & " --help")
-    let (v, vc) = execCmdEx(quoteShell(bin / "vm-harness") & " --help")
+    let (g, gc) = execCmdEx(quoteShell(gosti) & " --help")
+    let (v, vc) = execCmdEx(quoteShell(compatibility) & " --help")
     check gc == 0
     check vc == 0
     check g == v
@@ -66,7 +84,7 @@ suite "t_gosti_command_names":
     let portFile = work / "port"
     let token = "gosti-names-bearer-51d2"
     writeFile(tokenFile, token)
-    let daemon = startProcess(bin / "vm-harness",
+    let daemon = startProcess(compatibility,
       args = @["serve", "--listen", "127.0.0.1:0", "--auth-token-file",
                tokenFile, "--port-file", portFile, "--quiet"],
       options = {poParentStreams})

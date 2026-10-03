@@ -76,3 +76,19 @@ failures retain the existing explicit diagnostic. See the
 The unchanged same-process exclusivity cases and a new real-child exit/recovery
 case pass on macOS at `a783ea6` plus this patch. Windows C generation also passes;
 native Windows execution remains required.
+
+## Qualification and Windows command layout
+
+At `a1f67746f5062c26c1f7ba1b3c50c3a6d08af662`, full native and Reprobuild
+macOS suites pass 786 cases with the same six existing skips. All 142 actions
+succeed and all 71 test programs launch; case names and outcomes match exactly.
+
+The command-name test also required the POSIX installation layout on Windows,
+although the Windows release already publishes two byte-identical executables.
+The release builder and test now share `scripts/install-binaries.ps1`.
+POSIX retains every symlink assertion. Windows requires the two `.exe` files,
+identical bytes, matching help and a real daemon through the compatibility name.
+At `a1f6774` plus this patch, all three command cases pass on macOS and Windows
+C generation succeeds. A real PowerShell run on this Mac installs the built
+CLI, verifies both byte-identical aliases and their help, and rejects a missing
+source. This is not a claim of native Windows execution.
