@@ -25,7 +25,7 @@
 ## documented follow-up hook.
 
 import std/[json, net, nativesockets, osproc, os, streams, strutils, tables,
-            times, locks, atomics, tempfiles]
+            times, monotimes, locks, atomics, tempfiles]
 when defined(windows):
   # ``terminateProcess`` / ``Handle`` for the deadline reaper's kill path.
   # ``osproc`` uses winlean internally but does not re-export it, so this
@@ -802,8 +802,48 @@ var serveDispatch: DispatchQueue
 
 const SaturatedBody = """{"error":"vm-harness serve: all request handlers are busy; retry","code":"handlers_saturated"}"""
 
-proc rejectSaturated(client: Socket) =
-  ## Answer a connection the pool has no capacity for, and close it.
+const
+  MaxRejectedConnections = 64
+  RejectedDrainMs = 1000
+
+type RejectedConnection = object
+  socket: Socket
+  deadline: MonoTime
+
+proc closeRejected(client: Socket) =
+  try: client.close()
+  except CatchableError: discard
+
+proc drainRejected(pending: var seq[RejectedConnection]) =
+  ## A fixed amount of nonblocking work per retained connection. In particular,
+  ## a peer continuously sending data cannot monopolize the acceptor.
+  var i = 0
+  while i < pending.len:
+    var retire = getMonoTime() >= pending[i].deadline
+    if not retire:
+      var buffer: array[4096, char]
+      when defined(windows):
+        let received = winlean.recv(pending[i].socket.getFd(), addr buffer[0],
+          cint(buffer.len), 0)
+        let err = if received < 0: wsaGetLastError() else: 0.cint
+        retire = received == 0 or
+          (received < 0 and err notin [WSAEWOULDBLOCK, WSAEINTR])
+      else:
+        let received = posix.recv(pending[i].socket.getFd(), addr buffer[0],
+          buffer.len, 0)
+        let err = if received < 0: osLastError().int32 else: 0'i32
+        retire = received == 0 or
+          (received < 0 and err notin [EAGAIN, EWOULDBLOCK, EINTR])
+    if retire:
+      closeRejected(pending[i].socket)
+      pending.delete(i)
+    else:
+      inc i
+
+proc rejectSaturated(client: Socket): bool =
+  ## Answer a connection the pool has no capacity for, then half-close it.
+  ## The acceptor retains its receive side briefly: an immediate close with
+  ## unread request bytes can reset TCP and discard the 503 (RFC 9112 §9.6).
   ##
   ## Runs ON THE ACCEPTOR THREAD, so it must not block for any reason — a
   ## stalled write here would recreate the very backlog stall the acceptor
@@ -824,6 +864,10 @@ proc rejectSaturated(client: Socket) =
     # ``sendAll``, not std/net's ``send``: the latter never returns on EPIPE
     # (see http.nim), which here would wedge the ONE acceptor thread.
     client.sendAll(msg)
+    when defined(windows):
+      result = winlean.shutdown(client.getFd(), 1) == 0 # SD_SEND
+    else:
+      result = posix.shutdown(client.getFd(), SHUT_WR) == 0
   except CatchableError:
     discard
 
@@ -890,7 +934,16 @@ proc acceptorLoop(arg: ptr Acceptor) {.thread.} =
   let ctx = arg.ctx
   let server = arg.server
   {.cast(gcsafe).}:
+    var rejected: seq[RejectedConnection]
+    defer:
+      for pending in rejected: closeRejected(pending.socket)
     while ctx.running.load():
+      drainRejected(rejected)
+      if rejected.len > 0:
+        # Wake to reap rejected peers even when no new client arrives. Only
+        # this thread accepts, so readiness cannot be consumed by a worker.
+        var readable = @[server.getFd()]
+        if selectRead(readable, 50) <= 0: continue
       var client: Socket
       var accepted = false
       try:
@@ -913,8 +966,14 @@ proc acceptorLoop(arg: ptr Acceptor) {.thread.} =
         discard ctx.idleWorkers.fetchAdd(1)
         daemonLog(ctx, "503 all " & $ctx.poolSize &
                   " request handlers busy — rejecting connection")
-        rejectSaturated(client)
-        try: client.close() except CatchableError: discard
+        if rejectSaturated(client):
+          if rejected.len == MaxRejectedConnections:
+            closeRejected(rejected[0].socket)
+            rejected.delete(0)
+          rejected.add(RejectedConnection(socket: client,
+            deadline: getMonoTime() + initDuration(milliseconds = RejectedDrainMs)))
+        else:
+          closeRejected(client)
         continue
       # Ownership of the fd passes to a worker; do NOT close it here.
       serveDispatch.send(int(client.getFd()))

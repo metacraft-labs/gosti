@@ -336,3 +336,13 @@ requires a prompt usable 503. Extend that contract with bounded nonblocking
 receive-side draining after the response and a send-side shutdown, retaining
 the unchanged timing assertions. Tests must exercise segmented requests,
 nonreading peers, saturation recovery and shutdown against the real daemon.
+
+
+The bounded staged-close repair passes the six-case real-daemon program on
+macOS at `2f4cf9b` plus the repair patch. The original four cases retain all
+assertions and deadlines. Two additional cases require segmented requests to
+receive 503 and exercise 80 silent rejected peers, followed by socket expiry,
+recovery and shutdown. Restoring the original server source while compiling
+the same new tests fails both new cases with `Broken pipe`; the original
+recovery and shutdown cases still pass. Normal lint and Windows C generation
+pass. Full native/Reprobuild and native Windows qualification remain required.
