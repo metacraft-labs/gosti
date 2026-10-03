@@ -35,15 +35,15 @@ suite "crud store location":
     withEnv([("VMH_CRUD_STATE_DIR", "/x/crud-explicit"),
              ("VMH_EPHEMERAL_STATE_DIR", "/x/eph"),
              ("STATE_DIRECTORY", "/x/sd"), ("XDG_STATE_HOME", "/x/xdg")]) do:
-      check crudStateRoot("/x/flag") == "/x/flag/crud"
+      check crudStateRoot("/x/flag") == "/x/flag" / "crud"
       check crudStateRoot() == "/x/crud-explicit"
     withEnv([("VMH_CRUD_STATE_DIR", ""), ("VMH_EPHEMERAL_STATE_DIR", "/x/eph"),
              ("STATE_DIRECTORY", "/x/sd"), ("XDG_STATE_HOME", "/x/xdg")]) do:
-      check crudStateRoot() == "/x/eph/crud"
+      check crudStateRoot() == "/x/eph" / "crud"
     withEnv([("VMH_CRUD_STATE_DIR", ""), ("VMH_EPHEMERAL_STATE_DIR", ""),
              ("STATE_DIRECTORY", "/x/sd:/x/other"),
              ("XDG_STATE_HOME", "/x/xdg")]) do:
-      check crudStateRoot() == "/x/sd/crud"
+      check crudStateRoot() == "/x/sd" / "crud"
     when not defined(windows):
       withEnv([("VMH_CRUD_STATE_DIR", ""), ("VMH_EPHEMERAL_STATE_DIR", ""),
                ("STATE_DIRECTORY", ""), ("XDG_STATE_HOME", "/x/xdg")]) do:
