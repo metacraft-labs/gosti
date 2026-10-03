@@ -35,6 +35,7 @@
 import std/[json, net, os, osproc, posix, strutils, tables,
             tempfiles, times, unittest]
 import vm_harness
+import qwa_fixture_paths
 
 const
   FakeQemuEnv = "VMH_GOLDEN_FAKE_QEMU"
@@ -71,9 +72,6 @@ const
     ## ``waitpid`` status rather than a hand-built one.
   QmpLogName = ".fake-qmp-commands"
   SshReadyFlagName = "ssh-ready"
-  FakeFirmwareBanner =
-    "UEFI firmware (version edk2-fake built at 00:00:00 on Jan 1 1980)\n"
-    ## One per firmware boot, carrying ``QwaFirmwareBannerMarker`` verbatim.
 
 proc argValue(flag: string): string =
   for i in 1 ..< paramCount():
@@ -431,13 +429,6 @@ proc socketExists(path: string): bool =
     true
   except OSError:
     false
-
-proc recipeDir(): string =
-  currentSourcePath().parentDir.parentDir.parentDir /
-    "guest-recipes" / "windows-arm-base"
-
-proc repoRoot(): string =
-  currentSourcePath().parentDir.parentDir.parentDir
 
 proc writeFakeSwtpm(path: string) =
   ## Creates the control socket ``startSwtpmInBackground`` waits for, then

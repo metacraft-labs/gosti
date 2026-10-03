@@ -162,3 +162,13 @@ Preserve every moved test body and every existing POSIX lifecycle assertion;
 compare the combined case inventory before and after. Keep the existing
 all-platform QWA backend and overlay controls. Do not replace the actual Unix
 socket exchanges with synthetic success or claim Windows host support.
+
+At `ba14e65f65df83b0e8eb475c403747dfef263574` plus this split, lint and the
+full native and Reprobuild macOS suites pass: 786 cases, the same six platform
+skips, 146 successful actions and all 73 test programs launched. Per-case names
+and outcomes match between runners. A byte comparison confirms that every one
+of the 98 test bodies in the two split files is unchanged. The new all-platform
+programs carry 11 disk-size and 42 golden-contract cases. Their Windows C
+generation succeeds. Five POSIX lifecycle programs remain in the deterministic
+catalog with their actual platform requirement; they retain all real socket,
+process, image, timing and cleanup assertions. Native Windows CI remains required.

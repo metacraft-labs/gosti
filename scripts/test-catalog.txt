@@ -56,7 +56,7 @@ test all tests/unit/t_wsl_parsers.nim
 test all tests/unit/t_utm_parsers.nim
 test all tests/unit/t_tart_shared_dirs.nim
 test all tests/unit/t_qemu_windows_arm_backend.nim
-test all tests/unit/t_qemu_windows_arm_swtpm_startup.nim
+test posix tests/unit/t_qemu_windows_arm_swtpm_startup.nim
 test all tests/unit/t_qemu_windows_arm_overlay.nim
 # Runner-Fleet-M3-ARM-Wave MA3 gate: t_qemu_windows_arm_golden_build, UNIT
 # TIER — the install argv, the rebuild-safety guards, the free-space
@@ -67,7 +67,10 @@ test all tests/unit/t_qemu_windows_arm_overlay.nim
 # tests/e2e/t_qemu_windows_arm_golden_build_host.nim, run by
 # scripts/run-host-tests.sh; it skips with an explicit message naming every
 # precondition it lacks.
-test all tests/unit/t_qemu_windows_arm_golden_build.nim
+# Unix monitor/QMP and shell lifecycle for the macOS-host backend; Linux
+# runs the same real POSIX boundary fixture. Portable contracts run everywhere.
+test all tests/unit/t_qemu_windows_arm_golden_contracts.nim
+test posix tests/unit/t_qemu_windows_arm_golden_build.nim
 # Runner-Fleet-M3-ARM-Wave MA8 gate: t_qemu_windows_arm_dead_guest_is_named,
 # UNIT TIER — a per-job boot whose QEMU exits before SSH is reached fails in
 # SECONDS naming the exited process and its exit status, instead of being
@@ -76,7 +79,7 @@ test all tests/unit/t_qemu_windows_arm_golden_build.nim
 # on a real golden -- the known reproducer, measured at 5m38s before this --
 # and is tests/e2e/t_qemu_windows_arm_dead_guest_is_named_host.nim, run by
 # scripts/run-host-tests.sh.
-test all tests/unit/t_qemu_windows_arm_dead_guest_is_named.nim
+test posix tests/unit/t_qemu_windows_arm_dead_guest_is_named.nim
 test all tests/unit/t_qemu_boot_backend.nim
 test all tests/unit/t_tpm_device_args.nim
 test all tests/unit/t_windows_golden_recipe_hardening.nim
@@ -91,8 +94,11 @@ test all tests/unit/t_tart_disk_resize.nim
 # The same disk-size rules for libvirt (overlay + qcow2 import), UTM and
 # Hyper-V, and the shared in-guest growth (Resize-Partition / growpart),
 # with real qemu-img; then the Windows-ARM QEMU per-job path end to end.
-test all tests/unit/t_disk_size_honoured.nim
-test all tests/unit/t_qemu_windows_arm_disk_size.nim
+# Keep shared decisions, guest-growth and Hyper-V command checks on Windows.
+test all tests/unit/t_disk_size_contracts.nim
+# Remaining lifecycle doubles require executable POSIX shell scripts.
+test posix tests/unit/t_disk_size_honoured.nim
+test posix tests/unit/t_qemu_windows_arm_disk_size.nim
 # Runner-Fleet-M3-ARM-Wave MA0 gate: t_vmharness_image_is_honoured, assertion
 # (c) — a registry-constructed tart backend with no image configured RAISES
 # rather than substituting a default. Assertions (a) and (b) are provider-side

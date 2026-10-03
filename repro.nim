@@ -65,10 +65,10 @@ package vm_harness:
     "awk"
     "tar"
     "qemu-img"
+    "sha256sum"
+    "git >=2"
     when defined(posix):
       "sleep"
-      "sha256sum"
-      "git >=2"
       "xorriso"
     when defined(linux):
       "pcre-config >=0"
@@ -170,10 +170,10 @@ package vm_harness:
       appendRegisteredActionToolIdentityRefs(execute.id,
         ["nim", backendCompiler, "sh", "bash", "cat", "cp", "chmod", "ln",
          "mkdir", "rm", "sed", "grep", "head", "tail", "cut", "tr", "dirname",
-         "awk", "tar", "qemu-img"])
+         "awk", "tar", "qemu-img", "sha256sum", "git"])
       when defined(posix):
         appendRegisteredActionToolIdentityRefs(execute.id,
-          ["sleep", "sha256sum", "git"])
+          ["sleep"])
         if spec.binary == "t_libvirt_backend":
           appendRegisteredActionToolIdentityRefs(execute.id, ["xorriso"])
       when defined(linux):
