@@ -7,8 +7,14 @@
 ## These exercise real ``qemu-img`` (from the Nix dev env) against a tiny
 ## synthetic baseline; they never boot QEMU.
 
-import std/[os, osproc, strutils, tempfiles, unittest]
+import std/[os, osproc, streams, strutils, tempfiles, unittest]
 import vm_harness
+
+if commandLineParams() == @["--liveness-child"]:
+  echo "ready"
+  stdout.flushFile()
+  discard stdin.readLine()
+  quit(when defined(windows): 259 else: 17)
 
 let qemuImgPath = findExe("qemu-img")
 
@@ -91,6 +97,31 @@ suite "qemu-windows-arm ephemeral disk: overlay mode":
       check fileExists(inst / "QEMU_EFI_VARS.fd")
 
 suite "qemu-windows-arm per-instance liveness lock":
+  test "process liveness follows a real child through exit and reaping":
+    # No mock: keep a native child alive on a pipe, then release it to exit.
+    # Retain its Process handle while checking death, which on Windows also
+    # verifies that an exited process object is not mistaken for a live PID.
+    let child = startProcess(getAppFilename(), args = @["--liveness-child"],
+      options = {poStdErrToStdOut})
+    defer:
+      if child.running:
+        child.terminate()
+        discard child.waitForExit()
+      child.close()
+    require child.outputStream.readLine() == "ready"
+    let pid = child.processID
+    check pidAlive(pid)
+    child.inputStream.writeLine("exit")
+    child.inputStream.flush()
+    check child.waitForExit(5000) == (when defined(windows): 259 else: 17)
+    check not pidAlive(pid)
+
+  test "invalid process identifiers cannot name a live process":
+    check not pidAlive(0)
+    check not pidAlive(-1)
+    when defined(windows) and sizeof(int) > sizeof(uint32):
+      check not pidAlive(int(high(uint32)) + 1)
+
   test "a held lock reports the owner alive; releasing reports it dead":
     when defined(posix):
       let root = createTempDir("vmh-lock-", "")

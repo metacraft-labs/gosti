@@ -13,6 +13,8 @@ import std/[algorithm, hashes, json, monotimes, net, options, os, osproc, stream
             strutils, tables, times]
 when defined(posix):
   import std/posix
+elif defined(windows):
+  import std/winlean
 import ../types
 import ../auto
 import ../disk_growth
@@ -491,6 +493,20 @@ proc pidAlive*(pid: int): bool =
     if rc == 0:
       return true
     return errno == EPERM
+  elif defined(windows):
+    # A process handle becomes signaled on exit, including exit code 259
+    # (STILL_ACTIVE). Querying only its exit code would misclassify that case.
+    # Only a missing PID proves absence; denied access or a failed wait must
+    # preserve the directory that prune is considering deleting.
+    if uint64(pid) > uint64(high(uint32)):
+      return false
+    let process = winlean.openProcess(winlean.DWORD(winlean.SYNCHRONIZE),
+      winlean.WINBOOL(0), winlean.DWORD(pid))
+    if process == 0:
+      const ErrorInvalidParameter = 87'i32
+      return winlean.getLastError() != ErrorInvalidParameter
+    defer: discard winlean.closeHandle(process)
+    return winlean.waitForSingleObject(process, 0) != winlean.WAIT_OBJECT_0
   else:
     return false
 

@@ -1,22 +1,22 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
 ## Tart backend command construction and SSH/SCP retry behaviour.
+## Mock justification: native command stand-ins replace Tart and guest SSH,
+## allowing exact argv, cleanup and retry failures without a hypervisor or
+## guest. Process creation, process groups, files and exit codes remain real.
 ##
 ## Golden-image SELECTION is not here: it is the MA0 gate
 ## ``t_vmharness_image_is_honoured`` and lives, whole, in
 ## ``tests/unit/t_vmharness_image_is_honoured.nim`` so that grepping the gate
 ## name lands on the assertions that prove it.
 
-import std/[options, os, strutils, tables, tempfiles, unittest]
+import std/[json, options, os, strutils, tables, tempfiles, unittest]
+import ../native_command_fixture
 import vm_harness/backends/tart
 import vm_harness/types
 
 when defined(posix):
   import std/posix
-
-proc writeExecutable(path, body: string) =
-  writeFile(path, body)
-  setFilePermissions(path, {fpUserRead, fpUserWrite, fpUserExec})
 
 suite "Tart backend commands":
   when defined(macosx):
@@ -29,8 +29,7 @@ suite "Tart backend commands":
     test "background Tart run remains in the provider-owned process group":
       let tmp = createTempDir("vmh-tart-unit-", "")
       defer: removeDir(tmp)
-      let tart = tmp / "tart"
-      writeExecutable(tart, "#!/bin/sh\nexec sleep 60\n")
+      let tart = commandFixture(tmp / "tart", %*{"sleepMs": 60000})
 
       let backend = newTartBackend(guestOs = goMacos, tartCmd = tart)
       let pid = backend.runTartVmInBackground("ephemeral")
@@ -43,8 +42,7 @@ suite "Tart backend commands":
     let tmp = createTempDir("vmh-tart-unit-", "")
     defer: removeDir(tmp)
     let log = tmp / "tart.log"
-    let tart = tmp / "tart"
-    writeExecutable(tart, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" & log & "'\n")
+    let tart = commandFixture(tmp / "tart", %*{"log": log})
 
     let backend = newTartBackend(guestOs = goMacos, tartCmd = tart)
     backend.cloneTartVm("golden", "ephemeral")
@@ -58,9 +56,8 @@ suite "Tart backend commands":
     let tmp = createTempDir("vmh-tart-unit-", "")
     defer: removeDir(tmp)
     let log = tmp / "tart.log"
-    let tart = tmp / "tart"
-    writeExecutable(tart, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" & log & "'\n" &
-      "if [ \"$1\" = set ]; then exit 9; fi\n")
+    let tart = commandFixture(tmp / "tart", %*{"log": log,
+      "failFirstArg": "set", "failureCode": 9})
 
     let backend = newTartBackend(guestOs = goMacos, tartCmd = tart)
     expect VmHarnessError:
@@ -71,17 +68,11 @@ suite "Tart backend commands":
     let tmp = createTempDir("vmh-tart-unit-", "")
     defer: removeDir(tmp)
     let attempts = tmp / "attempts"
-    let scp = tmp / "scp"
-    let sshpass = tmp / "sshpass"
     let src = tmp / "payload"
     writeFile(src, "payload")
-    writeExecutable(sshpass, "#!/bin/sh\nshift 2\nexec \"$@\"\n")
-    writeExecutable(scp, "#!/bin/sh\n" &
-      "count=0\n" &
-      "[ ! -f '" & attempts & "' ] || count=$(cat '" & attempts & "')\n" &
-      "count=$((count + 1))\n" &
-      "printf '%s' \"$count\" > '" & attempts & "'\n" &
-      "[ \"$count\" -ge 2 ]\n")
+    let sshpass = commandFixture(tmp / "sshpass", %*{"forwardSkip": 2})
+    let scp = commandFixture(tmp / "scp", %*{"attempts": attempts,
+      "successAfter": 2, "failureCode": 1})
 
     let backend = newTartBackend(
       guestOs = goMacos, scpCmd = scp, sshpassCmd = sshpass)
@@ -93,16 +84,10 @@ suite "Tart backend commands":
     let tmp = createTempDir("vmh-tart-unit-", "")
     defer: removeDir(tmp)
     let attempts = tmp / "attempts"
-    let ssh = tmp / "ssh"
-    let sshpass = tmp / "sshpass"
-    writeExecutable(sshpass, "#!/bin/sh\nshift 2\nexec \"$@\"\n")
-    writeExecutable(ssh, "#!/bin/sh\n" &
-      "count=0\n" &
-      "[ ! -f '" & attempts & "' ] || count=$(cat '" & attempts & "')\n" &
-      "count=$((count + 1))\n" &
-      "printf '%s' \"$count\" > '" & attempts & "'\n" &
-      "if [ \"$count\" -lt 2 ]; then echo 'Permission denied' >&2; exit 255; fi\n" &
-      "echo ready\n")
+    let sshpass = commandFixture(tmp / "sshpass", %*{"forwardSkip": 2})
+    let ssh = commandFixture(tmp / "ssh", %*{"attempts": attempts,
+      "successAfter": 2, "failureCode": 255,
+      "failureOutput": "Permission denied", "output": "ready\n"})
 
     let backend = newTartBackend(
       guestOs = goMacos, sshCmd = ssh, sshpassCmd = sshpass)

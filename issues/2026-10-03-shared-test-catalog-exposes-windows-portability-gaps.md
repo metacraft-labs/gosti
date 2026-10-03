@@ -42,3 +42,24 @@ history for catalog, Windows, paths, TPM and process signals. The older
 `2026-09-28-libvirt-tests-assume-posix-paths-and-executables.md` covers previous
 libvirt fixtures; the current report includes newly selected test programs and
 other independent boundaries.
+
+## Repairs being qualified
+
+`446c8fd` fixes LF checkout bytes, native CRUD/snapshot paths and the existing
+Linux TPM compile-time boundary. The next patch preserves live Windows PIDs
+through a real process handle and a zero-time wait, treating uncertain access
+as alive. Its child control tests the live state and the exited state while the
+parent retains its handle; Windows exit code 259 must still count as exited.
+See [OpenProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess)
+and [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject).
+QEMU boot arguments now receive the existing name/media validation before the
+platform availability check. The prune fixture selects the OS's actual temp
+variable and preserves its original environment.
+
+Native executable fixtures replace shell stand-ins in the Incus capability,
+Tart command/image/disk, Tart orphan and libvirt domain-enumeration tests.
+Their process boundaries and every existing assertion remain; real qcow2
+fixtures still require qemu-img. Windows stdout capture uses CRT descriptors,
+which are distinct from Windows OS handles. These changes have focused macOS
+execution and Windows C-generation checks; native Windows results remain
+pending. No failing program is removed from either catalog.

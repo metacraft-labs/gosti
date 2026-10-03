@@ -47,17 +47,41 @@
 ##
 ## JUSTIFIED FAKES (workspace mock policy)
 ##
-##   One: a ~15-line `tart` stand-in shell script whose `list` output is read
+##   One: a native `tart` stand-in whose `list` output is read
 ##   from a state file, so the test can express "Tart can see this VM" and
 ##   "`tart list` is broken" without a Tart install, a macOS host or real VMs.
 ##   Everything else is real: real directories, real files, real `disk.img`
 ##   contents, real mtimes, the real `pidAlive` against this test's own PID,
 ##   and the real `removeDir`. The code under test is never replaced.
 
-import std/[json, options, os, posix, strutils, tempfiles, times, unittest]
+import std/[json, options, os, strutils, tempfiles, times, unittest]
 import vm_harness/cli
 import vm_harness/prune
 import vm_harness/backends/tart
+
+when defined(windows):
+  proc captureFileno(f: File): cint {.importc: "_fileno", header: "<stdio.h>".}
+  proc dup(fd: cint): cint {.importc: "_dup", header: "<io.h>".}
+  proc dup2(source, dest: cint): cint {.importc: "_dup2", header: "<io.h>".}
+  proc close(fd: cint): cint {.importc: "_close", header: "<io.h>".}
+else:
+  import std/posix
+  proc captureFileno(f: File): cint = f.getFileHandle()
+
+const TartFixtureName = when defined(windows): "fake-tart.exe" else: "fake-tart"
+if getAppFilename().extractFilename == TartFixtureName:
+  if commandLineParams().len > 0 and paramStr(1) == "list":
+    let state = getEnv("FAKE_TART_STATE")
+    if not fileExists(state):
+      stderr.writeLine("tart: could not read VM storage")
+      quit(1)
+    echo "Source Name Disk Size SizeOnDisk State"
+    for line in readFile(state).splitLines():
+      let fields = line.splitWhitespace()
+      if fields.len > 0:
+        let status = if fields.len > 1: fields[1] else: "stopped"
+        echo "local " & fields[0] & " 50 33 33 " & status
+  quit(0)
 
 const
   Prefix = "repro-vm-tart-macos-garm"
@@ -95,36 +119,14 @@ proc writeFakeTart(dir, stateFile: string): string =
   ## being `<name> [<state>]` (state defaults to `stopped`). The columns match
   ## real `tart list` output, State last. When the state file does NOT exist
   ## the fake exits 1 — the "tart cannot be asked" shape.
-  result = dir / "fake-tart.sh"
-  writeFile(result, """#!/bin/sh
-state="$FAKE_TART_STATE"
-case "$1" in
-  list)
-    if [ ! -f "$state" ]; then
-      echo "tart: could not read VM storage" >&2
-      exit 1
-    fi
-    echo "Source Name Disk Size SizeOnDisk State"
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      n=$(echo "$line" | awk '{print $1}')
-      s=$(echo "$line" | awk '{print $2}')
-      [ -n "$s" ] || s=stopped
-      echo "local $n 50 33 33 $s"
-    done < "$state"
-    ;;
-  stop) : ;;
-  delete) : ;;
-  *) : ;;
-esac
-""")
-  inclFilePermissions(result, {fpUserExec})
+  result = dir / TartFixtureName
+  copyFileWithPermissions(getAppFilename(), result)
 
 template withCapturedStdout(path: string, body: untyped): untyped =
   ## Run `body` with this process's real stdout redirected to `path`, so the
   ## CLI's own emission is asserted rather than a re-implementation of it.
   ## The fd is restored whatever happens.
-  let savedFd = dup(stdout.getFileHandle())
+  let savedFd = dup(captureFileno(stdout))
   doAssert savedFd >= 0
   doAssert reopen(stdout, path, fmWrite)
   let captured =
@@ -132,7 +134,7 @@ template withCapturedStdout(path: string, body: untyped): untyped =
       body
     finally:
       stdout.flushFile()
-      discard dup2(savedFd, stdout.getFileHandle())
+      discard dup2(savedFd, captureFileno(stdout))
       discard close(savedFd)
   captured
 

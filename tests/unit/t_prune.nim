@@ -80,13 +80,16 @@ suite "prune: qemu-windows-arm instance dirs":
 
 suite "prune: temp scratch files":
   test "age-sweeps matching tmp files, keeps recent and unrelated ones":
-    let savedTmp = getEnv("TMPDIR")
+    const TmpVar = when defined(windows): "TMP" else: "TMPDIR"
+    let savedTmp = getEnv(TmpVar)
+    let hadTmp = existsEnv(TmpVar)
     let sweepDir = createTempDir("vmh-prune-tmp-", "")
-    putEnv("TMPDIR", sweepDir)
+    putEnv(TmpVar, sweepDir)
     defer:
-      putEnv("TMPDIR", savedTmp)
+      if hadTmp: putEnv(TmpVar, savedTmp)
+      else: delEnv(TmpVar)
       removeDir(sweepDir)
-    check getTempDir() == sweepDir or getTempDir() == sweepDir & "/"
+    check getTempDir() == sweepDir or getTempDir() == sweepDir & DirSep
 
     let oldQemuPwd = sweepDir / "vm-harness-qemu-win-arm-pwd-123-456"
     let oldTartPwd = sweepDir / "vm-harness-tart-pwd-1700.0-789"

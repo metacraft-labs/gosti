@@ -2,30 +2,40 @@
 # SPDX-License-Identifier: Apache-2.0
 ## Deterministic Incus capability lifecycle contract.
 ##
-## A real subprocess shim records the exact Incus argv. This is deliberately
-## not a fake backend: it drives IncusBackend's real process boundary and tests
-## the host command contract without requiring an Incus daemon in universal CI.
+## Mock justification: a native copy of this test stands in for the Incus
+## executable and records its exact argv. Configured replies let the tests
+## exercise failure cleanup without an Incus daemon or real guests. The backend,
+## filesystem, executable discovery and subprocess boundary are all real.
 
-import std/[os, strutils, tables, tempfiles, unittest]
+import std/[json, os, strutils, tables, tempfiles, unittest]
 import vm_harness
+
+const IncusFixtureName = when defined(windows): "incus-fixture.exe" else: "incus-fixture"
+
+# The native copy runs before the suite, with all replies configured through
+# its own sidecar. It exercises the same real process boundary on every OS.
+if getAppFilename().extractFilename == IncusFixtureName:
+  let cfg = parseFile(getAppFilename() & ".json")
+  let command = commandLineParams().join(" ")
+  let log = open(cfg["log"].getStr(), fmAppend)
+  log.writeLine(command)
+  log.close()
+  if cfg["fail"].getStr().len > 0 and command == cfg["fail"].getStr():
+    quit(17)
+  if cfg["rejectReady"].getBool() and command.startsWith("exec ") and
+      command.endsWith(" -- true"):
+    quit(18)
+  if command.startsWith("info "):
+    quit(1)
+  if command.startsWith("exec ") and command.endsWith(" -- stat -c %a /dev/kvm"):
+    echo cfg["statMode"].getStr()
+  quit(0)
 
 proc writeIncusShim(path, logPath: string; failExact = "";
                     statMode = "666"; rejectReady = false) =
-  var body =
-    "#!/bin/sh\n" &
-    "printf '%s\\n' \"$*\" >> '" & logPath & "'\n"
-  if failExact.len > 0:
-    body.add("if [ \"$*\" = '" & failExact & "' ]; then exit 17; fi\n")
-  if rejectReady:
-    body.add("case \"$*\" in 'exec '*' -- true') exit 18 ;; esac\n")
-  body.add(
-    "case \"$*\" in\n" &
-    "  info\\ *) exit 1 ;;\n" &
-    "  exec\\ *\\ --\\ stat\\ -c\\ %a\\ /dev/kvm) printf '" &
-      statMode & "\\n' ;;\n" &
-    "esac\n")
-  writeFile(path, body)
-  setFilePermissions(path, {fpUserRead, fpUserWrite, fpUserExec})
+  copyFileWithPermissions(getAppFilename(), path)
+  writeFile(path & ".json", $(%*{"log": logPath, "fail": failExact,
+    "statMode": statMode, "rejectReady": rejectReady}))
 
 proc lineIndex(lines: seq[string], wanted: string): int =
   for i, line in lines:
@@ -38,7 +48,7 @@ suite "Incus ephemeral operator capabilities":
     let work = createTempDir("vmh-incus-default", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
-    let shim = work / "incus"
+    let shim = work / IncusFixtureName
     writeIncusShim(shim, logPath)
     let b = newIncusBackend(incusCmd = @[shim], baseImage = "vmh-base")
 
@@ -52,7 +62,7 @@ suite "Incus ephemeral operator capabilities":
     let work = createTempDir("vmh-incus-default-options", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
-    let shim = work / "incus"
+    let shim = work / IncusFixtureName
     writeIncusShim(shim, logPath)
     let b = newIncusBackend(incusCmd = @[shim], baseImage = "vmh-base")
 
@@ -80,7 +90,7 @@ suite "Incus ephemeral operator capabilities":
     let work = createTempDir("vmh-incus-capabilities", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
-    let shim = work / "incus"
+    let shim = work / IncusFixtureName
     writeIncusShim(shim, logPath)
     let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
 
@@ -116,7 +126,7 @@ suite "Incus ephemeral operator capabilities":
     let work = createTempDir("vmh-incus-limits", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
-    let shim = work / "incus"
+    let shim = work / IncusFixtureName
     writeIncusShim(shim, logPath)
     let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
 
@@ -143,7 +153,7 @@ suite "Incus ephemeral operator capabilities":
     let work = createTempDir("vmh-incus-limits-only", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
-    let shim = work / "incus"
+    let shim = work / IncusFixtureName
     writeIncusShim(shim, logPath)
     let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
 
@@ -161,7 +171,7 @@ suite "Incus ephemeral operator capabilities":
     let work = createTempDir("vmh-incus-kvm-only", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
-    let shim = work / "incus"
+    let shim = work / IncusFixtureName
     writeIncusShim(shim, logPath)
     let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
 
@@ -178,7 +188,7 @@ suite "Incus ephemeral operator capabilities":
     let work = createTempDir("vmh-incus-fixed-policy", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
-    let shim = work / "incus"
+    let shim = work / IncusFixtureName
     writeIncusShim(shim, logPath)
     let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
     var rawConfig = initTable[string, string]()
@@ -203,7 +213,7 @@ suite "Incus ephemeral operator capabilities":
     let work = createTempDir("vmh-incus-device-fail", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
-    let shim = work / "incus"
+    let shim = work / IncusFixtureName
     let failing = "config device add no-device kvm unix-char " &
       "source=/dev/kvm path=/dev/kvm mode=0666"
     writeIncusShim(shim, logPath, failExact = failing)
@@ -221,7 +231,7 @@ suite "Incus ephemeral operator capabilities":
     let work = createTempDir("vmh-incus-access-fail", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
-    let shim = work / "incus"
+    let shim = work / IncusFixtureName
     let failing = "exec inaccessible -- stat -c %a /dev/kvm"
     writeIncusShim(shim, logPath, failExact = failing)
     let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
@@ -255,7 +265,7 @@ suite "Incus ephemeral operator capabilities":
     for failure in failures:
       let work = createTempDir("vmh-incus-failure-" & failure.suffix, "")
       let logPath = work / "argv.log"
-      let shim = work / "incus"
+      let shim = work / IncusFixtureName
       writeIncusShim(shim, logPath, failExact = failure.command)
       let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
       let name = "fail-" & failure.suffix
@@ -285,7 +295,7 @@ suite "Incus ephemeral operator capabilities":
       let work = createTempDir("vmh-incus-readiness-failure", "")
       defer: removeDir(work)
       let logPath = work / "argv.log"
-      let shim = work / "incus"
+      let shim = work / IncusFixtureName
       writeIncusShim(shim, logPath, rejectReady = true)
       let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base",
                               readyTimeoutSec = 0)
@@ -300,7 +310,7 @@ suite "Incus ephemeral operator capabilities":
       let work = createTempDir("vmh-incus-wrong-mode", "")
       defer: removeDir(work)
       let logPath = work / "argv.log"
-      let shim = work / "incus"
+      let shim = work / IncusFixtureName
       writeIncusShim(shim, logPath, statMode = "660")
       let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
       expect VmHarnessError:
