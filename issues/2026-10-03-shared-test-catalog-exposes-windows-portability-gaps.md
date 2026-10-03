@@ -251,3 +251,21 @@ Every mutation is restored and the original queue program passes afterwards.
 The diagnostic invocation counter was not used as an acceptance condition;
 actual selected actions, process launches, outputs and rejection messages were
 checked. Full-suite parity remains the final local gate.
+
+## Windows x64 qualification at `9fd0842`
+
+[Reprobuild job 111215656675](https://github.com/metacraft-labs/gosti/actions/runs/37127368268/job/111215656675)
+now passes the checksum, 22-overlay sparse allocation, queue and daemon
+shutdown cases. Two programs fail: Tart SCP retry and serve concurrency.
+The five fast requests take 2.677, 2.055, 2.036, 2.101 and 1.957 seconds,
+with nearly all time before their first log. The batch takes 10.826 seconds
+and the five-second worker has finished, so all original timing/liveness
+assertions correctly fail. SCP reports its existing three-second process
+timeout after two attempts. No deadline changed.
+
+Refreshed agents/dev before this measurement and searched open/archive
+concurrency records. Next diagnostic compares identical fixture executables
+with native execution and real io-mon injection on Windows, retaining their
+hashes, all assertions, and the serial one-worker negative control. Only
+that comparison can attribute the delay to the daemon, process startup, or
+monitor initialization; current timings alone cannot.
