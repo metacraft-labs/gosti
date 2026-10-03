@@ -486,3 +486,15 @@ the recipe. Full macOS native/Repro comparison at that commit passes the same
 74 programs with 793 successful cases and six existing skips, with all 148
 actions actually launched and successful. Supplemental run `37153220084` at
 shared `c0324a4` is qualifying the uninstrumented repair on Windows ARM.
+
+### Uninstrumented Windows ARM repair passes
+
+Supplemental [run 37153220084](https://github.com/metacraft-labs/metacraft-github-actions/actions/runs/37153220084)
+at shared `c0324a4b0052f85b8256ab59aebf283861318bd4` qualifies product
+`581f22529566287c6d1b3a3815a41bade722799c` on Windows 11 ARM with the
+production x64-emulation bootstrap and dependencies. The focused Repro action
+actually launches and passes all eleven cases; each of three direct executions
+of that same binary also passes all eleven. No instrumentation patch is applied.
+This resolves the observed wrong-command selection while preserving all prior
+response assertions and the executable-reuse controls. Full product CI remains
+required before promotion.
