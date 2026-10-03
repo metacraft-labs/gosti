@@ -406,3 +406,12 @@ A regression must invoke both configurations through a real process, prove the
 second call preserves the executable modification time, and prove a different
 existing executable is replaced. No cleanup failure, lock or assertion may be
 ignored. Windows ARM qualification remains necessary.
+
+At `ad41f04` plus the content-reuse patch, all ten recipe cases pass on macOS.
+The unchanged original helper fails the new timestamp-preservation assertion
+when compiled with the same test source. A separate case starts with different
+bytes and requires their replacement plus the new sidecar. On Windows the
+reconfiguration case additionally holds a real read-sharing handle that denies
+writes, making overwrite rejection independent of translation-cache timing.
+Windows C generation and local lint pass; runtime qualification is pending.
+The original eight cases and their assertions remain.

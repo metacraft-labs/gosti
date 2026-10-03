@@ -15,7 +15,12 @@ proc fixtureExit(code: cint) {.importc: "exit", header: "<stdlib.h>", noreturn.}
 
 proc commandFixture*(path: string, config: JsonNode): string =
   result = path & (when defined(windows): ".exe" else: "")
-  copyFileWithPermissions(getAppFilename(), result)
+  # A previous invocation can leave this image mapped by Windows translation
+  # services. Reconfiguring an identical command only changes its sidecar;
+  # rewriting the executable is unnecessary and can fail with sharing violation.
+  # Compare bytes so an old or unrelated fixture is still replaced normally.
+  if not sameFileContent(getAppFilename(), result):
+    copyFileWithPermissions(getAppFilename(), result)
   writeFile(result & FixtureSuffix, $config)
 
 let fixtureConfigPath = getAppFilename() & FixtureSuffix

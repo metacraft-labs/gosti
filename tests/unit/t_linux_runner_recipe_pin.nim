@@ -22,9 +22,15 @@
 ##
 ## No mocks of the system under test: the fake `curl` stands in for
 ## api.github.com only, because a unit gate must not depend on the network.
+## Reconfiguration gates launch both canned responses through the real recipe,
+## preserve identical executable bytes/timestamps, and replace stale bytes.
+## Windows holds a real read-sharing handle during reconfiguration, so the
+## regression does not depend on translation-cache timing to deny an overwrite.
 
-import std/[json, os, osproc, streams, strtabs, strutils, unittest]
+import std/[json, os, osproc, streams, strtabs, strutils, times, unittest]
 import ../native_command_fixture
+when defined(windows):
+  import std/winlean
 
 const RecipePath = "guest-recipes/linux-x64-runner/build-runner-image.sh"
 
@@ -108,6 +114,39 @@ echo "[$(runner_minor_lag '' 2.337.0)]"
     let r = runBash(latest & "latest_runner_release\n", fakeCurlDir(body))
     check r.code == 0
     check r.output.strip == "2.337.0"
+
+  test "native response changes preserve an identical fixture image":
+    let directory = fakeCurlDir("{\n  \"tag_name\": \"v2.337.0\"\n}\n")
+    let executable = directory / (when defined(windows): "curl.exe" else: "curl")
+    let stamp = getLastModificationTime(executable)
+    let first = runBash(latest & "latest_runner_release\n", directory)
+    check first.code == 0
+    check first.output.strip == "2.337.0"
+    when defined(windows):
+      let imageReadHandle = createFileW(newWideCString(executable), GENERIC_READ,
+        FILE_SHARE_READ, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+      require imageReadHandle != INVALID_HANDLE_VALUE
+      defer: discard closeHandle(imageReadHandle)
+    discard fakeCurlDir("{\n  \"tag_name\": \"v2.338.0\"\n}\n")
+    check sameFileContent(getAppFilename(), executable)
+    check getLastModificationTime(executable) == stamp
+    let second = runBash(latest & "latest_runner_release\n", directory)
+    check second.code == 0
+    check second.output.strip == "2.338.0"
+
+  test "a different existing fixture image is replaced":
+    let directory = getTempDir() / "t_linux_runner_recipe_pin_curl"
+    createDir(directory)
+    let path = directory / "stale-command-" & $getCurrentProcessId()
+    let executable = path & (when defined(windows): ".exe" else: "")
+    writeFile(executable, "old fixture bytes")
+    defer:
+      removeFile(executable)
+      removeFile(executable & ".vmh-command.json")
+    check commandFixture(path, %*{"output": "replacement\n"}) == executable
+    check sameFileContent(getAppFilename(), executable)
+    check parseFile(executable & ".vmh-command.json")["output"].getStr() ==
+      "replacement\n"
 
   test "an unusable API response yields an empty version":
     let r = runBash(latest & "echo \"[$(latest_runner_release)]\"\n",
