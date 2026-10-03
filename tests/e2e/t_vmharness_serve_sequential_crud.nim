@@ -58,6 +58,8 @@ when isMainModule:
   let params = commandLineParams()
   if params.len >= 1 and params[0] == "__vmh_cli":
     quit(runCli(params[1 .. ^1]))
+  elif params.len == 2 and params[0] == "__fixture_exit":
+    quit(parseInt(params[1]))
   elif params.len >= 7 and params[0] == "__serve":
     cleanupDelayMs = parseInt(params[6])
     if cleanupDelayMs > 0:
@@ -70,7 +72,7 @@ when isMainModule:
       workerArgPrefix: @["__vmh_cli"],
       portFile: params[4],
       serveThreads: parseInt(params[5]),
-      quiet: true)
+      quiet: false)
     runServe(cfg)
     quit(0)
 
@@ -137,18 +139,45 @@ proc startDaemon(work, tokenFile: string, threads, delayMs: int):
     raise
 
 proc stopDaemon(d: tuple[p: Process, port: int], token: string) =
+  defer: d.p.close()
+  var shutdownError = ""
   try: newServeClient("127.0.0.1:" & $d.port, token).shutdown()
-  except CatchableError: discard
-  if d.p.waitForExit(timeout = 8000) != 0 or d.p.running:
+  except CatchableError as e: shutdownError = e.msg
+  let code = d.p.waitForExit(timeout = 8000)
+  # POSIX waitForExit already kills and reaps on timeout. Never signal a
+  # reaped nonzero child: that loses its real status behind ESRCH. Windows
+  # may still have a live child after its timed wait; retain bounded cleanup.
+  if d.p.running:
     d.p.terminate()
-    discard d.p.waitForExit(timeout = 3000)
-  d.p.close()
+    let forcedCode = d.p.waitForExit(timeout = 3000)
+    raise newException(IOError, "daemon did not exit within 8000 ms; " &
+      "forced exit status " & $forcedCode & "; shutdown request: " & shutdownError)
+  if code != 0:
+    raise newException(IOError, "daemon exited with status " & $code &
+      " (wait bound 8000 ms); shutdown request: " & shutdownError)
 
 suite "t_vmharness_serve_sequential_crud":
   let work = createTempDir("vmh-seq-crud-", "")
   let tokenFile = work / "token"
   let token = "seq-crud-bearer-5d02"
   writeFile(tokenFile, token)
+
+  # Real child exit states, no mocks. Reap before teardown to reproduce the
+  # state that previously led to a second signal and a misleading ESRCH.
+  test "teardown accepts an already reaped successful child":
+    let p = startProcess(getAppFilename(), args = @["__fixture_exit", "0"],
+      options = {poParentStreams})
+    require p.waitForExit(timeout = 8000) == 0
+    stopDaemon((p, 0), token)
+
+  test "teardown preserves an already reaped child's nonzero status":
+    let p = startProcess(getAppFilename(), args = @["__fixture_exit", "17"],
+      options = {poParentStreams})
+    require p.waitForExit(timeout = 8000) == 17
+    var diagnostic = ""
+    try: stopDaemon((p, 0), token)
+    except IOError as e: diagnostic = e.msg
+    check "daemon exited with status 17" in diagnostic
 
   test "the exit event is written only after the worker is cleaned up":
     const delayMs = 1500

@@ -42,3 +42,16 @@ another platform failure can identify its last shutdown stage. Do not increase
 bounds, suppress errors, remove monitoring or reduce the 200-request workload.
 The original Linux ARM failure stays open until its actual exit cause is known
 and the unchanged full-suite gate passes.
+
+## Local diagnostic repair — 2026-10-03
+
+On macOS ARM64, the repair based on `79c941e40c7929161b4a75283b592ef52f4de400`
+passes all four cases, including the two original case bodies byte for byte.
+The new controls use real children that have already exited with statuses zero
+and 17. Restoring only the previous teardown helper makes the status-17 control
+fail with `No such process`; the repaired helper reports `daemon exited with
+status 17`. Windows x64 C generation also passes. The existing eight-second
+wait, three-second forced cleanup, 1.5-second ordering delay and 200-request
+workload remain unchanged. Existing daemon logging is enabled for platform
+diagnosis. These results qualify the diagnostic repair, not the still-unknown
+Linux ARM64 shutdown cause.
