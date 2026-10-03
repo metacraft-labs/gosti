@@ -211,3 +211,17 @@ Repair design within LOCAL-1/LOCAL-4:
   size API. Mark the real Windows fixture sparse before extending it. Keep the
   same 22 real qcow2 overlays, apparent sizes, liveness and reclaimed-byte gates.
   Native Windows CI remains required for the Windows APIs and daemon failure.
+
+At `ef54e59` plus the repair, full local lint and the native macOS suite pass
+788 cases with the same six platform skips. The two new queue cases exercise
+real sender threads, FIFO wraparound, backpressure at capacity and teardown
+after the sender exits. The existing escaped-filename checksum control fails
+against the old parser and passes with the repair. All 42 golden contracts and
+the real layer-GC fixtures pass. Windows C generation for the layer and serve
+programs succeeds; native Windows qualification remains required.
+
+The concurrency control now prints each fast request's first-log and completion
+latency without changing its five requests, 2.5-second batch limit, slow-worker
+liveness or shutdown assertions. Its local focused run passes both cases. This
+diagnostic will distinguish delayed worker output from delayed stream completion
+on the failing Windows runner; the source of that timing failure is still open.

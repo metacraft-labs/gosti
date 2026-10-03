@@ -35,7 +35,7 @@ when defined(windows):
   import std/winlean
 else:
   import std/posix
-import ./protocol, ./http, ./capability, ./enrollment
+import ./protocol, ./http, ./capability, ./enrollment, ./dispatch_queue
 import ../types, ../auto
 
 # Import the backend modules so ``registeredBackends`` / ``newBackend`` see
@@ -107,7 +107,7 @@ type
     enrollSecret: string          ## resolved once at startup (may = "")
     keyId: string                 ## derived from the secret; "" if none
 
-const MaxServeThreads = 32
+const MaxServeThreads = DispatchCapacity
   ## Ceiling on the auto-sized worker pool. Each worker either waits on the
   ## dispatch queue or forwards to an isolated child process, so the pool exists
   ## to overlap request *latency* (a long-running exec must not stall unrelated
@@ -782,7 +782,7 @@ type
     acc: ptr Acceptor
     slot: int
 
-var dispatchQueue: Channel[int]
+var serveDispatch: DispatchQueue
   ## Accepted connections, as raw socket handles, from the acceptor to the
   ## workers.
   ##
@@ -795,6 +795,10 @@ var dispatchQueue: Channel[int]
   ##
   ## A negative value is the shutdown sentinel; ``runServe`` sends one per
   ## worker.
+  ## The queue owns fixed POD storage. A standard Channel allocates its buffer
+  ## lazily on the acceptor's ORC heap, then closes after that thread has exited.
+  ## The bounded queue avoids that dead allocator; at most one reserved socket
+  ## per worker can be awaiting dispatch, so it cannot block the acceptor.
 
 const SaturatedBody = """{"error":"vm-harness serve: all request handlers are busy; retry","code":"handlers_saturated"}"""
 
@@ -859,7 +863,7 @@ proc workerLoop(arg: ptr WorkerArg) {.thread.} =
       # The acceptor decrements this counter to RESERVE us, so it is never
       # incremented here for a connection already in flight.
       discard ctx.idleWorkers.fetchAdd(1)
-      let handle = dispatchQueue.recv()
+      let handle = serveDispatch.recv()
       if handle < 0:
         # Shutdown sentinel. The reservation we just published is ours to
         # withdraw.
@@ -913,7 +917,7 @@ proc acceptorLoop(arg: ptr Acceptor) {.thread.} =
         try: client.close() except CatchableError: discard
         continue
       # Ownership of the fd passes to a worker; do NOT close it here.
-      dispatchQueue.send(int(client.getFd()))
+      serveDispatch.send(int(client.getFd()))
     discard ctx.activeThreads.fetchSub(1)
 
 proc selfConnectHost(listenHost: string): string =
@@ -938,7 +942,7 @@ proc runServe*(cfg: ServeConfig) =
   ## Bind, listen, and serve connections until a ``/v1/shutdown`` is received.
   ##
   ## Structure: ONE acceptor thread owning the listening socket, plus a bounded
-  ## pool of worker threads (``resolveThreadCount``) fed by ``dispatchQueue``,
+  ## pool of worker threads (``resolveThreadCount``) fed by ``serveDispatch``,
   ## plus one deadline reaper. Concurrency is required by the control driver (a
   ## central GARM), which fires many simultaneous create/delete/retry calls: a
   ## single long-running ``/v1/exec`` must not stall unrelated connections past
@@ -1013,7 +1017,7 @@ proc runServe*(cfg: ServeConfig) =
   daemonLog(ctx, "request handlers: " & $threadCount &
             " worker threads + 1 acceptor; exec deadline " &
             $deadlineSec & "s")
-  dispatchQueue.open()
+  serveDispatch.open()
   # activeThreads counts the threads that must be joined and that decrement it
   # on exit: the workers plus the acceptor.
   ctx.activeThreads.store(threadCount + 1)
@@ -1061,11 +1065,11 @@ proc runServe*(cfg: ServeConfig) =
   # once that exec returns, which is why this is sent AFTER the acceptor has
   # stopped handing out new connections.
   for _ in 0 ..< threadCount:
-    dispatchQueue.send(-1)
+    serveDispatch.send(-1)
   for t in workers.mitems:
     joinThread(t)
 
   joinThread(reaper)
-  dispatchQueue.close()
+  serveDispatch.close()
   server.close()
   daemonLog(ctx, "stopped")

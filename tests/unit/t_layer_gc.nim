@@ -41,6 +41,13 @@ import ../native_command_fixture
 import vm_harness/layer_gc
 import vm_harness/backends/libvirt
 
+when defined(windows):
+  import std/winlean
+  proc deviceIoControl(handle: Handle; code: uint32; input: pointer;
+      inputSize: uint32; output: pointer; outputSize: uint32;
+      returned: ptr uint32; overlapped: pointer): int32
+    {.stdcall, dynlib: "kernel32.dll", importc: "DeviceIoControl".}
+
 const
   # A golden of a plausible shape. Sparse, so the fixture is cheap while the
   # numbers stay realistic.
@@ -82,6 +89,14 @@ proc growSparse(path: string; apparentBytes: int64) =
   var f: File
   doAssert open(f, path, fmReadWriteExisting)
   defer: close(f)
+  when defined(windows):
+    # Seeking past EOF does not itself request sparse NTFS allocation.
+    # FILE_SET_SPARSE_BUFFER contains one BOOLEAN SetSparse field.
+    var sparse: uint8 = 1
+    var returned: uint32
+    doAssert deviceIoControl(Handle(getOsFileHandle(f)), 0x000900c4'u32,
+      addr sparse, 1, nil, 0, addr returned, nil) != 0,
+      "FSCTL_SET_SPARSE failed: " & $getLastError()
   setFilePos(f, apparentBytes - 1)
   var zero: byte = 0
   doAssert writeBuffer(f, addr zero, 1) == 1

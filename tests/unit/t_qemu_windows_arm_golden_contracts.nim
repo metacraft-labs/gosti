@@ -613,6 +613,13 @@ suite "Golden build: the manifest":
     writeFile(abc, "abc")
     check fileSha256(abc) ==
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    # Checksum tools escape backslashes in their output, including native
+    # Windows separators. The escaped filename must not change the digest.
+    let escaped = tmp / (when defined(windows): "file with spaces"
+                        else: "file\\with spaces")
+    writeFile(escaped, "abc")
+    check fileSha256(escaped) ==
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
   test "the manifest identifies the ISO, the recipe and the answer files":
     let tmp = createTempDir("vmh-qwa-manifest-", "")
@@ -797,4 +804,3 @@ suite "Golden build: only a FINISHED golden is admissible":
     writeFile(tmp / QwaGoldenManifestName, "{}")
     expect ValueError:
       discard requireWindowsArmGolden(tmp)
-

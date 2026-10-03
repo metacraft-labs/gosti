@@ -148,6 +148,8 @@ test all tests/e2e/t_crud_serve_parity.nim
 # (the central-GARM driver fires many simultaneous calls). Fails against the
 # old serial accept loop, passes against the thread-pool loop. Hermetic (the
 # worker is a trivial self-exec sleep/quick role — no backend).
+# Fixed socket-handle storage, bounded dispatch, and producer lifetime.
+test all tests/unit/t_serve_dispatch_queue.nim
 test all tests/e2e/t_vmharness_serve_concurrency.nim
 # A teardown whose client vanishes (GARM SIGKILLs/cancels its provider) must
 # still run to completion on the daemon host. Hermetic (self-exec worker).

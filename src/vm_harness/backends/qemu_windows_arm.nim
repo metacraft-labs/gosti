@@ -2123,8 +2123,14 @@ proc fileSha256*(path: string): string =
       continue
     if r.exitCode == 0:
       let fields = r.stdout.strip().splitWhitespace()
-      if fields.len > 0 and fields[0].len == 64:
-        return fields[0].toLowerAscii()
+      if fields.len > 0:
+        # GNU checksum output starts with '\\' when its filename is escaped.
+        # Windows separators and literal POSIX backslashes both trigger it.
+        let digest = if fields[0].startsWith("\\"): fields[0][1 .. ^1]
+                     else: fields[0]
+        if digest.len == 64 and
+            digest.allCharsInSet({'0'..'9', 'a'..'f', 'A'..'F'}):
+          return digest.toLowerAscii()
   raise newVmHarnessError($biQemuWindowsArm, lpProvisioning,
     "cannot compute a SHA-256 for " & path &
     ": neither shasum nor sha256sum produced a digest")
