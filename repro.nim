@@ -4,19 +4,24 @@
 ##
 ## The default collection builds the shipping CLI and benchmark. The test
 ## collection builds and executes the deterministic, host-independent suite on
-## every supported platform. POSIX host-backend tests which rely on shell
-## scripts or process groups are added only on POSIX; live hypervisor
-## lifecycles remain in the explicit host-test catalog.
+## every supported platform. scripts/test-catalog.txt is shared with the native
+## runner, including each fixture's existing platform guards. Live hypervisor
+## lifecycles remain in the explicit host tier.
 
+import ./scripts/test_catalog
 import repro_project_dsl
 import repro_dsl_stdlib/foreign_env
+import repro_dsl_stdlib/packages/sh
 import ct_test_nim_unittest
 when defined(posix):
   import ./repro_support/qemu_img as qemuImageTools
+  import ./repro_support/tar as testTar
+  import ./repro_support/xorriso
 import repro_dsl_stdlib/nixpkgs_pin
 import repro_resources/run_edge
 when defined(linux):
   import repro_dsl_stdlib/packages/pcre_config
+  import ./repro_support/swtpm
 
 # TI2 producer-surface declaration: vm-harness's resource providers live in a
 # SEPARATE module (`src/vm_harness/repro/resources.nim`, re-authored via the RP4
@@ -31,118 +36,6 @@ when defined(linux):
 resourceModule "src/vm_harness/repro/resources.nim":
   path "src"
 
-type
-  VmHarnessTestSpec = object
-    source: string
-    binary: string
-
-const portableTestSpecs: seq[VmHarnessTestSpec] = @[
-  VmHarnessTestSpec(source: "tests/unit/t_output_envelope.nim",
-    binary: "t_output_envelope"),
-  VmHarnessTestSpec(source: "tests/unit/t_auto_selection.nim",
-    binary: "t_auto_selection"),
-  VmHarnessTestSpec(source: "tests/unit/t_guest_scripts.nim",
-    binary: "t_guest_scripts"),
-  VmHarnessTestSpec(source: "tests/unit/t_serve_protocol.nim",
-    binary: "t_serve_protocol"),
-  VmHarnessTestSpec(source: "tests/unit/t_cli_probe.nim",
-    binary: "t_cli_probe"),
-  VmHarnessTestSpec(source: "tests/unit/t_cli_boot.nim",
-    binary: "t_cli_boot"),
-  VmHarnessTestSpec(source: "tests/unit/t_ssh_serialization.nim",
-    binary: "t_ssh_serialization"),
-  VmHarnessTestSpec(source: "tests/integration/t_durable_media.nim",
-    binary: "t_durable_media"),
-  VmHarnessTestSpec(source: "tests/unit/t_hyperv_parsers.nim",
-    binary: "t_hyperv_parsers"),
-  VmHarnessTestSpec(source: "tests/unit/t_hyperv_boot_media.nim",
-    binary: "t_hyperv_boot_media"),
-  VmHarnessTestSpec(source: "tests/unit/t_wsl_parsers.nim",
-    binary: "t_wsl_parsers"),
-  VmHarnessTestSpec(source: "tests/unit/t_utm_parsers.nim",
-    binary: "t_utm_parsers"),
-  VmHarnessTestSpec(source: "tests/unit/t_tart_shared_dirs.nim",
-    binary: "t_tart_shared_dirs"),
-  VmHarnessTestSpec(source: "tests/integration/t_noop_lifecycle.nim",
-    binary: "t_noop_lifecycle"),
-  VmHarnessTestSpec(source: "tests/e2e/t_vm_harness_smoke.nim",
-    binary: "t_vm_harness_smoke"),
-  VmHarnessTestSpec(source: "tests/e2e/t_vm_harness_finally_cleanup_on_panic.nim",
-    binary: "t_vm_harness_finally_cleanup_on_panic"),
-  VmHarnessTestSpec(source: "tests/e2e/t_vm_harness_auto_backend_selection.nim",
-    binary: "t_vm_harness_auto_backend_selection"),
-  VmHarnessTestSpec(source: "tests/integration/t_libvirt_backend.nim",
-    binary: "t_libvirt_backend"),
-  VmHarnessTestSpec(source: "tests/integration/t_cli_libvirt_flags.nim",
-    binary: "t_cli_libvirt_flags"),
-]
-
-const posixTestSpecs: seq[VmHarnessTestSpec] = @[
-  VmHarnessTestSpec(source: "tests/unit/t_cli_incus.nim",
-    binary: "t_cli_incus"),
-  VmHarnessTestSpec(source: "tests/unit/t_incus_create_tuning.nim",
-    binary: "t_incus_create_tuning"),
-  VmHarnessTestSpec(source: "tests/integration/t_incus_ephemeral_capabilities.nim",
-    binary: "t_incus_ephemeral_capabilities"),
-  VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_swtpm_startup.nim",
-    binary: "t_qemu_windows_arm_swtpm_startup"),
-  VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_backend.nim",
-    binary: "t_qemu_windows_arm_backend"),
-  VmHarnessTestSpec(source: "tests/unit/t_cli_ephemeral_vmrun.nim",
-    binary: "t_cli_ephemeral_vmrun"),
-  VmHarnessTestSpec(source: "tests/unit/t_tart_backend.nim",
-    binary: "t_tart_backend"),
-  # POSIX-only: its fake `tart`/`ssh` are shell scripts.
-  VmHarnessTestSpec(source: "tests/unit/t_tart_disk_resize.nim",
-    binary: "t_tart_disk_resize"),
-  # POSIX-only: shell-script hypervisor fakes over a real qemu-img.
-  VmHarnessTestSpec(source: "tests/unit/t_disk_size_honoured.nim",
-    binary: "t_disk_size_honoured"),
-  VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_disk_size.nim",
-    binary: "t_qemu_windows_arm_disk_size"),
-  # Runner-Fleet-M3-ARM-Wave MA0 gate: t_vmharness_image_is_honoured (c).
-  VmHarnessTestSpec(source: "tests/unit/t_vmharness_image_is_honoured.nim",
-    binary: "t_vmharness_image_is_honoured"),
-  # Runner-Fleet-M3-ARM-Wave MA3 gate: t_qemu_windows_arm_golden_build, unit
-  # tier. POSIX-only: it drives advisory locks, unix monitor sockets and a
-  # re-executed fake QEMU. The host tier lives in tests/e2e/ and is run by
-  # scripts/run-host-tests.sh.
-  VmHarnessTestSpec(source: "tests/unit/t_qemu_windows_arm_golden_build.nim",
-    binary: "t_qemu_windows_arm_golden_build"),
-  # Runner-Fleet-M3-ARM-Wave MA8 gate:
-  # t_qemu_windows_arm_dead_guest_is_named, unit tier. POSIX-only for the same
-  # reasons as the gate above, plus waitpid: the whole point is reading a
-  # child's exit status. The host tier lives in tests/e2e/ and is run by
-  # scripts/run-host-tests.sh.
-  VmHarnessTestSpec(
-    source: "tests/unit/t_qemu_windows_arm_dead_guest_is_named.nim",
-    binary: "t_qemu_windows_arm_dead_guest_is_named"),
-  # Runner-Fleet-M3-ARM-Wave MA7 (hygiene half) gate:
-  # t_m3_tart_orphan_dirs_reclaimed. POSIX-only: it stands its fake `tart` up
-  # as a shell script and redirects the process's real stdout fd to assert the
-  # CLI's own JSON report.
-  VmHarnessTestSpec(source: "tests/unit/t_m3_tart_orphan_dirs_reclaimed.nim",
-    binary: "t_m3_tart_orphan_dirs_reclaimed"),
-  # gosti#69: the serve daemon closes each worker stdio fd exactly once.
-  # POSIX-only: it asserts on raw descriptor numbers (fcntl/fstat), and on
-  # Windows osproc owns those handle closes. No port, no wall clock.
-  VmHarnessTestSpec(source: "tests/unit/t_serve_worker_fd_hygiene.nim",
-    binary: "t_serve_worker_fd_hygiene"),
-]
-
-# Runner-Fleet-M3-ARM-Wave MA12 gate:
-# `t_vmharness_serve_survives_a_hung_request` is NOT listed above, and that is
-# deliberate rather than an omission. This graph builds the "deterministic,
-# host-independent suite" (see the module doc); the serve DAEMON gates —
-# `t_vmharness_serve_roundtrip`, `t_vmharness_serve_concurrency`,
-# `t_vmharness_serve_enrollment`, `t_vmharness_serve_sequential_crud` — are none of them here either, because each
-# binds a TCP port, re-execs itself as several processes, and measures wall
-# clock. MA12's gate does all three and additionally holds real hung workers
-# for tens of seconds, so it belongs exactly where its siblings already are:
-# `scripts/run-tests.sh`, which is what `just test` runs. Adding it here would
-# make it the only port-binding, time-measuring member of an otherwise
-# hermetic collection.
-
 package vm_harness:
   devEnv:
     when not defined(windows):
@@ -154,14 +47,34 @@ package vm_harness:
 
   uses:
     "nim >=2.2 <3.0"
+    "sh"
+    "bash >=4"
+    "cat"
+    "cp"
+    "chmod"
+    "ln"
+    "mkdir"
+    "rm"
+    "sed"
+    "grep"
+    "head"
+    "tail"
+    "cut"
+    "tr"
+    "dirname"
+    "awk"
+    "tar"
     when defined(posix):
       "qemu-img"
       "sleep"
       "sha256sum"
       "git >=2"
+      "xorriso"
     when defined(linux):
       "pcre-config >=0"
       "uname"
+      "nix"
+      "swtpm"
     when defined(macosx):
       "clang"
     else:
@@ -209,7 +122,17 @@ package vm_harness:
     var testBuildActions: seq[BuildActionDef] = @[]
     var testExecuteActions: seq[BuildActionDef] = @[]
 
-    proc emitTestPair(spec: VmHarnessTestSpec;
+    when defined(linux):
+      # The native shell realizes this same pinned guest. The graph owns its
+      # realization explicitly, and passes the output path to the real TPM gate.
+      let tpmGuest = shell(
+        "nix build .#guest-linux-tpm --out-link build/test-tpm-guest",
+        actionId = "vm_harness.test_tpm_guest",
+        extraInputs = @["flake.nix", "flake.lock", "nix/guest-linux-tpm.nix"],
+        extraOutputs = @["build/test-tpm-guest"])
+      appendRegisteredActionToolIdentityRefs(tpmGuest.id, ["nix"])
+
+    proc emitTestPair(spec: TestSpec;
                       buildActions, executeActions: var seq[BuildActionDef]) =
       let output = testBinDir & spec.binary & exeSuffix
       let edge = buildNimUnittest.build(
@@ -220,32 +143,48 @@ package vm_harness:
         # still the package version — a drift guard that has to be able to
         # read the package version.
         extraInputs = @["src", "config.nims", "guest-scripts", "guest-recipes",
-                        "vm_harness.nimble"],
+                        "vm_harness.nimble", "tests", "scripts", "docs"],
         actionId = "vm_harness.test_build." & spec.binary)
       # The unittest adapter does not register Nim's C compiler itself.
       appendRegisteredActionToolIdentityRefs(edge.action.id, [backendCompiler])
       when defined(linux):
         appendRegisteredActionToolIdentityRefs(edge.action.id, ["pcre-config", "uname"])
       buildActions.add(edge.action)
+      var executionAfter: seq[BuildActionDef] = @[]
+      var executionEnv: seq[(string, string)] = @[]
+      var executionInputs: seq[string] = @[]
+      when defined(linux):
+        if spec.binary == "t_guest_sees_tpm_device":
+          executionAfter.add(tpmGuest)
+          executionInputs.add("build/test-tpm-guest")
+          executionEnv.add(("VMH_TPM_GUEST_DIR", "build/test-tpm-guest"))
       let execute = edge.testBinary.run(
         actionId = "vm_harness.test_execute." & spec.binary,
+        after = executionAfter,
+        extraInputs = executionInputs,
+        extraEnv = executionEnv,
         registerImplicitName = false)
+      # The full suite compiles real child CLIs and runs repository shell
+      # fixtures. Declaring tools only on the build edge omits them from the
+      # execution action's isolated PATH.
+      appendRegisteredActionToolIdentityRefs(execute.id,
+        ["nim", backendCompiler, "sh", "bash", "cat", "cp", "chmod", "ln",
+         "mkdir", "rm", "sed", "grep", "head", "tail", "cut", "tr", "dirname",
+         "awk", "tar"])
       when defined(posix):
-        if spec.binary in ["t_qemu_windows_arm_golden_build",
-                           "t_qemu_windows_arm_dead_guest_is_named",
-                           "t_disk_size_honoured",
-                           "t_qemu_windows_arm_disk_size"]:
-          appendRegisteredActionToolIdentityRefs(execute.id, ["qemu-img", "sleep", "sha256sum", "git"])
+        appendRegisteredActionToolIdentityRefs(execute.id,
+          ["qemu-img", "sleep", "sha256sum", "git"])
+        if spec.binary == "t_libvirt_backend":
+          appendRegisteredActionToolIdentityRefs(execute.id, ["xorriso"])
+      when defined(linux):
+        appendRegisteredActionToolIdentityRefs(execute.id,
+          ["pcre-config", "uname", "swtpm"])
       executeActions.add(execute)
       run("test-" & spec.binary, build = execute.id,
         owningPackage = "vm_harness")
 
-    for spec in portableTestSpecs:
+    for spec in loadTestCatalog(".").selectedTests("test"):
       emitTestPair(spec, testBuildActions, testExecuteActions)
-
-    when defined(posix):
-      for spec in posixTestSpecs:
-        emitTestPair(spec, testBuildActions, testExecuteActions)
 
     discard collect("test-builds", testBuildActions)
     discard collect("test", testExecuteActions)
