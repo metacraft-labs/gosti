@@ -464,3 +464,25 @@ invocation logs. Restoring only the old pre-startup setup makes it return
 fixture call; its three assertions fail. No external network request is needed
 for this negative control. Windows-targeted C generation passes. The live ARM
 trace is still pending and is not claimed as confirmation of the original cause.
+
+### Windows command selection confirmed by instrumented execution
+
+Run [37151788900](https://github.com/metacraft-labs/metacraft-github-actions/actions/runs/37151788900),
+shared `4b8073d562f9d43a296c5ff6da89797881f7af66`, measures product
+`ae5cbfbabdf2796d48cc7cec3065a53fc3db5a72` on Windows 11 ARM using the
+retained diagnostic patch. The monitored action launches and passes all ten
+cases. Its parent PID 6904 writes five sidecars; four real fixture children
+record their reads. Each of the three direct runs writes all five expected
+sidecars but records no fixture child read. Their Bash `type -a curl` output
+selects `/clangarm64/bin/curl` before `/tmp/t_linux_runner_recipe_pin_curl/curl`.
+Both response-value assertions fail in every direct run. This confirms that
+Bash selected the ambient MSYS2 command; it does not implicate stale sidecar
+reads. The earlier Git-for-Windows wrapper explanation was a hypothesis, not
+a measured identity of the executable used here.
+
+The repair at `581f22529566287c6d1b3a3815a41bade722799c` establishes the
+fixture path inside Bash and checks its resolved identity before executing
+the recipe. Full macOS native/Repro comparison at that commit passes the same
+74 programs with 793 successful cases and six existing skips, with all 148
+actions actually launched and successful. Supplemental run `37153220084` at
+shared `c0324a4` is qualifying the uninstrumented repair on Windows ARM.
