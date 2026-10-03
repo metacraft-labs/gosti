@@ -172,3 +172,42 @@ programs carry 11 disk-size and 42 golden-contract cases. Their Windows C
 generation succeeds. Five POSIX lifecycle programs remain in the deterministic
 catalog with their actual platform requirement; they retain all real socket,
 process, image, timing and cleanup assertions. Native Windows CI remains required.
+
+## Remaining Windows x64 failures at 4a14028
+
+[Job 111204804217](https://github.com/metacraft-labs/gosti/actions/runs/37123551244/job/111204804217)
+now fails five of 67 selected test programs. The prior Bash, Incus, native
+command layout and host-specific compilation failures are absent. Three
+remaining daemon programs crash at `runServe` line 1069, inside
+`Channel.close -> deallocShared -> addToSharedFreeList`, after joining the
+acceptor. That thread sends the first message and therefore allocates the
+channel's lazy buffer. Under ORC it owns that allocation, so teardown on the
+main thread after its exit dereferences the retired allocator. The slow/fast
+concurrency case also misses its original 2.5-second/liveness checks (6.760s);
+its cause remains separate until measured. Saturated-pool 503 and recovery
+controls now pass.
+
+The golden-contract test rejects real SHA-256 command output on Windows.
+`fileSha256` requires the first whitespace-delimited token to have length 64;
+GNU checksum tools prefix a backslash when escaping Windows path separators,
+so a valid checksum token can have length 65. Reproduce with real escaped
+filenames and preserve the known-content digest controls before changing this
+parser. The layer-GC sweep reports 2.7 GB allocated for each sparse overlay:
+`allocatedBytesOf` deliberately substitutes apparent size on Windows, and the
+fixture extends files without explicitly requesting NTFS sparse allocation.
+Its allocation assertions must remain mandatory.
+
+Repair design within LOCAL-1/LOCAL-4:
+
+- Replace the daemon's lazily allocated standard channel with a bounded POD
+  socket-handle queue whose fixed storage and synchronization objects outlive
+  every worker. Preserve idle-slot reservation, saturation 503, sentinels and
+  join-before-close. Qualify FIFO, bounded backpressure, worker teardown, and the
+  existing daemon/concurrency tests without altered waits.
+- Accept the checksum tool's single leading escape marker and require exactly
+  64 hexadecimal digest characters. Exercise actual files with escaped names,
+  retaining all existing provenance/content assertions.
+- Report Windows allocated space through the native compressed/sparse-file
+  size API. Mark the real Windows fixture sparse before extending it. Keep the
+  same 22 real qcow2 overlays, apparent sizes, liveness and reclaimed-byte gates.
+  Native Windows CI remains required for the Windows APIs and daemon failure.
