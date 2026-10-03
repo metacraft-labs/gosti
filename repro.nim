@@ -183,6 +183,12 @@ package vm_harness:
       run("test-" & spec.binary, build = execute.id,
         owningPackage = "vm_harness")
 
+    # The provider snapshot must be invalidated when the shared catalog or
+    # its source inventory changes, including an unregistered new program.
+    when defined(reproProviderMode):
+      discard readDevEnvFile("scripts/test-catalog.txt")
+    for directory in ["tests/unit", "tests/integration", "tests/e2e"]:
+      providerDirectoryInput(directory)
     for spec in loadTestCatalog(".").selectedTests("test"):
       emitTestPair(spec, testBuildActions, testExecuteActions)
 

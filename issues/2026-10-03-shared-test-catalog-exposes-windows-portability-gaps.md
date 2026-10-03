@@ -242,3 +242,12 @@ parser and every execution requirement. A real warm-graph mutation must detect
 an added catalog entry and an unregistered source without clearing caches;
 restore both fixture changes afterwards. Require 74 executed programs and
 per-case native/Repro parity for this candidate.
+
+At `7965592` plus the provider-input repair, real warm-graph controls pass
+without clearing caches. Adding a catalog entry executes its newly registered
+program. A catalog-only duplicate fails validation. Adding only an unregistered
+source also fails validation, proving directory membership invalidation separately.
+Every mutation is restored and the original queue program passes afterwards.
+The diagnostic invocation counter was not used as an acceptance condition;
+actual selected actions, process launches, outputs and rejection messages were
+checked. Full-suite parity remains the final local gate.
