@@ -23,7 +23,8 @@
 ## No mocks of the system under test: the fake `curl` stands in for
 ## api.github.com only, because a unit gate must not depend on the network.
 
-import std/[os, osproc, strutils, unittest]
+import std/[json, os, osproc, streams, strtabs, strutils, unittest]
+import ../native_command_fixture
 
 const RecipePath = "guest-recipes/linux-x64-runner/build-runner-image.sh"
 
@@ -43,10 +44,25 @@ proc runBash(script: string, path = ""): tuple[output: string, code: int] =
   createDir(dir)
   let file = dir / "probe.sh"
   writeFile(file, script)
-  var env = ""
+  let env = newStringTable(when defined(windows): modeCaseInsensitive
+                           else: modeCaseSensitive)
+  for key, value in envPairs(): env[key] = value
   if path.len > 0:
-    env = "PATH=" & quoteShell(path) & ":\"$PATH\" "
-  let (output, code) = execCmdEx(env & "bash " & quoteShell(file))
+    env["PATH"] = path & $PathSep & getEnv("PATH")
+  let bash = findExe("bash")
+  let child = startProcess(bash, args = @[file.replace('\\', '/')],
+    env = env, options = {poStdErrToStdOut})
+  defer: child.close()
+  var output = ""
+  var buffer: array[4096, char]
+  while true:
+    let count = child.outputStream.readData(addr buffer[0], buffer.len)
+    if count == 0: break
+    for i in 0 ..< count: output.add(buffer[i])
+  let code = child.waitForExit()
+  if code notin [0, 1]:
+    echo "bash fixture failed: executable=", bash, " exit=", code,
+      " output=", output
   (output, code)
 
 proc fakeCurlDir(body: string): string =
@@ -56,9 +72,7 @@ proc fakeCurlDir(body: string): string =
   createDir(result)
   let bodyFile = result / "body.json"
   writeFile(bodyFile, body)
-  let curl = result / "curl"
-  writeFile(curl, "#!/usr/bin/env bash\ncat " & quoteShell(bodyFile) & "\n")
-  setFilePermissions(curl, {fpUserRead, fpUserWrite, fpUserExec})
+  discard commandFixture(result / "curl", %*{"output": body & "\n"})
 
 suite "linux runner recipe: version helpers":
   let text = recipeText()

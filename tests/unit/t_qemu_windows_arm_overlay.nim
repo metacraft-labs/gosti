@@ -9,6 +9,8 @@
 
 import std/[os, osproc, streams, strutils, tempfiles, unittest]
 import vm_harness
+when defined(windows):
+  import std/winlean
 
 if commandLineParams() == @["--liveness-child"]:
   echo "ready"
@@ -110,10 +112,23 @@ suite "qemu-windows-arm per-instance liveness lock":
       child.close()
     require child.outputStream.readLine() == "ready"
     let pid = child.processID
+    when defined(windows):
+      # Nim's waitForExit maps the legitimate exit status 259 to -1 even
+      # after the process handle is signaled. Check both kernel facts directly
+      # so this regression still exercises that exact status.
+      let handle = openProcess(DWORD(0x00101000), 0, DWORD(pid))
+      require handle != 0
+      defer: discard closeHandle(handle)
     check pidAlive(pid)
     child.inputStream.writeLine("exit")
     child.inputStream.flush()
-    check child.waitForExit(5000) == (when defined(windows): 259 else: 17)
+    when defined(windows):
+      check waitForSingleObject(handle, 5000) == WAIT_OBJECT_0
+      var status: int32
+      check getExitCodeProcess(handle, status) != 0
+      check status == 259
+    else:
+      check child.waitForExit(5000) == 17
     check not pidAlive(pid)
 
   test "invalid process identifiers cannot name a live process":

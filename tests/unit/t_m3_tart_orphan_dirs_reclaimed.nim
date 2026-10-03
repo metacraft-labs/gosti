@@ -447,10 +447,10 @@ suite "t_m3_tart_orphan_dirs_reclaimed: the CLI surface a scheduled sweeper uses
 
     putEnv("TART_HOME", "/tmp/ma7-tart-home")
     putEnv("VM_HARNESS_TART_STATE_DIR", "/tmp/ma7-vmh-state")
-    check tartVmsDir() == "/tmp/ma7-tart-home/vms"
+    check tartVmsDir() == "/tmp/ma7-tart-home" / "vms"
 
     delEnv("TART_HOME")
-    check tartVmsDir() == "/tmp/ma7-vmh-state/vms"
+    check tartVmsDir() == "/tmp/ma7-vmh-state" / "vms"
 
     delEnv("VM_HARNESS_TART_STATE_DIR")
     check tartVmsDir() == getHomeDir() / ".tart" / "vms"

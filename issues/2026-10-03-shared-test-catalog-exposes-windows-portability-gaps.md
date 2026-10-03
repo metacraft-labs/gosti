@@ -109,3 +109,33 @@ require the next Windows CI run. No qcow2 fixture is replaced or skipped.
 
 Sources: [MSYS2 setup action](https://github.com/msys2/setup-msys2),
 [QEMU image utility package](https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-qemu-image-util).
+
+## Follow-up from Windows x64 at a783ea606
+
+[Job 111190807834](https://github.com/metacraft-labs/gosti/actions/runs/37118835650/job/111190807834)
+now reports fourteen failed actions, reduced from the earlier twenty-four.
+The native command-fixture, path, PID and Linux-TPM repairs remove the earlier
+failures they targeted. The new real child with exit status 259 does terminate
+and `pidAlive` correctly reports it dead, but Nim's Windows `waitForExit` returns
+-1 for that status even after the handle is signaled. Its control now checks the
+real signaled process handle and `GetExitCodeProcess` directly, still requiring
+exactly 259. It retains the same 5-second bound and the live/dead assertions.
+
+Additional fixture repairs retain all assertions: native path joins for Tart
+state resolution; an actual child environment for the Linux recipe shell
+instead of a POSIX assignment evaluated by cmd.exe; and a native curl stand-in.
+Both shell fixtures retain their real Bash execution, normalize Windows script
+path separators, and print the resolved executable and output on abnormal exit.
+Their output drains until EOF even if a Windows pipe returns a short read.
+
+At `ce45e80` plus this patch, the four focused native macOS programs pass 34 cases
+and generate Windows C. The final shell-only changes pass 15 cases and repeat
+Windows C generation. Native Windows validation remains required.
+
+Remaining failures include five POSIX-dependent fixture builds, the previously
+identified prerequisites/layout fixes awaiting CI, abnormal Bash termination
+(C0000409), and unchanged serve concurrency/saturation gates. The fast-request
+batch measured 5.437 seconds against its existing 2.5-second bound; the saturated
+pool also timed out instead of returning 503. No timeout or correctness
+requirement has been relaxed, and neither Windows runtime failure is attributed
+solely from its timing.
