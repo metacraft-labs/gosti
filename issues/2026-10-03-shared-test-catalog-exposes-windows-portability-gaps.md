@@ -225,3 +225,20 @@ latency without changing its five requests, 2.5-second batch limit, slow-worker
 liveness or shutdown assertions. Its local focused run passes both cases. This
 diagnostic will distinguish delayed worker output from delayed stream completion
 on the failing Windows runner; the source of that timing failure is still open.
+
+## Warm graph catalog invalidation
+
+At `419c38d`, the native runner selects 74 programs, but the local Reprobuild
+0.2.2 driver built from clean `c14b1e61` reuses a provider graph with 146 actions
+(73 programs). The new queue program is absent even though the catalog itself
+is read by the provider when it runs. `loadTestCatalog` uses ordinary file and
+directory reads without registering them as provider evaluation inputs. The
+warm snapshot therefore misses a catalog-only change. This violates LOCAL-1's
+requirement that both runners select the same deterministic programs.
+
+Repair design: declare the catalog's actual file read and the three scanned
+test-directory memberships through the provider input API. Keep the shared
+parser and every execution requirement. A real warm-graph mutation must detect
+an added catalog entry and an unregistered source without clearing caches;
+restore both fixture changes afterwards. Require 74 executed programs and
+per-case native/Repro parity for this candidate.
