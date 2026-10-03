@@ -283,20 +283,21 @@ proc incusCreateLockDir*(): string =
   if result.len == 0: result = getEnv("RUNTIME_DIRECTORY").strip()
   if result.len == 0: result = getTempDir()
 
+proc createSlotPrefix*(base: string): string =
+  ## Lock-file prefix for one base image: per base image is per GARM
+  ## provider in practice (each provider maps its own image alias).
+  var key = ""
+  for c in base:
+    key.add(if c.isAlphaNumeric or c in {'-', '_', '.'}: c else: '_')
+  incusCreateLockDir() / ("vm-harness-incus-create-" & key)
+
+
 when defined(posix):
   import std/posix
   proc c_flock(fd: cint, op: cint): cint {.importc: "flock",
                                             header: "<sys/file.h>".}
   const LockEx = cint(2)
   const LockNb = cint(4)
-
-  proc createSlotPrefix*(base: string): string =
-    ## Lock-file prefix for one base image: per base image is per GARM
-    ## provider in practice (each provider maps its own image alias).
-    var key = ""
-    for c in base:
-      key.add(if c.isAlphaNumeric or c in {'-', '_', '.'}: c else: '_')
-    incusCreateLockDir() / ("vm-harness-incus-create-" & key)
 
   proc acquireCreateSlot*(base: string, slots: int,
                           waitSec: int): cint =
@@ -327,6 +328,55 @@ when defined(posix):
 
   proc releaseCreateSlot*(fd: cint) =
     if fd >= 0: discard posix.close(fd)
+elif defined(windows):
+  import std/widestrs
+
+  {.emit: """
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#include <share.h>
+#include <sys/stat.h>
+#include <stdlib.h>
+static int vmh_try_create_slot(const wchar_t *path, int *contended) {
+  int fd = -1;
+  unsigned long error = 0;
+  *contended = 0;
+  if (_wsopen_s(&fd, path, _O_RDWR | _O_CREAT | _O_NOINHERIT,
+                _SH_DENYRW, _S_IREAD | _S_IWRITE) == 0) return fd;
+  _get_doserrno(&error);
+  *contended = error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION;
+  return -1;
+}
+""".}
+  proc tryCreateSlot(path: WideCString, contended: ptr cint): cint
+    {.importc: "vmh_try_create_slot", nodecl.}
+  proc closeCreateSlot(fd: cint): cint {.importc: "_close", header: "<io.h>".}
+
+  proc acquireCreateSlot*(base: string, slots: int, waitSec: int): cint =
+    ## A non-inherited CRT descriptor holds a Windows exclusive file share.
+    ## A second open conflicts even in the same process; process exit releases
+    ## the share automatically. This matches the POSIX flock lifetime.
+    if slots <= 0: return -1
+    let prefix = createSlotPrefix(base)
+    let deadline = epochTime() + waitSec.float
+    while true:
+      var anyContended = false
+      for i in 0 ..< slots:
+        var contended: cint
+        let path = newWideCString(prefix & "." & $i & ".lock")
+        let fd = tryCreateSlot(path, addr contended)
+        if fd >= 0: return fd
+        anyContended = anyContended or contended != 0
+      if not anyContended:
+        stderr.writeLine("vm-harness: VMH_INCUS_CREATE_CONCURRENCY=" & $slots &
+          " ignored: cannot open lock files under " & prefix.parentDir)
+        return -1
+      if epochTime() > deadline: return -1
+      sleep(1000)
+
+  proc releaseCreateSlot*(fd: cint) =
+    if fd >= 0: discard closeCreateSlot(fd)
 else:
   proc acquireCreateSlot*(base: string, slots: int, waitSec: int): cint = -1
   proc releaseCreateSlot*(fd: cint) = discard

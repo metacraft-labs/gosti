@@ -63,3 +63,16 @@ fixtures still require qemu-img. Windows stdout capture uses CRT descriptors,
 which are distinct from Windows OS handles. These changes have focused macOS
 execution and Windows C-generation checks; native Windows results remain
 pending. No failing program is removed from either catalog.
+
+## Windows Incus create slots
+
+The Windows branch of `acquireCreateSlot` previously always returned -1,
+so the declared cap never engaged there. Preserve the existing count, timeout
+and release contract using an exclusive Windows file share held by a
+non-inherited CRT descriptor. `_wsopen_s` supports Unicode paths, and the OS
+releases the share on exit. Sharing violations remain contention; other open
+failures retain the existing explicit diagnostic. See the
+[Microsoft CRT contract](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/sopen-s-wsopen-s).
+The unchanged same-process exclusivity cases and a new real-child exit/recovery
+case pass on macOS at `a783ea6` plus this patch. Windows C generation also passes;
+native Windows execution remains required.
