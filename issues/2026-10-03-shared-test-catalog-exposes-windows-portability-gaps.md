@@ -366,3 +366,20 @@ shell and recipe declare an ISO utility, absence must fail the real ISO case
 instead of silently skipping it. Windows retains its existing optional-tool
 behavior. All ISO layout, volume-label and payload assertions stay unchanged.
 A missing-tool negative control must fail on macOS.
+
+
+The strengthened ISO prerequisite passes all 49 cases natively and under
+Repro on macOS at `d540960` plus the guard patch. Removing all three ISO
+executables from an otherwise real tool PATH fails at `require haveIsoTool`;
+it no longer reports a successful skip. The pinned xorriso selector is retained
+at `/tmp/gosti-catalog-tool-roots/xorriso` during local qualification.
+
+The saturation repair at `d23d9017` passes all six cases in the original
+Windows x64 Repro context and in three direct repetitions in shared-actions
+[37138570818](https://github.com/metacraft-labs/metacraft-github-actions/actions/runs/37138570818).
+The preceding `c7cd6fa1` fails the focused Repro saturation probe with an
+immediate empty response in run `37137334706`; three direct repetitions pass.
+The first ARM comparison did not reach tests because its supplemental workflow
+omitted the production x64-emulation architecture setting. That diagnostic
+configuration is corrected; run `37139647990` repeats the same product source
+on ARM. Production platform gates and their assertions remain unchanged.
