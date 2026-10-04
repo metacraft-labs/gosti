@@ -26,6 +26,14 @@ when isMainModule:
     var highestFd = 2
     for raw in descriptors:
       highestFd = max(highestFd, parseInt(raw.split(':')[0]))
+    # Startup code can legitimately open a different object before our fill
+    # loop. Only inheritance of the original pipe is forbidden.
+    let startupFile = posix.open((work / ("startup-" & args[2])).cstring,
+      O_CREAT or O_RDWR or O_CLOEXEC, Mode(0o600))
+    doAssert startupFile >= 0
+    let closedStartupFile = posix.open((work / ("closed-" & args[2])).cstring,
+      O_CREAT or O_RDWR or O_CLOEXEC, Mode(0o600))
+    doAssert closedStartupFile >= 0
     var childFiles: seq[cint]
     while true:
       let fd = posix.open("/dev/null", O_RDONLY)
@@ -34,6 +42,7 @@ when isMainModule:
         discard posix.close(fd)
         break
       childFiles.add(fd)
+    doAssert posix.close(closedStartupFile) == 0
     var nullInfo: Stat
     doAssert stat("/dev/null", nullInfo) == 0
     for raw in descriptors:
@@ -41,11 +50,11 @@ when isMainModule:
       doAssert fields.len == 3
       let fd = cint(parseInt(fields[0]))
       var actual: Stat
-      doAssert fstat(fd, actual) == 0
-      if $actual.st_dev == fields[1] and $actual.st_ino == fields[2]:
+      if fstat(fd, actual) != 0:
+        doAssert errno == EBADF and fd notin childFiles
+      elif $actual.st_dev == fields[1] and $actual.st_ino == fields[2]:
         inherited.add(raw)
-      else:
-        doAssert fd in childFiles
+      elif fd in childFiles:
         doAssert actual.st_dev == nullInfo.st_dev and
           actual.st_ino == nullInfo.st_ino and actual.st_rdev == nullInfo.st_rdev
     writeFile(work / ("child-" & args[2]), inherited.join(","))

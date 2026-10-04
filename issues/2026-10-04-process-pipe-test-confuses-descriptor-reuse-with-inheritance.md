@@ -71,3 +71,24 @@ Fresh `agents` still points to `f5a6810`; open and historical descriptor issues
 were searched. This is a continuation of this fixture-identity defect, not a
 new product ownership failure. Its preceding ordinary CI passes all thirteen
 checks; the focused real-file control establishes the missing fixture case.
+
+## Startup lifetime controls
+
+At `270f359` plus the fixture correction, each executed child opens one real
+startup file and another that it closes before inspection. The original pipe
+identity remains forbidden whether its number is closed, reused by these
+startup files or reused by the null-file loop. An invalid `fstat` result is
+accepted only for `EBADF` on a descriptor that the loop does not own; the
+loop's own live files still require their exact `/dev/null` identity.
+
+The four positive cases pass. Removing close-on-exec still fails only the
+overlapping launch case; removing identity-dup2 handling still fails only the
+closed-stdin case. Restoring the requirement that every number remain open
+fails on the legitimately closed startup descriptor, leaving the other three
+cases passing. Both exact Linux fixture cross-builds pass with the expected
+x64/ARM64 ELF headers. Records are under `/tmp/gosti-pipe-lifecycle-controls`,
+`/tmp/gosti-pipe-closed-file-control` and `/tmp/gosti-pipe-lifecycle-cross`.
+
+This changes only fixture evidence handling. The production compatibility
+module, child counts, startup bounds and inherited-pipe failure condition are
+unchanged. Full local and platform qualification remains required.
