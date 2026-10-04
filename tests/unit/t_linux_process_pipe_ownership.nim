@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 ## No mocks. Eight real children overlap the launcher's error-pipe lifetime.
 ## A test-only constructor hook holds every parent before fork, after all
-## pipes exist. Children inspect the actual inherited descriptors and stay
-## alive until the parent assesses startup. Removing O_CLOEXEC must fail;
+## pipes exist. Children inspect the actual inherited pipe identities while
+## reusing freed numbers for real files, and stay alive until startup is assessed.
+## Removing O_CLOEXEC must fail;
 ## cleanup releases the children even after a failed assertion.
 {.define: gostiProcessPipeTest.}
 import std/[atomics, monotimes, os, osproc, posix, streams, strutils,
@@ -19,12 +20,34 @@ when isMainModule:
   if args.len == 3 and args[0] == "__hold":
     let work = args[1]
     var inherited: seq[string]
-    # readFile closes its own descriptor before the inspection begins.
+    # Descriptor numbers may legitimately be reused after exec. Fill the freed
+    # numbers with real child-owned files, then compare original pipe identity.
     let descriptors = readFile(work / "descriptors").splitWhitespace()
+    var highestFd = 2
     for raw in descriptors:
-      let fd = cint(parseInt(raw))
-      if fcntl(fd, F_GETFD) >= 0 or errno != EBADF:
+      highestFd = max(highestFd, parseInt(raw.split(':')[0]))
+    var childFiles: seq[cint]
+    while true:
+      let fd = posix.open("/dev/null", O_RDONLY)
+      doAssert fd >= 0
+      if fd > cint(highestFd):
+        discard posix.close(fd)
+        break
+      childFiles.add(fd)
+    var nullInfo: Stat
+    doAssert stat("/dev/null", nullInfo) == 0
+    for raw in descriptors:
+      let fields = raw.split(':')
+      doAssert fields.len == 3
+      let fd = cint(parseInt(fields[0]))
+      var actual: Stat
+      doAssert fstat(fd, actual) == 0
+      if $actual.st_dev == fields[1] and $actual.st_ino == fields[2]:
         inherited.add(raw)
+      else:
+        doAssert fd in childFiles
+        doAssert actual.st_dev == nullInfo.st_dev and
+          actual.st_ino == nullInfo.st_ino and actual.st_rdev == nullInfo.st_rdev
     writeFile(work / ("child-" & args[2]), inherited.join(","))
     let deadline = getMonoTime() + initDuration(seconds = 30)
     while not fileExists(work / "release") and getMonoTime() < deadline:
@@ -100,7 +123,11 @@ suite "Linux process pipe ownership":
           let flags = fcntl(fd, F_GETFD)
           check flags >= 0
           check (flags and FD_CLOEXEC) != 0
-          descriptorText.add($fd & "\n")
+          var pipeInfo: Stat
+          check fstat(fd, pipeInfo) == 0
+          check S_ISFIFO(pipeInfo.st_mode)
+          descriptorText.add($fd & ":" & $pipeInfo.st_dev & ":" &
+            $pipeInfo.st_ino & "\n")
       writeFile(work / "descriptors", descriptorText)
       releaseForks.store(true)
       let startedDeadline = getMonoTime() + initDuration(seconds = 10)

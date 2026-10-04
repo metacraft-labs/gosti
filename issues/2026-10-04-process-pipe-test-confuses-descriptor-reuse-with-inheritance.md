@@ -36,3 +36,15 @@ removing identity-dup2 handling must still fail the closed-stdin case.
 This corrects a false failure without removing the inherited-pipe requirement.
 Repeat the explicit local controls, Linux x64/ARM cross-builds, complete local
 qualification and the full platform matrix before promoting the new source.
+
+## Control evidence
+
+At `e4de5ec` plus this correction, all four explicit macOS fork controls pass
+while every child deliberately reoccupies the freed descriptor numbers with
+real `/dev/null` files. Removing close-on-exec fails the original overlapping
+launch case; removing identity-dup2 handling fails the original closed-stdin
+case. Each negative control leaves the other three cases passing. The exact
+Linux fixture cross-compiles for x64 and ARM64 with Zig 0.15.2 and glibc 2.28;
+ELF headers match. Logs are under `/tmp/gosti-pipe-identity-controls` and
+`/tmp/gosti-pipe-identity-cross`. Full qualification follows the separate
+qualified-import repair recorded alongside this correction.
