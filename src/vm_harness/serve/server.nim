@@ -36,7 +36,7 @@ when defined(windows):
 else:
   import std/posix
 import ./protocol, ./http, ./capability, ./enrollment, ./dispatch_queue
-import ../types, ../auto
+import ../types, ../auto, ../process_cleanup
 
 # Import the backend modules so ``registeredBackends`` / ``newBackend`` see
 # them for the ``/v1/info`` capability report. Module-init registration is
@@ -477,6 +477,9 @@ proc runCleanupHook(stage: WorkerCleanupStage) =
   let h = workerCleanupHook
   if h != nil: h(stage)
 
+proc workerOutputClosed(closedFd: int) =
+  runCleanupHook(wcsStdoutClosed)
+
 proc releaseWorkerStdio*(p: Process) =
   ## Close the parent's ends of a worker's stdio pipes, EACH EXACTLY ONCE.
   ## ``p`` must have been spawned with ``WorkerSpawnOptions`` and already
@@ -514,12 +517,7 @@ proc releaseWorkerStdio*(p: Process) =
   ## closes, ASSERTS the caller did not close those streams (an
   ## AssertionDefect, not catchable, crash-looped the daemon on
   ## win-ci-bare-001), and already closes a merged handle only once.
-  try: p.inputStream.close() except CatchableError: discard
-  when defined(windows):
-    try: p.close() except CatchableError: discard
-  else:
-    try: p.outputStream.close() except CatchableError: discard
-    runCleanupHook(wcsStdoutClosed)
+  closeMergedProcessStdio(p, workerOutputClosed)
 
 proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
                 slot: int) =

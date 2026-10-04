@@ -34,3 +34,16 @@ descriptor reuse immediately after stdout closes. No mock process or file
 descriptor is acceptable. The old cleanup must close a planted descriptor and
 fail; the shared cleanup must preserve it. Keep real stdout/stderr and exit
 status checks, then repeat the full native/Repro suites and platform matrix.
+
+## Local repair evidence
+
+At `a2efbda` plus the shared-cleanup repair, both real capability-probe cases
+pass on macOS ARM64: successful and unsuccessful children retain their exit
+results, and every descriptor planted during cleanup remains `/dev/null`.
+An isolated copy of the original capability code, with only the same post-close
+callback added, fails both cases by closing the planted stdout descriptor.
+Its original exit-result checks still pass. This confirms the source finding.
+
+The existing three worker descriptor-hygiene cases also pass through the shared
+helper without changing their bodies. Full lint and REUSE checks pass. These
+focused results do not replace complete native/Repro or Windows qualification.

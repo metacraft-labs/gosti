@@ -719,3 +719,21 @@ Repair requirements:
 - Verify inherited descriptors, stdin/stdout/stderr, exit status and failed
   executable launch. Keep the existing saturation fixture unchanged. Repeat
   the complete local suites and native Linux matrix before releasing.
+
+The repair at `a2efbda` plus the working-tree patch has four real-process
+controls. On macOS's explicitly selected fork path, an adaptation of the
+Linux-only pipe constructor uses `pipe` plus `fcntl` to demonstrate descriptor
+ownership; it does not claim Linux's atomic syscall was executed there. All
+four cases pass. Removing close-on-exec fails only the coordinated eight-child
+launch case. Removing the separate identity-`dup2` handling fails only the
+closed-stdin case; all three other cases pass in each negative control.
+
+The identity case matters because `dup2(0, 0)` is a no-op: when a caller has
+closed stdin and a new pipe occupies fd 0, the child's stdin must have its
+close-on-exec flag cleared explicitly. The production compatibility module
+preserves that existing behavior.
+
+The exact Linux module and test cross-compile for x86_64 and ARM64 with Zig
+0.15.2 and glibc 2.28. Both emitted ELF headers match their target. Native Linux
+execution and the full product matrix remain required. The original saturation
+test, its ten-second setup bound and all response assertions remain unchanged.
