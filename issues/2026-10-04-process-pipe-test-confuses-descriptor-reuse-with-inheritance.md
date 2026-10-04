@@ -48,3 +48,26 @@ Linux fixture cross-compiles for x64 and ARM64 with Zig 0.15.2 and glibc 2.28;
 ELF headers match. Logs are under `/tmp/gosti-pipe-identity-controls` and
 `/tmp/gosti-pipe-identity-cross`. Full qualification follows the separate
 qualified-import repair recorded alongside this correction.
+
+## Remaining assumption about child startup files
+
+At `f5a68109855007d15f6035559d8d0adb3dab38c2`, the fixture compares original
+pipe identities correctly, but its other branch requires every different
+object to be one of the `/dev/null` files opened by that specific loop. An
+executed child or its loader can have opened another legitimate file earlier.
+A real regular-file open before the loop reproduces a false failure in all
+eight children at `fd in childFiles`; the other three cases still pass. The
+source and logs are retained under `/tmp/gosti-pipe-startup-file-control`.
+
+Permit other objects whose device/inode differs from the original pipe.
+Continue to verify the identity of files the null-file loop itself opens.
+Include the real earlier startup file in the fixture so this case remains
+covered. No inherited original pipe is allowed, and all parent close-on-exec,
+concurrency, deadline, child-exit and stdio/error requirements remain. Repeat
+the missing-close-on-exec and missing-identity-dup2 controls, complete local
+gates and the platform matrix before promoting the corrected source.
+
+Fresh `agents` still points to `f5a6810`; open and historical descriptor issues
+were searched. This is a continuation of this fixture-identity defect, not a
+new product ownership failure. Its preceding ordinary CI passes all thirteen
+checks; the focused real-file control establishes the missing fixture case.
