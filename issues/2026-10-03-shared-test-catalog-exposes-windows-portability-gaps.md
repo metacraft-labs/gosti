@@ -659,3 +659,14 @@ existing 2.5-second response assertion, all segmented and silent peers, recovery
 and shutdown. Do not retry failed requests or change production dispatch to
 accommodate the fixture. Qualify delayed-start and single-handler controls,
 then repeat the complete native/Repro suites and Windows ARM gate.
+
+
+A macOS ARM64 control at `67c4ecb` (same fixture/runtime as `9ca74cc`) adds
+only a 3.5-second delay before each real hanging client connects. It reproduces
+the Windows signature: 401 saturation/segmented probes, rejected hanging
+clients, a silent-peer read timeout, and missing completion files. The candidate
+adds an acknowledgment of the real `hang-start` event and waits for it before
+probing. With the identical delay it passes all six original cases. The server,
+40-second hangs, peers, recovery checks and response deadlines are unchanged.
+The bounded acknowledgment wait also detects a client exiting before startup.
+Full suites and Windows qualification are still required.

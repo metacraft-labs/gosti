@@ -44,11 +44,12 @@
 ##     runs the daemon (worker = this same binary in the `__work` role);
 ##   * `<binary> __work hang <sec>` sleeps `sec` seconds, then exits 0;
 ##   * `<binary> __work quick` prints a line and exits 0;
-##   * `<binary> __hang <host> <port> <tokenFile> <sec> <doneFile>` is a
-##     standalone client that fires ONE hanging exec and records its exit code,
-##     run as a separate PROCESS so it genuinely pins a pool slot for `sec`.
+##   * `<binary> __hang <host> <port> <tokenFile> <sec> <doneFile> <readyFile>`
+##     fires ONE hanging exec, acknowledges its first streamed output, and
+##     records its exit code. The acknowledgment proves a real worker holds a
+##     pool slot; a live client process alone does not prove it has connected.
 
-import std/[net, os, osproc, strutils, tempfiles, times, unittest]
+import std/[monotimes, net, os, osproc, strutils, tempfiles, times, unittest]
 import vm_harness
 import vm_harness/serve/http as serveHttp
 
@@ -80,12 +81,14 @@ when isMainModule:
       quiet: true)
     runServe(cfg)
     quit(0)
-  elif params.len >= 6 and params[0] == "__hang":
-    # host port tokenFile hangSec doneFile
+  elif params.len >= 7 and params[0] == "__hang":
+    # host port tokenFile hangSec doneFile readyFile
     let addr0 = params[1] & ":" & params[2]
     let cl = newServeClient(addr0, readFile(params[3]).strip())
     let code = cl.execStream(@["hang", params[4]],
-                             proc(ev: ExecEvent) = discard)
+      proc(ev: ExecEvent) =
+        if ev.kind == ekLog and ev.line.strip() == "hang-start":
+          writeFile(params[6], "hang-start"))
     writeFile(params[5], $code)
     quit(0)
 
@@ -235,8 +238,24 @@ suite "t_vmharness_serve_survives_a_hung_request":
     startProcess(
       getAppFilename(),
       args = @["__hang", "127.0.0.1", $port, tokenFile, $HangSec,
-               work / ("hang-done-" & $idx)],
+               work / ("hang-done-" & $idx), work / ("hang-ready-" & $idx)],
       options = {poParentStreams})
+
+  proc waitForHanger(idx: int) =
+    # This is fixture setup, before any timed probe. Slow process startup
+    # must not let a probe or silent peer claim a slot intended for a hanger.
+    # Do not retry refused requests: an absent acknowledgment fails the test.
+    let readyFile = work / ("hang-ready-" & $idx)
+    let deadline = getMonoTime() + initDuration(seconds = 10)
+    while getMonoTime() < deadline:
+      if fileExists(readyFile) and readFile(readyFile) == "hang-start":
+        return
+      if not hangers[idx].running:
+        raise newException(IOError, "hanging client " & $idx &
+          " exited before its worker acknowledged startup")
+      sleep(10)
+    raise newException(IOError, "hanging worker " & $idx &
+      " did not acknowledge startup within 10 seconds")
 
   test "layer 1: one hung exec does not stop a concurrent request":
     # Baseline: the daemon answers before anything is hung.
@@ -246,7 +265,7 @@ suite "t_vmharness_serve_survives_a_hung_request":
 
     # Pin exactly ONE pool slot with a hung exec.
     hangers.add(startHanger(0))
-    sleep(1500)                     # let it connect and occupy a worker
+    waitForHanger(0)
     check hangers[0].running
 
     # The property: a concurrent request is still served, promptly.
@@ -271,8 +290,9 @@ suite "t_vmharness_serve_survives_a_hung_request":
       # Occupy EVERY remaining pool slot. One is already hung from layer 1.
       for i in 1 ..< poolSize:
         hangers.add(startHanger(i))
-      # Give every hanger time to connect and be dispatched to a worker.
-      sleep(2500)
+      # Every real worker must acknowledge startup before testing saturation.
+      for i in 1 ..< poolSize:
+        waitForHanger(i)
       for h in hangers:
         check h.running
 

@@ -251,7 +251,12 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   in both directions — `VMH_HUNG_TEST_THREADS=1` makes layer 1 fail
   (serial-equivalent), and the pre-MA12 accept-in-every-handler daemon passes
   layer 1 but fails layer 2. Hermetic (the worker is a self-exec hang/quick
-  role). In `just test`. Its HOST tier,
+  role). Before any timed probe, each hanging worker must acknowledge its
+  first real streamed output within a bounded startup wait. A live client
+  process or a fixed sleep does not establish that a handler is occupied.
+  Startup failure fails the fixture; requests are not retried. The 40-second
+  hangs and all 2.5-second response bounds remain unchanged. In `just test`.
+  Its HOST tier,
   `t_vmharness_serve_survives_a_hung_request_host.nim`, is READ-ONLY and
   asserts that a DEPLOYED listener answers and that its accept backlog is not
   saturated; `just test-host`, skips loudly with no deployed daemon.
