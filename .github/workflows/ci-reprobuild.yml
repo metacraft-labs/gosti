@@ -123,11 +123,11 @@ jobs:
           # Windows ARM64 keeps the existing emulated x64 Reprobuild tools.
           repro-from-source: true
           repro-build-pin: 1f85ace0037d0a70e966fe8eee645d766522b1ab
-          # Qualified Linux vfork/runtime repair; retain the measured Windows tuple.
+          # Qualified Linux vfork/runtime repair; Windows uses the page-preparation candidate.
           repro-posix-io-mon-pin: ${{ runner.os == 'Linux' && '004b8fc3eb0a6c31f78622272ba323c221b79b28' || '' }}
           repro-runquota-pin: 052e7fe8fa49be3109fe4687c26dd8ae8f3f8a03
           repro-io-mon-pin: d3826a368e0ca8c2760bf5e3270cc3577811af47
-          repro-stackable-hooks-pin: 3b99d26fd969a48698cf75fc90a8657010c81eec
+          repro-stackable-hooks-pin: a043a07f71a9b662c6ae9bae7837107e6c1ade67
           gh-token: ${{ steps.ci-token.outputs.token }}
           substituters: ${{ vars.SUBSTITUTERS }}
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}

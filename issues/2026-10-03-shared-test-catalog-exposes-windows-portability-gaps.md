@@ -602,3 +602,30 @@ muted phase reporter prints them afterward. Every wrapped API retains its
 arguments, returned result and LastError. The exact patches are retained and
 restored, including a log-only fixture change that exposes child phase output.
 The five requests, original deadline and all functional assertions stay intact.
+
+
+### Page-preparation candidate and valid-clock comparison
+
+The fine API timings in `37173255901` are invalid: public
+QueryPerformanceCounter was itself being hooked while the temporary profiler
+called it. The run was cancelled and its evidence retained. Its call counts
+record 256 protection calls at installation and 384 after removal for 64 hooks.
+The corrected diagnostic resolves an unhooked native counter before suspension,
+preserves LastError and rejects clock failures explicitly. No diagnostic
+native-counter dependency enters a product.
+
+Hooks `10ed82a` prepares each distinct target page once per transaction while
+retaining actual patch writes, thread suspension, protection restoration,
+rollback and instruction-cache flushes. Native comparison `37176379522` at
+shared `84ef14e` passes x64 and x86 binaries on both Windows x64 and ARM:
+33 real targets, trampolines, peer calls, restored bytes/protections and two
+complete transaction rounds. Each candidate round makes 72 protection calls;
+baseline `b197281` makes 132 and fails only the new redundancy check.
+
+Gosti's CI bootstrap now selects hooks `a043a07`, which has that same runtime
+and adds the regression to the ordinary Windows job. That Windows job, native
+Linux/macOS suites, builds and lint pass at `a043a07`; its complete Reprobuild
+matrix remains in progress. Gosti's original 2.5-second deadline and all
+functional checks remain mandatory in the full product matrix. Supplemental
+comparison `37176479700` also measures baseline and candidate debug images
+with identical instrumentation; its end-to-end result remains pending.
