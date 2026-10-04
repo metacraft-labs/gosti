@@ -549,3 +549,12 @@ Next, record real server phase timings for process launch, first output, EOF
 and cleanup, with the exact instrumentation patch retained. Compare the
 existing monitor with an optimized build of identical source while preserving
 Nim runtime checks and all monitoring. No test deadline or workload change.
+
+The Linux compiler-bootstrap recurrence now has a qualified monitor repair:
+io-mon `19ea53c` passes native x64/ARM frame-state and host-handler controls
+in `37166957605`, rejecting the original settings. With monitor `004b8fc3`,
+RunQuota `f369c34` passes six fresh monitored providers in `37165456283`.
+Gosti's Linux bootstrap now pins that runtime through shared setup `41d0680b`;
+explicit Windows pins retain the measured `d3826a36`/`3b99d26f`/`052e7fe8`
+monitor, hooks and RunQuota tuple. This repairs the separate Linux bootstrap
+risk; the Windows timing investigation and full CI remain required.
