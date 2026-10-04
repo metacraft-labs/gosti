@@ -558,3 +558,26 @@ Gosti's Linux bootstrap now pins that runtime through shared setup `41d0680b`;
 explicit Windows pins retain the measured `d3826a36`/`3b99d26f`/`052e7fe8`
 monitor, hooks and RunQuota tuple. This repairs the separate Linux bootstrap
 risk; the Windows timing investigation and full CI remain required.
+
+### Server phase measurements at 6129ea8
+
+Run `37166958953` at shared `61d2cd6` retains timestamp-only server changes.
+With the ordinary monitor, process creation returns after 0.38–0.42 seconds,
+and EOF follows another 0.16–0.19 seconds after the first output. Waiting,
+stream closure and the terminal event add at most about 0.016 seconds.
+The batch is 2.91294 seconds; the same binary passes directly.
+
+The proposed `--opt:speed` monitor comparison still fails at 2.78375 seconds.
+Its report proves that earlier actions accessed the optimized DLL, but does
+not yet establish which image the test process loaded. Treat this as an
+inconclusive optimization comparison, not a qualified production change.
+No production compiler setting changed. The specific one-worker negative
+control fails with `handlers_saturated` as expected.
+
+Run `37170164155` at shared `3c1f888` adds temporary monitor phase timestamps
+and records the actual loaded DLL path. It separates OS process creation,
+fork-runtime detection, child injection, hook installation, flush and teardown.
+Both debug variants have identical instrumentation; the second changes only
+machine-code optimization. LastError and all measured operations are preserved.
+The script retains the exact patches and restores source files. The original
+five requests, 2.5-second deadline, slow-worker checks and shutdown remain.
