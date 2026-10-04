@@ -94,14 +94,14 @@ suite "t_vmharness_serve_concurrency":
   let token = "conc-test-bearer-8ac1"
   writeFile(tokenFile, token)
 
-  # Four accept-loop threads: one is occupied by the slow exec, three remain
+  # Four request-handler threads: one is occupied by the slow exec, three remain
   # free for the fast batch. (Even a single free thread would suffice.)
   #
   # Falsifiability seam: ``VMH_CONC_TEST_THREADS=1`` forces a ONE-thread pool,
-  # which makes the new loop behave EXACTLY like the old serial accept loop —
-  # the fast batch then queues behind the slow exec and the timing assertions
-  # below fail. That is how this test was confirmed to discriminate the fix
-  # from the regression; the default (4) is what CI runs.
+  # so the dedicated acceptor refuses the fast request with handlers_saturated
+  # while the slow exec occupies that worker. The required successful responses
+  # then fail. The former serial accept loop instead exceeded the batch timing
+  # bound. Both are failures of this gate; the default (4) is what CI runs.
   let threadArg = getEnv("VMH_CONC_TEST_THREADS", "4")
   let daemon = startProcess(
     getAppFilename(),
