@@ -670,3 +670,21 @@ probing. With the identical delay it passes all six original cases. The server,
 40-second hangs, peers, recovery checks and response deadlines are unchanged.
 The bounded acknowledgment wait also detects a client exiting before startup.
 Full suites and Windows qualification are still required.
+
+### Linux startup acknowledgment failure at c1cae37
+
+The complete Linux x64 native suite in run `37191983535`, job `111405949033`,
+fails at `c1cae3766e094d8c056bb9faadd0f816e82f4851`. The first concurrent
+request passes, but the saturation fixture does not receive hanging worker 1's
+`hang-start` acknowledgment within its unchanged ten-second setup bound.
+The later segmented probes, silent peers, recovery and shutdown all pass;
+every hanging client's final completion code is zero. The downloaded
+`test-logs-self-hosted-linux-x64` artifact retains this failure.
+
+The prior complete matrix passed the same runtime and fixture at `bb06d10`;
+subsequent changes only add hook metadata and update the release guide.
+This recurrence therefore requires diagnosis rather than attributing it to
+the hook changes. Startup, worker-output streaming and acknowledgment delivery
+are not yet distinguished. Preserve the setup bound and all original response,
+saturation and recovery assertions while investigating. The expectation remains
+the real-time output and concurrency contract in `docs/serve.md`.
