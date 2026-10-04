@@ -688,3 +688,34 @@ the hook changes. Startup, worker-output streaming and acknowledgment delivery
 are not yet distinguished. Preserve the setup bound and all original response,
 saturation and recovery assertions while investigating. The expectation remains
 the real-time output and concurrency contract in `docs/serve.md`.
+
+The selected Nim 2.2.4 standard library creates its fork error pipe with
+`pipe`, then sets close-on-exec only in that pipe's own child. A concurrent
+fork can therefore inherit another launch's writable error-pipe end. The
+other parent blocks waiting for EOF until the unrelated worker exits, before
+it starts streaming output. Linux selects this fork implementation; macOS
+ordinarily selects `posix_spawn`.
+
+A macOS control selects the same standard-library fork path with `-d:useFork`
+and starts eight real two-second children concurrently. At Gosti `b5e2501`,
+the unmodified library delays six launches for 2016–2018 ms; the other two
+return in 3–4 ms. Giving both ends of every launch pipe close-on-exec before
+forking makes all eight return in 1–7 ms through the unchanged public process
+API. This establishes the mechanism locally, not native Linux qualification.
+
+Repair requirements:
+
+- Scope the compatibility repair to Gosti's Linux compilation. Use atomic
+  `pipe2(O_CLOEXEC)` for the selected standard library's stdio and error pipes.
+  `dup2` still supplies inheritable child stdin/stdout/stderr as before.
+- Preserve the standard process API and types. Use Nim's supported module
+  override to load the selected compiler's own `osproc` implementation with
+  the corrected private pipe constructor. Do not fork the complete library,
+  edit the Nix store, serialize worker execution or change monitor policy.
+- Add a real concurrent-launch regression with a barrier after pipe creation,
+  active only in the test build. Each child stays alive until the parent has
+  assessed every launch. A baseline without close-on-exec must fail; release
+  all children afterward so failure does not leave processes behind.
+- Verify inherited descriptors, stdin/stdout/stderr, exit status and failed
+  executable launch. Keep the existing saturation fixture unchanged. Repeat
+  the complete local suites and native Linux matrix before releasing.
