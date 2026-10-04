@@ -629,3 +629,33 @@ matrix remains in progress. Gosti's original 2.5-second deadline and all
 functional checks remain mandatory in the full product matrix. Supplemental
 comparison `37176479700` also measures baseline and candidate debug images
 with identical instrumentation; its end-to-end result remains pending.
+
+
+### Saturation fixture startup at 9ca74cc
+
+Full Windows ARM run `37177134410`, job `111362016733`, fails at Gosti
+`9ca74cc798863d4e80c548be80f073dd2e7f6a47`: 133 successful actions, one
+failed saturation fixture and two dependent timing programs blocked. The
+saturation and segmented probes get HTTP 401; a hanging client later receives
+503, and its completion file is absent. A silent peer then occupies a handler
+and times out instead of following the rejected-socket path. These results do
+not yet establish a server defect.
+
+The fixture waits fixed 1.5/2.5-second setup sleeps and checks `Process.running`.
+That proves a client process exists, not that its request or worker has started.
+Its real worker already emits and flushes `hang-start`, but the client discards
+that event. Slow process startup can leave slots free when saturation is
+measured; the later silent connections can take them before the hanging client.
+This explanation is inferred from the source and observed responses. Verify it
+with a controlled startup delay before changing the fixture.
+
+The expectation remains `docs/serve.md`, “Concurrency, saturation, and the
+per-exec deadline”: one occupied handler leaves capacity; every occupied
+handler produces prompt 503; rejected peers drain within the existing bounds;
+the daemon recovers and shuts down. Repair the setup by acknowledging each real
+worker's first output before probing, with a bounded startup wait that fails
+on a dead client or missing acknowledgment. Retain the 40-second hangs, every
+existing 2.5-second response assertion, all segmented and silent peers, recovery,
+and shutdown. Do not retry failed requests or change production dispatch to
+accommodate the fixture. Qualify delayed-start and single-handler controls,
+then repeat the complete native/Repro suites and Windows ARM gate.
