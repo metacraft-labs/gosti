@@ -33,3 +33,19 @@ regression must explicitly compile both `osproc.Process` and
 that the former replacement name fails the qualified API and that the repair
 passes on both Linux target architectures. Repeat complete local and platform
 qualification before promotion; do not bypass dependency bootstrap or tests.
+
+## Local repair evidence
+
+At `93bbd1e` plus the basename repair, a minimal actual `osproc.Process` and
+`osproc.startProcess` program fails with the former replacement path and passes
+Linux x64 and ARM64 static checking with the corrected path. The complete CLI
+also passes both Linux static checks. The production fixture explicitly uses
+both qualified names; its x64 and ARM64 executables cross-build with Zig 0.15.2
+and glibc 2.28 and have the expected ELF headers.
+
+All four explicit macOS fork cases pass with the corrected module name and
+real descriptor reuse. Removing close-on-exec fails only the overlapping-pipe
+case; removing identity-dup2 handling fails only the closed-stdin case. Logs
+and sources are retained under `/tmp/gosti-qualified-process-control`,
+`/tmp/gosti-pipe-final-controls` and `/tmp/gosti-pipe-api-cross`. The runtime
+constructor is unchanged. Full local and platform gates remain mandatory.

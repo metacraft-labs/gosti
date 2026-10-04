@@ -5,6 +5,8 @@
 ## across all callers. Load the selected compiler's implementation instead of
 ## maintaining a second copy. Its unqualified pipe calls use this constructor;
 ## pipe2 makes close-on-exec atomic before any other thread can fork.
+## Keep this file's basename osproc.nim: Nim derives the module qualifier from
+## the replacement filename, so another basename breaks osproc.Process callers.
 ##
 ## Both stdio and the error-reporting pipe need this: another child's inherited
 ## writer can delay EOF and keep startProcess blocked for that child's lifetime.

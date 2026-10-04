@@ -86,7 +86,8 @@ pipes with atomic close-on-exec flags. Concurrent workers must not inherit one
 another's pipe writers and delay startup or EOF. A small standard-library
 compatibility module preserves the existing process API, including child
 stdin when the caller's own stdin was closed. The Linux catalog tests real
-overlapping launches, inherited descriptors, stdio and failed execution.
+overlapping launches, inherited pipe identities despite descriptor reuse, stdio
+and failed execution. Qualified APIs such as `osproc.Process` remain available.
 
 Exec workers and capability probes share one merged-pipe cleanup routine. It
 closes each owned POSIX descriptor once and leaves Windows output-handle

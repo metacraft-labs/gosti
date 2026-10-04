@@ -12,7 +12,7 @@ switch("path", "src")
 # until an unrelated worker exits. Keep the standard API and selected library;
 # only the private pipe constructor changes. Other platforms retain osproc.
 when defined(linux) and not (defined(reproInterfaceMode) or defined(reproProviderMode)):
-  patchFile("stdlib", "osproc", "src/vm_harness/compat/atomic_osproc")
+  patchFile("stdlib", "osproc", "src/vm_harness/compat/osproc")
 
 # Graph metadata declares tools before any build tool can be selected.
 # These modes do not compile the CLI or its PCRE-dependent serial matcher.

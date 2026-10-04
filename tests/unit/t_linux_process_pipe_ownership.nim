@@ -94,7 +94,7 @@ type LaunchArg = object
 proc launch(arg: LaunchArg) {.thread.} =
   try:
     # Parent streams leave exactly one new pipe: osproc's error-report pipe.
-    let child = startProcess(getAppFilename(),
+    let child: osproc.Process = osproc.startProcess(getAppFilename(),
       args = @["__hold", arg.work, $arg.index], options = {poParentStreams})
     discard startsReturned.fetchAdd(1)
     exitCodes[arg.index] = child.waitForExit(timeout = 35000)
