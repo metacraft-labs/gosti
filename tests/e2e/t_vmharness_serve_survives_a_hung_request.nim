@@ -44,11 +44,12 @@
 ##     runs the daemon (worker = this same binary in the `__work` role);
 ##   * `<binary> __work hang <sec>` sleeps `sec` seconds, then exits 0;
 ##   * `<binary> __work quick` prints a line and exits 0;
-##   * `<binary> __hang <host> <port> <tokenFile> <sec> <doneFile>` is a
-##     standalone client that fires ONE hanging exec and records its exit code,
-##     run as a separate PROCESS so it genuinely pins a pool slot for `sec`.
+##   * `<binary> __hang <host> <port> <tokenFile> <sec> <doneFile> <readyFile>`
+##     fires ONE hanging exec, acknowledges its first streamed output, and
+##     records its exit code. The acknowledgment proves a real worker holds a
+##     pool slot; a live client process alone does not prove it has connected.
 
-import std/[net, os, osproc, strutils, tempfiles, times, unittest]
+import std/[monotimes, net, os, osproc, strutils, tempfiles, times, unittest]
 import vm_harness
 import vm_harness/serve/http as serveHttp
 
@@ -80,12 +81,14 @@ when isMainModule:
       quiet: true)
     runServe(cfg)
     quit(0)
-  elif params.len >= 6 and params[0] == "__hang":
-    # host port tokenFile hangSec doneFile
+  elif params.len >= 7 and params[0] == "__hang":
+    # host port tokenFile hangSec doneFile readyFile
     let addr0 = params[1] & ":" & params[2]
     let cl = newServeClient(addr0, readFile(params[3]).strip())
     let code = cl.execStream(@["hang", params[4]],
-                             proc(ev: ExecEvent) = discard)
+      proc(ev: ExecEvent) =
+        if ev.kind == ekLog and ev.line.strip() == "hang-start":
+          writeFile(params[6], "hang-start"))
     writeFile(params[5], $code)
     quit(0)
 
@@ -127,8 +130,10 @@ type ProbeOutcome = object
   timedOut: bool        ## no response within the probe budget
   status: int           ## HTTP status when one arrived (0 if none)
   elapsed: float
+  error: string        ## distinguish a transport error from an expired budget
 
-proc probeLiveness(host: string, port: int, budgetSec: float): ProbeOutcome =
+proc probeLiveness(host: string, port: int, budgetSec: float;
+    fragmentDelayMs = 0): ProbeOutcome =
   ## Issue ONE bounded liveness request and report what came back.
   ##
   ## WHAT IS PROBED, and why it is not `/v1/info`. The probe is an
@@ -156,7 +161,15 @@ proc probeLiveness(host: string, port: int, budgetSec: float): ProbeOutcome =
   var sock = newSocket()
   try:
     sock.connect(host, Port(port), timeout = int(budgetSec * 1000))
-    sock.sendRequest("GET", "/v1/info", host & ":" & $port)
+    if fragmentDelayMs == 0:
+      sock.sendRequest("GET", "/v1/info", host & ":" & $port)
+    else:
+      # A real segmented request: the server must not reset our send side
+      # while the remaining headers are in flight.
+      sock.sendAll("GET /v1/info HTTP/1.1\r\n")
+      sleep(fragmentDelayMs)
+      sock.sendAll("Host: " & host & ":" & $port &
+        "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
     # Read just enough to carry the status line and take the status off it.
     #
     # EXACTLY `StatusPrefixLen` bytes, not "up to": Nim's timeout overload of
@@ -174,8 +187,9 @@ proc probeLiveness(host: string, port: int, budgetSec: float): ProbeOutcome =
     if parts.len >= 2 and parts[0].startsWith("HTTP/"):
       result.status = parseInt(parts[1])
       result.timedOut = false
-  except CatchableError:
+  except CatchableError as e:
     result.timedOut = true
+    result.error = $e.name & ": " & e.msg
   finally:
     try: sock.close() except CatchableError: discard
     result.elapsed = epochTime() - t0
@@ -224,8 +238,24 @@ suite "t_vmharness_serve_survives_a_hung_request":
     startProcess(
       getAppFilename(),
       args = @["__hang", "127.0.0.1", $port, tokenFile, $HangSec,
-               work / ("hang-done-" & $idx)],
+               work / ("hang-done-" & $idx), work / ("hang-ready-" & $idx)],
       options = {poParentStreams})
+
+  proc waitForHanger(idx: int) =
+    # This is fixture setup, before any timed probe. Slow process startup
+    # must not let a probe or silent peer claim a slot intended for a hanger.
+    # Do not retry refused requests: an absent acknowledgment fails the test.
+    let readyFile = work / ("hang-ready-" & $idx)
+    let deadline = getMonoTime() + initDuration(seconds = 10)
+    while getMonoTime() < deadline:
+      if fileExists(readyFile) and readFile(readyFile) == "hang-start":
+        return
+      if not hangers[idx].running:
+        raise newException(IOError, "hanging client " & $idx &
+          " exited before its worker acknowledged startup")
+      sleep(10)
+    raise newException(IOError, "hanging worker " & $idx &
+      " did not acknowledge startup within 10 seconds")
 
   test "layer 1: one hung exec does not stop a concurrent request":
     # Baseline: the daemon answers before anything is hung.
@@ -235,7 +265,7 @@ suite "t_vmharness_serve_survives_a_hung_request":
 
     # Pin exactly ONE pool slot with a hung exec.
     hangers.add(startHanger(0))
-    sleep(1500)                     # let it connect and occupy a worker
+    waitForHanger(0)
     check hangers[0].running
 
     # The property: a concurrent request is still served, promptly.
@@ -260,8 +290,9 @@ suite "t_vmharness_serve_survives_a_hung_request":
       # Occupy EVERY remaining pool slot. One is already hung from layer 1.
       for i in 1 ..< poolSize:
         hangers.add(startHanger(i))
-      # Give every hanger time to connect and be dispatched to a worker.
-      sleep(2500)
+      # Every real worker must acknowledge startup before testing saturation.
+      for i in 1 ..< poolSize:
+        waitForHanger(i)
       for h in hangers:
         check h.running
 
@@ -269,6 +300,8 @@ suite "t_vmharness_serve_survives_a_hung_request":
       # left this connection in the accept backlog and the client timed out.
       # The fixed daemon answers immediately with a diagnostic 503.
       let saturated = probeLiveness("127.0.0.1", port, ProbeBudgetSec)
+      checkpoint("saturation probe: status=" & $saturated.status &
+        " elapsed=" & $saturated.elapsed & " error=" & saturated.error)
       check not saturated.timedOut          # <- fails on the unfixed daemon
       check saturated.status == SaturatedStatus
       # Immediate, not "eventually": the reply must come from the acceptor, not
@@ -278,6 +311,53 @@ suite "t_vmharness_serve_survives_a_hung_request":
       # saturation rather than after the hangs drained.
       for h in hangers:
         check h.running
+
+  test "a saturated pool preserves the 503 for segmented requests":
+    if poolSize < 2:
+      skip()
+    else:
+      for delayMs in [1, 10, 50]:
+        let observed = probeLiveness("127.0.0.1", port, ProbeBudgetSec, delayMs)
+        checkpoint("segmented probe: delay=" & $delayMs & "ms status=" &
+          $observed.status & " elapsed=" & $observed.elapsed &
+          " error=" & observed.error)
+        check not observed.timedOut
+        check observed.status == SaturatedStatus
+        check observed.elapsed < 2.5
+      for h in hangers: check h.running
+
+  test "silent rejected peers cannot block accepting or retain sockets forever":
+    if poolSize < 2:
+      skip()
+    else:
+      var silent: seq[Socket]
+      try:
+        # Exceed the documented 64 retained-socket cap. These peers neither
+        # send requests nor read responses until after the drain deadline.
+        for i in 0 ..< 80:
+          let peer = newSocket()
+          silent.add(peer)
+          peer.connect("127.0.0.1", Port(port), timeout = 2000)
+        let observed = probeLiveness("127.0.0.1", port, ProbeBudgetSec, 50)
+        checkpoint("probe with silent peers: " & $observed)
+        check not observed.timedOut
+        check observed.status == SaturatedStatus
+        check observed.elapsed < 2.5
+        sleep(1500) # Beyond the documented one-second retention bound.
+        for peer in silent:
+          var response = ""
+          var ended = false
+          for i in 0 ..< 4096:
+            var byte = ""
+            if peer.recv(byte, 1, timeout = 1000) == 0:
+              ended = true
+              break
+            response.add(byte)
+          check response.startsWith("HTTP/1.1 503 ")
+          check ended
+        for h in hangers: check h.running
+      finally:
+        for peer in silent: peer.close()
 
   test "layer 3: the daemon recovers once the hung requests drain":
     # Let every hanging exec finish on its own (they are `sleep`s, not

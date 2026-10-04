@@ -14,7 +14,7 @@
 ## real xorriso output shapes for a stock Win11 ISO (BIOS+UEFI) vs a
 ## BIOS-only ISO. No process spawning is mocked (real ``bash`` runs).
 
-import std/[os, osproc, streams, unittest]
+import std/[os, osproc, streams, strutils, unittest]
 
 # Locate the repo root (walk up until guest-recipes/ appears) so the test
 # runs regardless of the invoking cwd.
@@ -32,14 +32,26 @@ let libPath = repoRoot() / "guest-recipes" / "lib" / "validate-uefi-iso.sh"
 ## Run ``uefi_report_indicates_uefi`` against a report on stdin; return
 ## the shell exit code (0 == accept/UEFI present, 1 == reject/BIOS-only).
 proc decide(report: string): int =
-  let script = ". '" & libPath & "'; uefi_report_indicates_uefi"
-  let p = startProcess("bash", args = @["-c", script],
-                       options = {poUsePath, poStdErrToStdOut})
+  let script = ". '" & libPath.replace('\\', '/') & "'; uefi_report_indicates_uefi"
+  let bash = findExe("bash")
+  let p = startProcess(bash, args = @["-c", script],
+                       options = {poStdErrToStdOut})
   let s = p.inputStream
   s.write(report)
   s.close()
+  # A Windows pipe can return a short read while its writer is still live.
+  # Drain until EOF so a fragmented shell diagnostic is retained in full.
+  var output = ""
+  var buffer: array[4096, char]
+  while true:
+    let count = p.outputStream.readData(addr buffer[0], buffer.len)
+    if count == 0: break
+    for i in 0 ..< count: output.add(buffer[i])
   result = p.waitForExit()
   p.close()
+  if result notin [0, 1]:
+    echo "UEFI shell decision failed: executable=", bash, " exit=", result,
+      " output=", output
 
 # --- Sample reports -------------------------------------------------------
 

@@ -21,7 +21,7 @@
 ##   grown in-guest (growpart + resize2fs) when cloud-init did not.
 ##
 ## MOCK JUSTIFICATION (workspace policy). ``tart``, ``sshpass`` and ``ssh`` are
-## replaced by small shell scripts passed through the backend's command-path
+## replaced by native executable fixtures passed through the backend's command-path
 ## fields. Tart only runs on Apple Silicon macOS and this deterministic suite
 ## runs on Linux x64 CI as well, so the real binary cannot be exercised here.
 ## The fakes implement exactly the CLI surface the backend drives — ``tart
@@ -31,14 +31,48 @@
 ## The real-Tart counterpart is the host gate
 ## ``checks/t_vmharness_tart_ephemeral_run.sh`` in metacraft-labs/infra.
 
-import std/[os, strutils, tables, tempfiles, unittest]
+import std/[json, os, strutils, tables, tempfiles, unittest]
+import ../native_command_fixture
 import vm_harness/backends/tart
 import vm_harness/cli
 import vm_harness/types
 
-proc writeExecutable(path, body: string) =
-  writeFile(path, body)
-  setFilePermissions(path, {fpUserRead, fpUserWrite, fpUserExec})
+const NativeSuffix = when defined(windows): ".exe" else: ""
+
+let fixtureName = getAppFilename().extractFilename
+if fixtureName in ["tart-disk" & NativeSuffix, "ssh-disk" & NativeSuffix]:
+  let d = getAppFilename().parentDir
+  let args = commandLineParams()
+  let isTart = fixtureName == "tart-disk" & NativeSuffix
+  let log = open(d / (if isTart: "tart.log" else: "ssh.log"), fmAppend)
+  log.writeLine(args.join(" "))
+  log.close()
+  if isTart:
+    case args[0]
+    of "list": echo "Source Name Disk Size SizeOnDisk State"
+    of "get":
+      echo $(%*{"CPU": 4, "Disk": parseInt(readFile(d / "disk")),
+                 "Running": false, "State": "stopped"})
+    of "set":
+      if args.len >= 4 and args[2] == "--disk-size":
+        if parseInt(args[3]) < parseInt(readFile(d / "disk")):
+          stderr.writeLine("Error: new disk size should be larger than the current disk size")
+          quit(1)
+        writeFile(d / "disk", args[3])
+    of "ip": echo "192.0.2.10"
+    else: discard
+  else:
+    let command = args.join(" ")
+    if "growpart" in command:
+      let size = readFile(d / "growpart-size")
+      if parseBiggestInt(size) > 0: writeFile(d / "rootfs", size)
+    elif "df -P" in command: echo readFile(d / "rootfs")
+    else: echo "ready"
+  quit(0)
+
+proc diskFixtureCommand(dir, name: string): string =
+  result = dir / (name & NativeSuffix)
+  copyFileWithPermissions(getAppFilename(), result)
 
 type Fixture = object
   dir: string
@@ -57,36 +91,10 @@ proc newFixture(guestOs: GuestOs, imageGB: int,
   let d = result.dir
   writeFile(d / "disk", $imageGB)
   writeFile(d / "rootfs", $rootFsBytes)
-  let tart = d / "tart"
-  writeExecutable(tart, "#!/bin/sh\n" &
-    "printf '%s\\n' \"$*\" >> '" & result.log & "'\n" &
-    "case \"$1\" in\n" &
-    "  list) echo 'Source Name Disk Size SizeOnDisk State' ;;\n" &
-    "  get) printf '{\\n  \"CPU\" : 4,\\n  \"Disk\" : %s,\\n  \"Running\" : false,\\n  \"State\" : \"stopped\"\\n}\\n' \"$(cat '" & d & "/disk')\" ;;\n" &
-    "  set)\n" &
-    "    if [ \"$3\" = --disk-size ]; then\n" &
-    "      if [ \"$4\" -lt \"$(cat '" & d & "/disk')\" ]; then\n" &
-    "        echo 'Error: new disk size should be larger than the current disk size' >&2; exit 1\n" &
-    "      fi\n" &
-    "      printf '%s' \"$4\" > '" & d & "/disk'\n" &
-    "    fi ;;\n" &
-    "  ip) echo 192.0.2.10 ;;\n" &
-    "esac\n" &
-    "exit 0\n")
-  let sshpass = d / "sshpass"
-  writeExecutable(sshpass, "#!/bin/sh\nshift 2\nexec \"$@\"\n")
-  let ssh = d / "ssh"
-  writeExecutable(ssh, "#!/bin/sh\n" &
-    "printf '%s\\n' \"$*\" >> '" & result.sshLog & "'\n" &
-    "case \"$*\" in\n" &
-    "  *growpart*)\n" &
-    (if growpartGrowsTo > 0:
-       "    printf '%s' '" & $growpartGrowsTo & "' > '" & d & "/rootfs' ;;\n"
-     else:
-       "    : ;;\n") &
-    "  *'df -P'*) cat '" & d & "/rootfs'; echo ;;\n" &
-    "  *) echo ready ;;\n" &
-    "esac\n")
+  writeFile(d / "growpart-size", $growpartGrowsTo)
+  let tart = diskFixtureCommand(d, "tart-disk")
+  let sshpass = commandFixture(d / "sshpass", %*{"forwardSkip": 2})
+  let ssh = diskFixtureCommand(d, "ssh-disk")
   result.backend = newTartBackend(guestOs = guestOs, tartCmd = tart,
     sshpassCmd = sshpass, sshCmd = ssh, bootTimeoutSec = 5,
     sshReadyTimeoutSec = 10, ephemeralPrefix = "vmh-disk-test")

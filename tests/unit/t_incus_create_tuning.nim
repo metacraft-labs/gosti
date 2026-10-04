@@ -6,8 +6,18 @@
 # loaded host the old fixed 120/30/60 s timeouts killed creates that would
 # have succeeded, and every retry added incusd load (2026-10-01).
 
-import std/[os, posix, unittest]
+## No mocks: the shared slot controls use real files and a separate native
+## child. The OS must release its lock when that child terminates.
+import std/[os, osproc, streams, tempfiles, unittest]
 import vm_harness/backends/incus
+
+if commandLineParams() == @["--hold-create-slot"]:
+  let fd = acquireCreateSlot("child", 1, 1)
+  doAssert fd >= 0
+  echo "held"
+  stdout.flushFile()
+  discard stdin.readLine()
+  quit(0) # deliberately leave the descriptor open: the OS releases it.
 
 proc withEnv(name, value: string, body: proc ()) =
   let previous = getEnv(name)
@@ -60,6 +70,26 @@ suite "Incus create tuning":
     check c >= 0
     releaseCreateSlot(b)
     releaseCreateSlot(c)
+
+  test "a child holds a host-wide slot until process exit":
+    let dir = createTempDir("vmh-create-child-", "")
+    defer: removeDir(dir)
+    withEnv("VMH_INCUS_CREATE_LOCK_DIR", dir, proc () =
+      let child = startProcess(getAppFilename(), args = @["--hold-create-slot"],
+        options = {poStdErrToStdOut})
+      defer:
+        if child.running:
+          child.terminate()
+          discard child.waitForExit()
+        child.close()
+      require child.outputStream.readLine() == "held"
+      check acquireCreateSlot("child", 1, 1) == -1
+      child.inputStream.writeLine("exit")
+      child.inputStream.flush()
+      require child.waitForExit(5000) == 0
+      let recovered = acquireCreateSlot("child", 1, 1)
+      check recovered >= 0
+      releaseCreateSlot(recovered))
 
   test "the lock dir defaults to a writable location, not /run/lock":
     delEnv("VMH_INCUS_CREATE_LOCK_DIR")

@@ -842,8 +842,15 @@ suite "LibvirtBackend (continued)":
 
   test "buildConfigDriveIso writes the openstack config-drive layout + " &
        "labels it config-2 (when an ISO tool is available)":
-    if findExe("genisoimage").len == 0 and findExe("mkisofs").len == 0 and
-       findExe("xorriso").len == 0:
+    let haveIsoTool = findExe("genisoimage").len > 0 or
+      findExe("mkisofs").len > 0 or findExe("xorriso").len > 0
+    when defined(posix):
+      # Both the native shell and Repro execute edge declare the real tool.
+      # An unavailable provisioned executable must not turn missing coverage
+      # into a successful test run.
+      checkpoint("POSIX config-drive coverage requires its declared ISO tool")
+      require haveIsoTool
+    if not haveIsoTool:
       echo "[skip] no genisoimage/mkisofs/xorriso on PATH"
       skip()
     else:

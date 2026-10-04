@@ -131,6 +131,18 @@ always answer. When no handler is free the answer is an immediate
 rather than silence — actionable for the caller and, unlike a timeout,
 detectable by a health probe.
 
+The saturation response must survive a request arriving in multiple TCP
+segments. After writing the 503, the acceptor shuts down the send side and
+drains incoming bytes without blocking. Closing immediately with unread bytes
+can reset the connection and discard the response (RFC 9112 section 9.6).
+The acceptor retains at most 64 rejected sockets, for at most one second each,
+and reads at most 4 KiB per socket per pass. It checks pending closures at
+least every 50 ms while idle. At capacity it retires the oldest retained
+socket; failed response writes close immediately. This bounds resource use
+without assigning rejection cleanup to an already saturated worker pool.
+Normal dispatch and shutdown must remain prompt even when rejected peers
+never send, read or close their side.
+
 `--exec-deadline-sec <n>` (default **46800**, thirteen hours) bounds ONE
 `/v1/exec`: a worker that overruns is killed and the client is told so in the
 event stream. The default is sized ABOVE the longest legitimate operation, not
@@ -239,7 +251,12 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   in both directions — `VMH_HUNG_TEST_THREADS=1` makes layer 1 fail
   (serial-equivalent), and the pre-MA12 accept-in-every-handler daemon passes
   layer 1 but fails layer 2. Hermetic (the worker is a self-exec hang/quick
-  role). In `just test`. Its HOST tier,
+  role). Before any timed probe, each hanging worker must acknowledge its
+  first real streamed output within a bounded startup wait. A live client
+  process or a fixed sleep does not establish that a handler is occupied.
+  Startup failure fails the fixture; requests are not retried. The 40-second
+  hangs and all 2.5-second response bounds remain unchanged. In `just test`.
+  Its HOST tier,
   `t_vmharness_serve_survives_a_hung_request_host.nim`, is READ-ONLY and
   asserts that a DEPLOYED listener answers and that its accept backlog is not
   saturated; `just test-host`, skips loudly with no deployed daemon.

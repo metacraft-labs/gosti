@@ -25,7 +25,7 @@
 ## documented follow-up hook.
 
 import std/[json, net, nativesockets, osproc, os, streams, strutils, tables,
-            times, locks, atomics, tempfiles]
+            times, monotimes, locks, atomics, tempfiles]
 when defined(windows):
   # ``terminateProcess`` / ``Handle`` for the deadline reaper's kill path.
   # ``osproc`` uses winlean internally but does not re-export it, so this
@@ -35,7 +35,7 @@ when defined(windows):
   import std/winlean
 else:
   import std/posix
-import ./protocol, ./http, ./capability, ./enrollment
+import ./protocol, ./http, ./capability, ./enrollment, ./dispatch_queue
 import ../types, ../auto
 
 # Import the backend modules so ``registeredBackends`` / ``newBackend`` see
@@ -107,7 +107,7 @@ type
     enrollSecret: string          ## resolved once at startup (may = "")
     keyId: string                 ## derived from the secret; "" if none
 
-const MaxServeThreads = 32
+const MaxServeThreads = DispatchCapacity
   ## Ceiling on the auto-sized worker pool. Each worker either waits on the
   ## dispatch queue or forwards to an isolated child process, so the pool exists
   ## to overlap request *latency* (a long-running exec must not stall unrelated
@@ -782,7 +782,7 @@ type
     acc: ptr Acceptor
     slot: int
 
-var dispatchQueue: Channel[int]
+var serveDispatch: DispatchQueue
   ## Accepted connections, as raw socket handles, from the acceptor to the
   ## workers.
   ##
@@ -795,11 +795,55 @@ var dispatchQueue: Channel[int]
   ##
   ## A negative value is the shutdown sentinel; ``runServe`` sends one per
   ## worker.
+  ## The queue owns fixed POD storage. A standard Channel allocates its buffer
+  ## lazily on the acceptor's ORC heap, then closes after that thread has exited.
+  ## The bounded queue avoids that dead allocator; at most one reserved socket
+  ## per worker can be awaiting dispatch, so it cannot block the acceptor.
 
 const SaturatedBody = """{"error":"vm-harness serve: all request handlers are busy; retry","code":"handlers_saturated"}"""
 
-proc rejectSaturated(client: Socket) =
-  ## Answer a connection the pool has no capacity for, and close it.
+const
+  MaxRejectedConnections = 64
+  RejectedDrainMs = 1000
+
+type RejectedConnection = object
+  socket: Socket
+  deadline: MonoTime
+
+proc closeRejected(client: Socket) =
+  try: client.close()
+  except CatchableError: discard
+
+proc drainRejected(pending: var seq[RejectedConnection]) =
+  ## A fixed amount of nonblocking work per retained connection. In particular,
+  ## a peer continuously sending data cannot monopolize the acceptor.
+  var i = 0
+  while i < pending.len:
+    var retire = getMonoTime() >= pending[i].deadline
+    if not retire:
+      var buffer: array[4096, char]
+      when defined(windows):
+        let received = winlean.recv(pending[i].socket.getFd(), addr buffer[0],
+          cint(buffer.len), 0)
+        let err = if received < 0: wsaGetLastError() else: 0.cint
+        retire = received == 0 or
+          (received < 0 and err notin [WSAEWOULDBLOCK, WSAEINTR])
+      else:
+        let received = posix.recv(pending[i].socket.getFd(), addr buffer[0],
+          buffer.len, 0)
+        let err = if received < 0: osLastError().int32 else: 0'i32
+        retire = received == 0 or
+          (received < 0 and err notin [EAGAIN, EWOULDBLOCK, EINTR])
+    if retire:
+      closeRejected(pending[i].socket)
+      pending.delete(i)
+    else:
+      inc i
+
+proc rejectSaturated(client: Socket): bool =
+  ## Answer a connection the pool has no capacity for, then half-close it.
+  ## The acceptor retains its receive side briefly: an immediate close with
+  ## unread request bytes can reset TCP and discard the 503 (RFC 9112 §9.6).
   ##
   ## Runs ON THE ACCEPTOR THREAD, so it must not block for any reason — a
   ## stalled write here would recreate the very backlog stall the acceptor
@@ -820,6 +864,10 @@ proc rejectSaturated(client: Socket) =
     # ``sendAll``, not std/net's ``send``: the latter never returns on EPIPE
     # (see http.nim), which here would wedge the ONE acceptor thread.
     client.sendAll(msg)
+    when defined(windows):
+      result = winlean.shutdown(client.getFd(), 1) == 0 # SD_SEND
+    else:
+      result = posix.shutdown(client.getFd(), SHUT_WR) == 0
   except CatchableError:
     discard
 
@@ -859,7 +907,7 @@ proc workerLoop(arg: ptr WorkerArg) {.thread.} =
       # The acceptor decrements this counter to RESERVE us, so it is never
       # incremented here for a connection already in flight.
       discard ctx.idleWorkers.fetchAdd(1)
-      let handle = dispatchQueue.recv()
+      let handle = serveDispatch.recv()
       if handle < 0:
         # Shutdown sentinel. The reservation we just published is ours to
         # withdraw.
@@ -886,7 +934,16 @@ proc acceptorLoop(arg: ptr Acceptor) {.thread.} =
   let ctx = arg.ctx
   let server = arg.server
   {.cast(gcsafe).}:
+    var rejected: seq[RejectedConnection]
+    defer:
+      for pending in rejected: closeRejected(pending.socket)
     while ctx.running.load():
+      drainRejected(rejected)
+      if rejected.len > 0:
+        # Wake to reap rejected peers even when no new client arrives. Only
+        # this thread accepts, so readiness cannot be consumed by a worker.
+        var readable = @[server.getFd()]
+        if selectRead(readable, 50) <= 0: continue
       var client: Socket
       var accepted = false
       try:
@@ -909,11 +966,17 @@ proc acceptorLoop(arg: ptr Acceptor) {.thread.} =
         discard ctx.idleWorkers.fetchAdd(1)
         daemonLog(ctx, "503 all " & $ctx.poolSize &
                   " request handlers busy — rejecting connection")
-        rejectSaturated(client)
-        try: client.close() except CatchableError: discard
+        if rejectSaturated(client):
+          if rejected.len == MaxRejectedConnections:
+            closeRejected(rejected[0].socket)
+            rejected.delete(0)
+          rejected.add(RejectedConnection(socket: client,
+            deadline: getMonoTime() + initDuration(milliseconds = RejectedDrainMs)))
+        else:
+          closeRejected(client)
         continue
       # Ownership of the fd passes to a worker; do NOT close it here.
-      dispatchQueue.send(int(client.getFd()))
+      serveDispatch.send(int(client.getFd()))
     discard ctx.activeThreads.fetchSub(1)
 
 proc selfConnectHost(listenHost: string): string =
@@ -938,7 +1001,7 @@ proc runServe*(cfg: ServeConfig) =
   ## Bind, listen, and serve connections until a ``/v1/shutdown`` is received.
   ##
   ## Structure: ONE acceptor thread owning the listening socket, plus a bounded
-  ## pool of worker threads (``resolveThreadCount``) fed by ``dispatchQueue``,
+  ## pool of worker threads (``resolveThreadCount``) fed by ``serveDispatch``,
   ## plus one deadline reaper. Concurrency is required by the control driver (a
   ## central GARM), which fires many simultaneous create/delete/retry calls: a
   ## single long-running ``/v1/exec`` must not stall unrelated connections past
@@ -1013,7 +1076,7 @@ proc runServe*(cfg: ServeConfig) =
   daemonLog(ctx, "request handlers: " & $threadCount &
             " worker threads + 1 acceptor; exec deadline " &
             $deadlineSec & "s")
-  dispatchQueue.open()
+  serveDispatch.open()
   # activeThreads counts the threads that must be joined and that decrement it
   # on exit: the workers plus the acceptor.
   ctx.activeThreads.store(threadCount + 1)
@@ -1061,11 +1124,11 @@ proc runServe*(cfg: ServeConfig) =
   # once that exec returns, which is why this is sent AFTER the acceptor has
   # stopped handing out new connections.
   for _ in 0 ..< threadCount:
-    dispatchQueue.send(-1)
+    serveDispatch.send(-1)
   for t in workers.mitems:
     joinThread(t)
 
   joinThread(reaper)
-  dispatchQueue.close()
+  serveDispatch.close()
   server.close()
   daemonLog(ctx, "stopped")

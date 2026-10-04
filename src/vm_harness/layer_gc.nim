@@ -58,6 +58,10 @@ import std/[algorithm, os, strutils, times]
 
 when defined(posix):
   import std/posix
+elif defined(windows):
+  import std/[winlean, widestrs]
+  proc getCompressedFileSizeW(path: WideCString; high: ptr uint32): uint32
+    {.stdcall, dynlib: "kernel32.dll", importc: "GetCompressedFileSizeW".}
 
 type
   LayerReferentKind* = enum
@@ -80,7 +84,7 @@ type
       ## the domain name; otherwise it is the file's stem.
     backingFile*: string     ## absolute path, empty when the file has none
     apparentBytes*: int64    ## ``st_size`` — what the guest sees
-    allocatedBytes*: int64   ## ``st_blocks * 512`` — what the disk pays
+    allocatedBytes*: int64   ## Filesystem allocation — what the disk pays
     mtimeUnix*: int64
 
   LayerScope* = object
@@ -195,10 +199,16 @@ proc allocatedBytesOf(path: string): int64 =
     if stat(path.cstring, st) == 0:
       return int64(st.st_blocks) * 512'i64
     return 0'i64
+  elif defined(windows):
+    # This API reports allocated storage for compressed and sparse files,
+    # whereas GetFileSize reports the logical end of the file.
+    var highPart: uint32
+    setLastError(0)
+    let low = getCompressedFileSizeW(newWideCString(path), addr highPart)
+    if low == high(uint32) and getLastError() != 0:
+      return 0'i64
+    int64((uint64(highPart) shl 32) or uint64(low))
   else:
-    # Windows has no portable st_blocks; report the apparent size so the
-    # number is never silently zero. Callers that compare the two must
-    # therefore not treat equality as proof of a non-sparse file on Windows.
     try: getFileSize(path)
     except OSError, IOError: 0'i64
 

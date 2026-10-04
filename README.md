@@ -181,6 +181,14 @@ repro test --tool-provisioning=path --daemon=off
 The checked-in `repro.nim` builds the CLI and models every deterministic test
 as typed build and execute edges. Tests requiring a live host hypervisor remain
 in the explicit `just test-host` catalog.
+Both runners read `scripts/test-catalog.txt` through the same parser. Add each
+new `tests/{unit,integration,e2e}/t_*.nim` there: an unregistered file, duplicate
+entry or missing source fails validation before execution. The `test` tier is
+the deterministic suite; `host` selects the existing live-host runner;
+`specialized` records gates requiring their documented guest or provider harness.
+Existing test-level platform guards remain in force. Linux's real TCG boot and
+TPM gates are included in both deterministic runners; Reprobuild realizes the
+TPM guest through the same pinned flake output as the native shell.
 On Linux, the CLI's runtime profile also carries pinned `virsh`, `virt-install`,
 and `qemu-img` tools so downstream Reprobuild run edges do not depend on the
 daemon's ambient `PATH`.
