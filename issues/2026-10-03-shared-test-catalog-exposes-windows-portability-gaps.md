@@ -578,6 +578,27 @@ Run `37170164155` at shared `3c1f888` adds temporary monitor phase timestamps
 and records the actual loaded DLL path. It separates OS process creation,
 fork-runtime detection, child injection, hook installation, flush and teardown.
 Both debug variants have identical instrumentation; the second changes only
-machine-code optimization. LastError and all measured operations are preserved.
+machine-code optimization. The C reporter preserves LastError. A subsequent
+correction also preserves it around Nim TLS access; this first run remains an
+exploratory timing measurement, not final runtime qualification.
 The script retains the exact patches and restores source files. The original
 five requests, 2.5-second deadline, slow-worker checks and shutdown remain.
+
+### Monitor phase results and API attribution
+
+At Gosti `6129ea8`, run `37170164155` proves the loaded DLL paths for both
+variants. The baseline batch still fails at 3.408678 seconds and the optimized
+batch at 3.046244; both direct controls pass. Hook installation takes about
+0.39–0.40 seconds in the baseline and 0.33–0.35 in the optimized image.
+Removal takes 0.20 seconds and about 0.16–0.19 respectively. OS CreateProcess
+and fork-runtime detection are small; flushing takes less than a millisecond.
+This locates the cost in hook setup/teardown without identifying its internal
+API costs. No production optimization has been selected.
+
+Diagnostic `37173255901` at shared `db22d0c` times real protection changes,
+instruction-cache flushes, thread snapshots and suspend/resume calls. Counters
+are collected without allocation or logging while threads are frozen; the
+muted phase reporter prints them afterward. Every wrapped API retains its
+arguments, returned result and LastError. The exact patches are retained and
+restored, including a log-only fixture change that exposes child phase output.
+The five requests, original deadline and all functional assertions stay intact.
