@@ -15,7 +15,6 @@ nimcache/
 # Direnv cache
 .direnv/
 .envrc.cache
-.pre-commit-config.yaml
 
 # Test scratch
 test-logs/

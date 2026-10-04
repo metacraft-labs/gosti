@@ -24,6 +24,7 @@
 ## proves (the RC1 linter enforces ``advertised ⊆ proven``).
 
 import std/[json, strutils, sets, tables, os, osproc]
+import ../process_cleanup
 
 const
   ManifestVersion* = "1"
@@ -188,22 +189,17 @@ proc readOrEmpty(path: string): string =
 proc binaryPresent(name: string): bool =
   findExe(name).len > 0
 
-proc runOk(exe: string, args: openArray[string]): bool =
+proc runOk(exe: string, args: openArray[string],
+    afterOutputClosed: MergedOutputClosedHook = nil): bool =
   ## Run a probe binary, discard output, return true iff it exits 0. Missing
   ## binary ⇒ false.
   if findExe(exe).len == 0: return false
   try:
     let p = startProcess(exe, args = @args,
                          options = {poUsePath, poStdErrToStdOut})
-    # `close(p)` reaps the child but does NOT release the stdio pipes
-    # `startProcess` opened on this side — see the same fix in server.nim's exec
-    # path, where the leak was measured as one pipe PAIR per spawn. This probe
-    # runs per hypervisor on every /v1/manifest, so it leaks on a schedule too.
-    defer:
-      try: p.inputStream.close() except CatchableError: discard
-      try: p.outputStream.close() except CatchableError: discard
-      try: p.errorStream.close() except CatchableError: discard
-      try: p.close() except CatchableError: discard
+    # Use the same ownership rule as exec workers. A merged stderr handle must
+    # not be closed again after stdout's number can belong to another request.
+    defer: closeMergedProcessStdio(p, afterOutputClosed)
     for _ in p.lines: discard    # drain so the pipe never blocks
     p.waitForExit() == 0
   except CatchableError:

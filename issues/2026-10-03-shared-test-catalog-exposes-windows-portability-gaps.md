@@ -670,3 +670,70 @@ probing. With the identical delay it passes all six original cases. The server,
 40-second hangs, peers, recovery checks and response deadlines are unchanged.
 The bounded acknowledgment wait also detects a client exiting before startup.
 Full suites and Windows qualification are still required.
+
+### Linux startup acknowledgment failure at c1cae37
+
+The complete Linux x64 native suite in run `37191983535`, job `111405949033`,
+fails at `c1cae3766e094d8c056bb9faadd0f816e82f4851`. The first concurrent
+request passes, but the saturation fixture does not receive hanging worker 1's
+`hang-start` acknowledgment within its unchanged ten-second setup bound.
+The later segmented probes, silent peers, recovery and shutdown all pass;
+every hanging client's final completion code is zero. The downloaded
+`test-logs-self-hosted-linux-x64` artifact retains this failure.
+
+The prior complete matrix passed the same runtime and fixture at `bb06d10`;
+subsequent changes only add hook metadata and update the release guide.
+This recurrence therefore requires diagnosis rather than attributing it to
+the hook changes. Startup, worker-output streaming and acknowledgment delivery
+are not yet distinguished. Preserve the setup bound and all original response,
+saturation and recovery assertions while investigating. The expectation remains
+the real-time output and concurrency contract in `docs/serve.md`.
+
+The selected Nim 2.2.4 standard library creates its fork error pipe with
+`pipe`, then sets close-on-exec only in that pipe's own child. A concurrent
+fork can therefore inherit another launch's writable error-pipe end. The
+other parent blocks waiting for EOF until the unrelated worker exits, before
+it starts streaming output. Linux selects this fork implementation; macOS
+ordinarily selects `posix_spawn`.
+
+A macOS control selects the same standard-library fork path with `-d:useFork`
+and starts eight real two-second children concurrently. At Gosti `b5e2501`,
+the unmodified library delays six launches for 2016–2018 ms; the other two
+return in 3–4 ms. Giving both ends of every launch pipe close-on-exec before
+forking makes all eight return in 1–7 ms through the unchanged public process
+API. This establishes the mechanism locally, not native Linux qualification.
+
+Repair requirements:
+
+- Scope the compatibility repair to Gosti's Linux compilation. Use atomic
+  `pipe2(O_CLOEXEC)` for the selected standard library's stdio and error pipes.
+  `dup2` still supplies inheritable child stdin/stdout/stderr as before.
+- Preserve the standard process API and types. Use Nim's supported module
+  override to load the selected compiler's own `osproc` implementation with
+  the corrected private pipe constructor. Do not fork the complete library,
+  edit the Nix store, serialize worker execution or change monitor policy.
+- Add a real concurrent-launch regression with a barrier after pipe creation,
+  active only in the test build. Each child stays alive until the parent has
+  assessed every launch. A baseline without close-on-exec must fail; release
+  all children afterward so failure does not leave processes behind.
+- Verify inherited descriptors, stdin/stdout/stderr, exit status and failed
+  executable launch. Keep the existing saturation fixture unchanged. Repeat
+  the complete local suites and native Linux matrix before releasing.
+
+The repair at `a2efbda` plus the working-tree patch has four real-process
+controls. On macOS's explicitly selected fork path, an adaptation of the
+Linux-only pipe constructor uses `pipe` plus `fcntl` to demonstrate descriptor
+ownership; it does not claim Linux's atomic syscall was executed there. All
+four cases pass. Removing close-on-exec fails only the coordinated eight-child
+launch case. Removing the separate identity-`dup2` handling fails only the
+closed-stdin case; all three other cases pass in each negative control.
+
+The identity case matters because `dup2(0, 0)` is a no-op: when a caller has
+closed stdin and a new pipe occupies fd 0, the child's stdin must have its
+close-on-exec flag cleared explicitly. The production compatibility module
+preserves that existing behavior.
+
+The exact Linux module and test cross-compile for x86_64 and ARM64 with Zig
+0.15.2 and glibc 2.28. Both emitted ELF headers match their target. Native Linux
+execution and the full product matrix remain required. The original saturation
+test, its ten-second setup bound and all response assertions remain unchanged.

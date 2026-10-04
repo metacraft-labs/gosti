@@ -5,6 +5,8 @@
 
 # Host-independent unit tests.
 test all tests/unit/t_nimcache_is_worktree_local.nim
+test linux tests/unit/t_linux_process_pipe_ownership.nim
+test posix tests/unit/t_capability_probe_fd_hygiene.nim
 test all tests/unit/t_output_envelope.nim
 test all tests/unit/t_auto_selection.nim
 # GOSTI2 PR-1: the generic-CRUD façade contract (JSON schema + exit codes),

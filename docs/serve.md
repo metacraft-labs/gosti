@@ -81,6 +81,19 @@ closed its pipes, so a client may send its next request as soon as it sees
 worker. The worker's stdout and stderr are **merged** in RA1 (follow-up:
 framed stdout/stderr separation).
 
+On Linux, the selected Nim process launcher creates all stdio and launch-error
+pipes with atomic close-on-exec flags. Concurrent workers must not inherit one
+another's pipe writers and delay startup or EOF. A small standard-library
+compatibility module preserves the existing process API, including child
+stdin when the caller's own stdin was closed. The Linux catalog tests real
+overlapping launches, inherited pipe identities despite descriptor reuse, stdio
+and failed execution. Qualified APIs such as `osproc.Process` remain available.
+
+Exec workers and capability probes share one merged-pipe cleanup routine. It
+closes each owned POSIX descriptor once and leaves Windows output-handle
+ownership with the standard library. Real descriptor-reuse controls cover both
+call paths.
+
 ## Auth & network posture
 
 - **Bearer token** (mTLS is the documented alternative; the spec asks for
