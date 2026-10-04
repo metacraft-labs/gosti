@@ -522,3 +522,30 @@ rerun cannot establish a fix. The full candidate remains unqualified.
 Refreshed `agents` and `dev` before adding this evidence to the existing
 concurrency record. The dispatch requirement remains `docs/serve.md` and the
 unchanged real concurrency gate described above.
+
+### Monitored concurrency comparison, 2026-10-04
+
+At Gosti `6129ea8`, [37163138037](https://github.com/metacraft-labs/metacraft-github-actions/actions/runs/37163138037)
+actually executes the unchanged concurrency program three times under Repro
+and three times directly. Every monitored batch fails the original 2.5-second
+bound: 2.82095, 3.26382 and 2.93928 seconds. Direct runs of the same binaries
+all pass, with fast requests around 0.02–0.05 seconds. Monitored requests take
+0.55–0.71 seconds; first logs arrive after 0.38–0.52 seconds. The failure
+persists outside the full-suite contention, so ordering alone does not fix it.
+
+The actual source tuple is Reprobuild `1f85ace0`, io-mon `d3826a36`, RunQuota
+`052e7fe8`, and hooks `3b99d26f`. The record includes DLL and per-round test
+binary hashes. The Linux ARM setup retry at `6129ea8` now passes the complete
+build/test job `111319052599`; its earlier setup failure was transient.
+
+The single-worker diagnostic also fails, but returns the server's explicit
+`handlers_saturated` HTTP 503 rather than waiting behind the slow request.
+The old serial-accept-loop description no longer describes this dedicated
+acceptor. The supplemental script must recognize that specific concurrency
+refusal; it must not accept arbitrary failures. The ordinary four-worker
+test still requires all five successful responses and its original deadline.
+
+Next, record real server phase timings for process launch, first output, EOF
+and cleanup, with the exact instrumentation patch retained. Compare the
+existing monitor with an optimized build of identical source while preserving
+Nim runtime checks and all monitoring. No test deadline or workload change.
