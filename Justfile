@@ -43,3 +43,16 @@ nix-build:
 # Runs `nix develop`, so it is not part of the in-shell test recipes.
 test-dev-shell:
     bash tests/test_dev_shell_writes_nothing_elsewhere.sh
+
+# Documentation-site recipes (delegating to docs/site)
+dev-docs *args:
+    just -f docs/site/Justfile --working-directory docs/site dev-docs {{args}}
+
+build-docs:
+    just -f docs/site/Justfile --working-directory docs/site build
+
+serve-docs:
+    just -f docs/site/Justfile --working-directory docs/site serve-docs
+
+open-docs *args:
+    just -f docs/site/Justfile --working-directory docs/site open-docs {{args}}

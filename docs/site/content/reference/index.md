@@ -5,7 +5,7 @@ order: 0
 ---
 # Reference
 
-The stable, documented contract surface of vm-harness.
+The stable, documented contract surface of Gosti.
 
 - [CLI reference](/reference/cli-reference) — every subcommand and flag,
   verified against `src/vm_harness/cli.nim`.

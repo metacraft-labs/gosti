@@ -13,12 +13,12 @@ have the lightest setup, but the CLI shape is identical for every backend.
 
 ## 1. Enter the dev shell
 
-vm-harness builds and runs inside a Nix dev shell that provides Nim, `just`, and
+Gosti builds and runs inside a Nix dev shell that provides Nim, `just`, and
 the host's backend tooling (libvirt/QEMU/Lima on Linux; Lima/QEMU on macOS —
 Tart and UTM are installed out-of-band, see [Backends](/guides/backends)).
 
 ```sh
-cd vm-harness
+cd gosti
 nix develop          # or: direnv allow   (an .envrc is checked in)
 ```
 
@@ -31,23 +31,23 @@ Inside the shell you will see the Nim and Nimble versions printed, and
 just build
 ```
 
-This compiles `src/vm_harness/cli.nim` to `build/bin/vm-harness` (plus the
+This compiles `src/vm_harness/cli.nim` to `build/bin/gosti` (plus the
 snapshot-revert benchmark). Put that on your `PATH` or call it by path:
 
 ```sh
 export PATH="$PWD/build/bin:$PATH"
-vm-harness --help
+gosti --help
 ```
 
 The Nix package path (`nix build .#default`, or the flake output `default`)
-installs the same binary to `$out/bin/vm-harness` and ships the guest scripts
+installs the same binary to `$out/bin/gosti` and ships the guest scripts
 and recipes under `$out/share/vm-harness/`.
 
 ## 3. See what backends this host can drive
 
 ```sh
-vm-harness backends      # tabular listing of every known backend; * = registered here
-vm-harness probe         # JSON: which backends are actually available + supported guests
+gosti backends      # tabular listing of every known backend; * = registered here
+gosti probe         # JSON: which backends are actually available + supported guests
 ```
 
 `backends` lists every backend the toolkit knows about and marks the ones
@@ -63,7 +63,7 @@ idempotent provision → fast revert to baseline → exec your command in the gu
 
 ```sh
 # Lima on macOS/Linux, Linux guest:
-vm-harness run \
+gosti run \
   --backend lima --guest linux \
   --baseline demo-linux \
   --output-dir ./out \
@@ -95,7 +95,7 @@ residue:
 
 ```sh
 # Incus system container, launched fresh, probed, then deleted:
-vm-harness run --ephemeral --backend incus \
+gosti run --ephemeral --backend incus \
   --baseline demo-job --base-image vmh-base \
   -- true
 ```

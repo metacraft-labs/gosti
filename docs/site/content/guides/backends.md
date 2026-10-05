@@ -6,17 +6,17 @@ slug: backends
 ---
 # Backends: setup and caveats
 
-vm-harness selects a backend from the (host OS, guest OS) pair, or you name one
+Gosti selects a backend from the (host OS, guest OS) pair, or you name one
 explicitly with `--backend <id>` (CLI) / a `new<Name>Backend(...)` constructor
 (library). This page covers what each shipped backend needs on the host,
 which guests it drives, how it resets, and its known gotchas. Check what is
-actually available on your host with `vm-harness probe`.
+actually available on your host with `gosti probe`.
 
 For the deep per-backend transport details (SSH vs PowerShell Direct vs
 `incus exec`, file-transfer mechanism, snapshot strategy) read the
-[per-backend notes](https://github.com/metacraft-labs/vm-harness/blob/main/docs/per-backend-notes)
+[per-backend notes](https://github.com/metacraft-labs/gosti/blob/main/docs/per-backend-notes)
 and the
-[design reference](https://github.com/metacraft-labs/vm-harness/blob/main/docs/design.md).
+[design reference](https://github.com/metacraft-labs/gosti/blob/main/docs/design.md).
 
 ## Support matrix (shipped)
 
@@ -55,7 +55,7 @@ without any real hypervisor — the only mock allowed by the test methodology
   recipe that assembles an autounattend ISO; a controller SSH pubkey and a
   first-boot script can be baked into that ISO (`--controller-pubkey`,
   `--first-boot-script`, both require `--recipe`). See the
-  [M4 libvirt notes](https://github.com/metacraft-labs/vm-harness/blob/main/docs/m4-libvirt.md)
+  [M4 libvirt notes](https://github.com/metacraft-labs/gosti/blob/main/docs/m4-libvirt.md)
   for the canonical command shapes and the Phase B/C scope (snapshot/restore,
   GPU/SR-IOV/USB passthrough are outstanding).
 - Caveat: the golden qcow2 and every parent directory must be readable by
@@ -88,7 +88,7 @@ without any real hypervisor — the only mock allowed by the test methodology
   not lease, a static per-job IP is injected via cloud-init and large files are
   streamed in via `cat | incus exec tar` rather than `incus file push` (which
   can corrupt large tarballs on some hosts). See the
-  [Incus backend notes](https://github.com/metacraft-labs/vm-harness/blob/main/docs/per-backend-notes/incus.md).
+  [Incus backend notes](https://github.com/metacraft-labs/gosti/blob/main/docs/per-backend-notes/incus.md).
 
 ## Lima (macOS or Linux host, Linux guest)
 

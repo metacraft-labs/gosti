@@ -6,13 +6,13 @@ slug: parameters
 ---
 # Parameters catalog
 
-vm-harness is a toolkit whose value is its parameters. This page documents the
+Gosti is a toolkit whose value is its parameters. This page documents the
 knobs consumers rely on as a stable, public contract: name, type, default,
 effect, and security/performance implications. Three surfaces matter most:
 
 - the runner-image recipe seams (`VMH_RUNNER_*` and friends) that shape the
   `vmh-linux-runner` Incus image, and
-- the vm-harness ephemeral Incus capability flags a trusted controller sends
+- the Gosti ephemeral Incus capability flags a trusted controller sends
   to a remote host, and
 - the GARM Incus provider options (`incus*`) a fleet operator sets to grant
   per-job containers their capabilities.
@@ -111,9 +111,9 @@ address (the provider injects the real per-job IP via cloud-init).
 
 ## 2. Ephemeral Incus capability flags
 
-These flags are parsed by vm-harness itself and accepted only on
+These flags are parsed by Gosti itself and accepted only on
 `run --ephemeral --backend incus`. A capability run is initialised stopped,
-configured, and only then started. With both defaults off, vm-harness retains
+configured, and only then started. With both defaults off, Gosti retains
 the prior `incus launch` argv exactly.
 
 | Flag | Type | Default | Effect + security posture |
@@ -123,14 +123,14 @@ the prior `incus launch` argv exactly.
 
 The caller is part of the trusted host control plane. Locally it already needs
 the Incus administrative socket; remotely it must possess the overlay-only
-`vm-harness serve` bearer token, which authorizes the complete worker CLI.
+`gosti serve` bearer token, which authorizes the complete worker CLI.
 Never expose that token to guests or workflows, and never derive these flags
 from user-data. Device attachment/access failure deletes the half-created
 ephemeral container rather than returning a degraded runner.
 
 ## 3. GARM Incus provider options
 
-These options shape the per-job Incus container that the GARM vm-harness
+These options shape the per-job Incus container that the GARM Gosti
 provider launches. They are the run-time complement to the recipe seams above:
 the recipe bakes a capability into the image, the provider grants the matching
 privilege to the container.
@@ -140,9 +140,9 @@ Where these are defined. These options are the NixOS `services.garm`
 provider surface, defined in the shared `metacraft-labs/nixos-modules` GARM
 module (`modules/garm/default.nix`), and set by a consumer such as
 `infra/services/garm-incus-runners.nix`. They are documented here because they
-are the run-time half of vm-harness's runner-image feature contract — the two
+are the run-time half of Gosti's runner-image feature contract — the two
 only work as a pair. Set them in the consumer's NixOS config, not in
-vm-harness. All are ignored by non-incus providers.
+Gosti. All are ignored by non-incus providers.
 :::
 
 ### Capability options (the recipe pairings)

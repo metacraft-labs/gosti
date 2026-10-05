@@ -3,8 +3,8 @@
 
 name: Docs — GitHub Pages
 
-# Build the vm-harness docs site (docs/site, an isonim-docs consumer) and
-# publish it to GitHub *project* Pages at https://metacraft-labs.github.io/vm-harness/
+# Build the Gosti docs site (docs/site, an isonim-docs consumer) and
+# publish it to GitHub *project* Pages at https://metacraft-labs.github.io/gosti/
 # using the modern Pages flow (configure-pages + upload-pages-artifact +
 # deploy-pages). The site is self-contained: its flake (docs/site/flake.nix)
 # declares the isonim-docs framework + toolchain as inputs, so the build needs
@@ -12,7 +12,7 @@ name: Docs — GitHub Pages
 
 on:
   push:
-    branches: [dev]
+    branches: [dev, stable, agents]
     paths:
       - "docs/site/**"
       - "docs/user-guide/**"

@@ -1,29 +1,29 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## vm-harness docs -- this site's own `DocsConfig`.
+## gosti docs -- this site's own `DocsConfig`.
 ##
-## The vm-harness user guide ported onto isonim-docs, themed with the shared
+## The Gosti user guide ported onto isonim-docs, themed with the shared
 ## Metacraft docs design system (`theme_tokens.nim` + `assets/style.css`).
 ## Hosted as a GitHub *project* Pages site at
-## https://metacraft-labs.github.io/vm-harness/ , so `basePath` is `/vm-harness`
+## https://metacraft-labs.github.io/gosti/ , so `basePath` is `/gosti`
 ## (the framework prefixes every internal root-relative URL with it) and
 ## `baseUrl` carries the same subpath for absolute canonical/sitemap URLs.
 
 import core/config
+import core/base_path
 
-proc vmhDocsConfig*(): DocsConfig =
+const docsSiteOrigin* = "https://metacraft-labs.github.io"
+
+proc vmhDocsConfig*(basePath = "/gosti"): DocsConfig =
+  let base = normalizeBasePath(basePath)
   DocsConfig(
-    siteTitle: "vm-harness docs",
-    siteDescription: "Documentation for vm-harness -- a general-purpose, " &
+    siteTitle: "Gosti docs",
+    siteDescription: "Documentation for Gosti -- a general-purpose, " &
       "cross-platform VM lifecycle orchestration toolkit (library + CLI).",
     defaultRoute: "/",
     stylesheetHref: "/assets/style.css",
-    baseUrl: "https://metacraft-labs.github.io/vm-harness",
-    # GitHub project Pages subpath hosting: the site is served under
-    # /vm-harness, so every internal root-relative URL the SSG emits is
-    # prefixed with it (see core/base_path). `baseUrl` includes the same
-    # subpath so canonical/sitemap URLs stay correct.
-    basePath: "/vm-harness",
+    baseUrl: docsSiteOrigin & (if base == "/": "" else: base),
+    basePath: base,
     # Three top-level sidebar sections, in this order (the framework otherwise
     # sorts sections alphabetically).
     sectionOrder: @["getting_started", "guides", "reference"],
@@ -37,12 +37,12 @@ proc vmhDocsConfig*(): DocsConfig =
     expandAllNavSections: true,
     # Single right-aligned header nav button.
     headerLinks: @[
-      (label: "GitHub", href: "https://github.com/metacraft-labs/vm-harness"),
+      (label: "GitHub", href: "https://github.com/metacraft-labs/gosti"),
     ],
     # Github link at the bottom of the left sidebar (monochrome chrome icon,
     # inverts in dark mode).
     sidebarLinks: @[
-      (label: "Github", href: "https://github.com/metacraft-labs/vm-harness",
+      (label: "Github", href: "https://github.com/metacraft-labs/gosti",
        icon: "/assets/img/icon__github.svg"),
     ],
     # Move the theme toggle into the sidebar-bottom pill.
@@ -51,7 +51,7 @@ proc vmhDocsConfig*(): DocsConfig =
     needHelp: (
       heading: "Need some help?",
       links: @[
-        (label: "Open an issue", href: "https://github.com/metacraft-labs/vm-harness/issues",
+        (label: "Open an issue", href: "https://github.com/metacraft-labs/gosti/issues",
          icon: "/assets/img/icon__support.svg"),
         (label: "Browse the reference", href: "/reference/cli-reference",
          icon: "/assets/img/icon__faq.svg"),

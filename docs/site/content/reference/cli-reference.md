@@ -6,13 +6,13 @@ slug: cli-reference
 ---
 # CLI reference
 
-The `vm-harness` binary is built by `just build` to `build/bin/vm-harness` and
-installed by the Nix package to `$out/bin/vm-harness`. Run `vm-harness --help`
+The `gosti` binary is built by `just build` to `build/bin/gosti` and
+installed by the Nix package to `$out/bin/gosti`. Run `gosti --help`
 for the built-in usage text. This page documents every subcommand and flag as
 verified against `src/vm_harness/cli.nim`.
 
 ```
-vm-harness <subcommand> [flags] [-- <command args>]
+gosti <subcommand> [flags] [-- <command args>]
 ```
 
 Process exit codes double as the verdict for `run`: `0` PASS, `1` FAIL, `2`
@@ -39,9 +39,9 @@ ERROR / usage error, `130` INCOMPLETE (interrupted).
 ### `provision`
 
 ```
-vm-harness provision --backend <id|auto> --guest <linux|windows|macos> \
-                     --baseline <name> [--source-image <ref>] \
-                     [--cpus N] [--memory-mb N] [--disk-gb N] [--recipe <id>]
+gosti provision --backend <id|auto> --guest <linux|windows|macos> \
+                --baseline <name> [--source-image <ref>] \
+                [--cpus N] [--memory-mb N] [--disk-gb N] [--recipe <id>]
 ```
 
 Builds the baseline if absent; no-op if present. `--baseline` is required.
@@ -49,7 +49,7 @@ Builds the baseline if absent; no-op if present. `--baseline` is required.
 ### `install`
 
 ```sh
-vm-harness install --backend auto --source-image <installer.iso> \
+gosti install --backend auto --source-image <installer.iso> \
   --target-disk <path> --disk-gb <GiB> --expect <serial-regex> \
   [--secondary-iso <seed.iso>] [--timeout-sec <seconds>]
 ```
@@ -62,13 +62,13 @@ and preserves the resulting disk while deleting the transient VM. Use a
 ### `run`
 
 ```
-vm-harness run --backend <id|auto> --guest <linux|windows|macos> \
-               --baseline <name> --output-dir <path> \
-               [--env KEY=VAL ...] [--copy-to host:guest ...] \
-               [--copy-from guest:host ...] \
-               [--install-shim binary:logpath ...] \
-               [--timeout-sec N] [--log-format human|json] \
-               -- <command args>
+gosti run --backend <id|auto> --guest <linux|windows|macos> \
+          --baseline <name> --output-dir <path> \
+          [--env KEY=VAL ...] [--copy-to host:guest ...] \
+          [--copy-from guest:host ...] \
+          [--install-shim binary:logpath ...] \
+          [--timeout-sec N] [--log-format human|json] \
+          -- <command args>
 ```
 
 Provisions (idempotent), reverts to baseline, execs everything after `--` in the
@@ -88,7 +88,7 @@ it, destroy it leaving no residue.
 ### `ephemeral-destroy`
 
 ```
-vm-harness ephemeral-destroy --baseline <vm>
+gosti ephemeral-destroy --baseline <vm>
 ```
 
 libvirt-only. Reclaims a clone left running by `run --ephemeral --keep`:
@@ -105,9 +105,9 @@ host with `*`.
 ### `snapshot`
 
 ```
-vm-harness snapshot create [--running] <vm> <name>
-vm-harness snapshot restore <vm> <name>
-vm-harness snapshot list <vm>
+gosti snapshot create [--running] <vm> <name>
+gosti snapshot restore <vm> <name>
+gosti snapshot list <vm>
 ```
 
 `--running` captures RAM + CPU + device state so restore resumes from memory
@@ -117,8 +117,8 @@ planned). Backends without snapshot support raise `BackendUnavailableError`.
 ### `baseline`
 
 ```
-vm-harness baseline export <vm> <dest-dir> [--baseline <name>]
-vm-harness baseline import <src-dir>
+gosti baseline export <vm> <dest-dir> [--baseline <name>]
+gosti baseline import <src-dir>
 ```
 
 Export a baseline (and its snapshot tree, on Hyper-V/libvirt) as a
@@ -129,8 +129,8 @@ Bundle layouts are backend-specific and not cross-backend portable.
 ### `prune`
 
 ```
-vm-harness prune --ephemeral-prefix <p> [--backend all|tart|qemu-windows-arm] \
-                 [--state-dir <dir>] [--older-than <sec>] [--sweep-tmp] [--dry-run]
+gosti prune --ephemeral-prefix <p> [--backend all|tart|qemu-windows-arm] \
+            [--state-dir <dir>] [--older-than <sec>] [--sweep-tmp] [--dry-run]
 ```
 
 Reclaims ephemeral instances/clones leaked by hard-killed launchers, scoped to

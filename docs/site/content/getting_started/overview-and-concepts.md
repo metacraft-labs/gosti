@@ -6,9 +6,9 @@ slug: overview-and-concepts
 ---
 # Overview and concepts
 
-## What vm-harness is
+## What Gosti is
 
-vm-harness is a focused library + CLI for cross-platform VM lifecycle
+Gosti is a focused library + CLI for cross-platform VM lifecycle
 orchestration in test harnesses and dev workflows. It gives you one
 abstraction over several backend hypervisors and container managers so the same
 consumer code can drive any of them:
@@ -24,7 +24,7 @@ It is single-machine, single-process orchestration. It is not an
 image-build pipeline (use Packer for that), it does not know what a "task" is
 (consumers compose that on top), it is not a cloud-fleet manager, and it does
 not target microVM-grade sub-second cold starts. See the
-[design reference](https://github.com/metacraft-labs/vm-harness/blob/main/docs/design.md)
+[design reference](https://github.com/metacraft-labs/gosti/blob/main/docs/design.md)
 §1 for the full in-scope / out-of-scope statement.
 
 ## The `VmBackend` abstraction
@@ -63,7 +63,7 @@ The supporting value types you pass around are:
 
 ### `--backend auto` selection
 
-You can name a backend explicitly or let vm-harness pick one from the (host OS,
+You can name a backend explicitly or let Gosti pick one from the (host OS,
 guest OS) pair. The dispatch table (`selectBackendId` in `types.nim`, design
 reference §6) is:
 
@@ -99,33 +99,33 @@ targets; a regression of more than 50% over budget trips a CI flag.
 
 ## The three-tier ownership model
 
-The single most important concept for using vm-harness correctly: it ships
+The single most important concept for using Gosti correctly: it ships
 generic primitives only, and everything tool-specific belongs to the
 consumer. This is why the toolkit stays general-purpose.
 
-- Tier 1 — vm-harness (this toolkit). VM lifecycle (provision, revert,
+- Tier 1 — Gosti (this toolkit). VM lifecycle (provision, revert,
   start, stop, snapshot), generic in-guest scripts ("exec a command", "install
   an argv tracer for any binary", "write output to the standard layout"), and
   the output envelope. Nothing here knows about your build tool, your test
   runner, or your product.
 
-- Tier 2 — the build/test orchestration that consumes vm-harness (for
+- Tier 2 — the build/test orchestration that consumes Gosti (for
   example reprobuild's gate suite). Gate-binary build steps, dispatch of which
   VM to use, and the specific argv-trace shims a build system cares about
-  (`useradd`, `dscl`, `launchctl`, …). vm-harness provides the generic "wrap any
+  (`useradd`, `dscl`, `launchctl`, …). Gosti provides the generic "wrap any
   binary" primitive; Tier 2 decides which binaries.
 
 - Tier 3 — a higher-level agent/product layer (for example Agent Harbor).
   Source sync, per-language test isolation, result-schema extraction (JUnit XML,
   etc.).
 
-vm-harness never imports or references Tier 2 or Tier 3 code. When you are
-deciding "should this knob live in vm-harness?", the test is: *is it generic
-across all consumers, or specific to mine?* Generic → propose it as a Tier-1
+Gosti never imports or references Tier 2 or Tier 3 code. When you are
+deciding "should this knob live in Gosti?", the test is: `is it generic
+across all consumers, or specific to mine?` Generic → propose it as a Tier-1
 parameter. Specific → compose it in your own code using Tier-1 primitives
 (commonly via `--env`, `--copy-to`, `--install-shim`, or the `backendOptions`
 table).
 
 For the full architecture — lifecycle phase diagram, output-envelope schema,
 per-backend transport details, and design references — read the
-[design reference](https://github.com/metacraft-labs/vm-harness/blob/main/docs/design.md).
+[design reference](https://github.com/metacraft-labs/gosti/blob/main/docs/design.md).
