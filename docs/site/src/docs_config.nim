@@ -10,20 +10,20 @@
 ## `baseUrl` carries the same subpath for absolute canonical/sitemap URLs.
 
 import core/config
+import core/base_path
 
-proc vmhDocsConfig*(): DocsConfig =
+const docsSiteOrigin* = "https://metacraft-labs.github.io"
+
+proc vmhDocsConfig*(basePath = "/gosti"): DocsConfig =
+  let base = normalizeBasePath(basePath)
   DocsConfig(
     siteTitle: "Gosti docs",
     siteDescription: "Documentation for Gosti -- a general-purpose, " &
       "cross-platform VM lifecycle orchestration toolkit (library + CLI).",
     defaultRoute: "/",
     stylesheetHref: "/assets/style.css",
-    baseUrl: "https://metacraft-labs.github.io/gosti",
-    # GitHub project Pages subpath hosting: the site is served under
-    # /gosti, so every internal root-relative URL the SSG emits is
-    # prefixed with it (see core/base_path). `baseUrl` includes the same
-    # subpath so canonical/sitemap URLs stay correct.
-    basePath: "/gosti",
+    baseUrl: docsSiteOrigin & (if base == "/": "" else: base),
+    basePath: base,
     # Three top-level sidebar sections, in this order (the framework otherwise
     # sorts sections alphabetically).
     sectionOrder: @["getting_started", "guides", "reference"],

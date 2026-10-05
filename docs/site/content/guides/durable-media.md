@@ -14,23 +14,23 @@ Other durable backends, hosts, guest OSes and media kinds are explicitly rejecte
 ## Commands
 
 ```console
-vm-harness boot --keep --name dev --state-dir /var/tmp/my-vms \
+gosti boot --keep --name dev --state-dir /var/tmp/my-vms \
   --backend libvirt --guest linux --source-image /data/installed.qcow2 \
   --ssh-forward-port auto --ssh-user guest --ssh-private-key /data/id_ed25519 \
   --ssh-known-hosts /data/known_hosts --ssh-host-key-alias dev \
   --log-format json
 
-vm-harness instance status dev --state-dir /var/tmp/my-vms --log-format json
-vm-harness instance start dev --state-dir /var/tmp/my-vms --log-format json
-vm-harness instance ssh dev --state-dir /var/tmp/my-vms
-vm-harness instance exec dev --state-dir /var/tmp/my-vms -- printf '%s\n' 'two words'
-vm-harness instance logs dev --state-dir /var/tmp/my-vms --follow
-vm-harness instance screenshot dev --state-dir /var/tmp/my-vms \
+gosti instance status dev --state-dir /var/tmp/my-vms --log-format json
+gosti instance start dev --state-dir /var/tmp/my-vms --log-format json
+gosti instance ssh dev --state-dir /var/tmp/my-vms
+gosti instance exec dev --state-dir /var/tmp/my-vms -- printf '%s\n' 'two words'
+gosti instance logs dev --state-dir /var/tmp/my-vms --follow
+gosti instance screenshot dev --state-dir /var/tmp/my-vms \
   --screenshot /tmp/dev.png --screenshot-delay-sec 2
-vm-harness instance stop dev --state-dir /var/tmp/my-vms
-vm-harness instance destroy dev --state-dir /var/tmp/my-vms
-vm-harness instance start dev --state-dir /var/tmp/my-vms
-vm-harness instance destroy dev --state-dir /var/tmp/my-vms \
+gosti instance stop dev --state-dir /var/tmp/my-vms
+gosti instance destroy dev --state-dir /var/tmp/my-vms
+gosti instance start dev --state-dir /var/tmp/my-vms
+gosti instance destroy dev --state-dir /var/tmp/my-vms \
   --instance-id ACTUAL-UUID-FROM-STATUS --purge
 ```
 
@@ -84,14 +84,14 @@ The name can be booted again only after successful purge.
 
 These checks are not a host-wide dependency index: unrelated state roots and
 unregistered external disk users remain the caller's responsibility. Do not
-mutate libvirt definitions or receipt files behind vm-harness. The state root
+mutate libvirt definitions or receipt files behind Gosti. The state root
 is trusted, host-local storage; do not share it across hosts or relocate it.
 The host/libvirt account must have access to its disks and logs.
 
 The existing overlay sweeper and layer deletion refuse files next to a durable
 receipt, even a malformed one. The ephemeral prune command does not own this
 lifecycle. Lease duration, renewal and scheduling belong to the caller's resource
-engine; vm-harness adds no lifetime daemon.
+engine; Gosti adds no lifetime daemon.
 
 ## Receipt And Status Schema
 

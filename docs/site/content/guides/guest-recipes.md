@@ -6,7 +6,7 @@ slug: guest-recipes
 ---
 # Authoring a guest recipe
 
-vm-harness's lifecycle primitives operate on already-existing baselines. A
+Gosti's lifecycle primitives operate on already-existing baselines. A
 guest recipe is the reproducible procedure that produces one of those
 baselines — a golden image or a bootstrap-ready base image for a specific
 backend. Recipes live under `guest-recipes/<id>/` and are shipped alongside the
@@ -46,7 +46,7 @@ shipped read-only under `/nix/store`, pass a writable `--recipe-build-dir`.
 - `linux-nixos-runner/` — a NixOS runner-image variant.
 
 For the design intent of recipes, read the
-[guest-recipes README](https://github.com/metacraft-labs/vm-harness/blob/main/guest-recipes/README.md).
+[guest-recipes README](https://github.com/metacraft-labs/gosti/blob/main/guest-recipes/README.md).
 
 ## Recipe conventions
 

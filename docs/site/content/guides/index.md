@@ -5,7 +5,7 @@ order: 0
 ---
 # Guides
 
-Task-oriented guides for driving vm-harness once you know the concepts.
+Task-oriented guides for driving Gosti once you know the concepts.
 
 - [Driving a VM from test / harness code](/guides/driving-a-vm) — the
   library API: `runGate` for the one-call gate, or compose

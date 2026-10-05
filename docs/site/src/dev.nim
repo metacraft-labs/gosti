@@ -26,7 +26,7 @@ proc newDocsDevServer*(contentDir = "content";
   ## scaffold, wiring the shared design-system token provider for hot reload.
   ## Exposed so a test can drive the exact `just dev-docs` wiring without binding
   ## a socket.
-  docsDevServer(vmhDocsConfig(), contentDir = contentDir, assetsDirs = assetsDirs,
+  docsDevServer(vmhDocsConfig("/"), contentDir = contentDir, assetsDirs = assetsDirs,
                 tokensCssProvider = (proc(): string = docsTokensCssLive()),
                 watchPaths = @[docsDesignSystemPath],
                 clientEntry = "src/main.nim")

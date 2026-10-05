@@ -6,7 +6,7 @@ slug: driving-a-vm
 ---
 # Driving a VM from test / harness code
 
-There are two ways to consume vm-harness: shell out to the `vm-harness` CLI (see
+There are two ways to consume Gosti: shell out to the `gosti` CLI (see
 the [CLI reference](/reference/cli-reference)), or import the Nim library and call the
 `VmBackend` primitives directly. This guide covers the library path, which is
 what test suites and custom harnesses use.
@@ -107,7 +107,7 @@ for testCase in cases:
 ```
 
 This is the lifecycle from the
-[design reference](https://github.com/metacraft-labs/vm-harness/blob/main/docs/design.md)
+[design reference](https://github.com/metacraft-labs/gosti/blob/main/docs/design.md)
 §3.3: `provisionBaseline` once, then `revertToBaseline` / exec / `stopAndCleanup`
 per gate.
 
@@ -159,9 +159,9 @@ the CLI, or `EphemeralIncusSpec.userData` in code) and the backend injects it so
 the guest runs it on first boot. On libvirt the same idea is delivered by
 building a config-drive ISO from `--user-data` and attaching it so cloudbase-init
 consumes it. See the
-[ephemeral lifecycle notes](https://github.com/metacraft-labs/vm-harness/blob/main/docs/ephemeral-lifecycle-and-cleanup.md)
+[ephemeral lifecycle notes](https://github.com/metacraft-labs/gosti/blob/main/docs/ephemeral-lifecycle-and-cleanup.md)
 and the
-[Incus backend notes](https://github.com/metacraft-labs/vm-harness/blob/main/docs/per-backend-notes/incus.md)
+[Incus backend notes](https://github.com/metacraft-labs/gosti/blob/main/docs/per-backend-notes/incus.md)
 for the mechanics, and the [Parameters catalog](/reference/parameters) for the
 provider knobs that shape the per-job container.
 
@@ -207,7 +207,7 @@ cleanup. The target path is caller-owned: backends reject an existing path and
 The CLI packages this sequence as:
 
 ```sh
-vm-harness install --backend auto --source-image installer.iso \
+gosti install --backend auto --source-image installer.iso \
   --target-disk build/installed.qcow2 --disk-gb 16 \
   --expect 'INSTALL COMPLETE' --timeout-sec 1800
 ```
