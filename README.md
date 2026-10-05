@@ -1,10 +1,10 @@
 # Gosti
 
-> Cross-platform VM lifecycle orchestration library and CLI. One abstraction over Tart, UTM, Hyper-V, WSL, libvirt/QEMU, and Lima — so test code and automation drive any of them through the same primitives.
+> Cross-platform VM and container lifecycle orchestration library and CLI. Drive Hyper-V, libvirt/QEMU, Tart, UTM, WSL, Lima, and Incus through a single set of primitives.
 
-📖 **Documentation: <https://metacraft-labs.github.io/gosti/>** — complete user guide (getting started, driving a VM, backends, guest recipes) and CLI reference.
+📖 **Documentation: <https://metacraft-labs.github.io/gosti/>** — complete user guide, CLI reference, backend guides, and recipes.
 
-This repository is the **canonical Nim implementation**; a Rust port lives at `agent-harbor/main/crates/ah-vm/`. Both implement the same backend trait and CLI surface.
+---
 
 ## Installation
 
@@ -29,7 +29,7 @@ Gosti is published across official Metacraft package repositories:
   ```bash
   sudo apt-get install -y metacraft-gosti
   ```
-  *(Requires `deb.metacraft-labs.com` repository keyring; see [docs](https://metacraft-labs.github.io/gosti/))*
+  *(Requires `deb.metacraft-labs.com` repository keyring; see [docs](https://metacraft-labs.github.io/gosti/getting_started/getting-started))*
 - **Fedora / RHEL / openSUSE**:
   ```bash
   sudo dnf install -y metacraft-gosti
@@ -52,313 +52,137 @@ Gosti is published across official Metacraft package repositories:
 
 Direct binary archives and release checksums are available on [GitHub Releases](https://github.com/metacraft-labs/gosti/releases).
 
+---
+
+## Quick Start
+
+### Command Line CLI
+
+#### 1. Inspect Available Backends
+
+Detect hypervisors and container managers installed on the current host:
+
+```bash
+gosti probe
+```
+
+View a summary table of all supported backends:
+
+```bash
+gosti backends
+```
+
+#### 2. Run Commands in a Guest
+
+The one-shot `run` command provisions the baseline, reverts cleanly, executes your command inside the guest, collects output, and tears down safely:
+
+```bash
+gosti run \
+  --backend auto \
+  --guest linux \
+  --baseline demo-linux \
+  --output-dir ./out \
+  -- /bin/sh -c 'uname -s && uptime'
+```
+
+Process exit codes encode the verdict: `0` PASS, `1` FAIL, `2` ERROR, `130` INTERRUPTED. The `--output-dir` receives the complete execution envelope (`00-provision.log`, `02-<cmd>-run.txt`, `RESULT.txt`, `DONE`).
+
+#### 3. Ephemeral Per-Job Containers (Incus)
+
+Launch a clean container from a base image, run a command, and destroy it leaving zero residue:
+
+```bash
+gosti run --ephemeral --backend incus \
+  --baseline demo-job --base-image vmh-base \
+  -- true
+```
+
+#### 4. Boot Media and Console Screenshots
+
+Boot an ISO, VHDX, or QCOW2 in a transient VM, await serial output, and capture the graphical console:
+
+```bash
+gosti boot --backend auto --source-image installer.iso \
+  --screenshot boot.png --screenshot-delay-sec 2 \
+  --expect 'INSTALL COMPLETE'
+```
+
+### Nim Library
+
+Call Gosti's lifecycle primitives directly from Nim test suites or orchestration tools:
+
+```nim
+import std/tables
+import vm_harness
+
+# Select an appropriate backend for Linux guests on the current host
+let backend = newBackendForGuest(goLinux)
+
+# Ensure the baseline image exists
+backend.provisionBaseline(BaselineSpec(
+  name: "demo",
+  guestOs: goLinux
+))
+
+# Fast revert to clean baseline
+let vm = backend.revertToBaseline("demo")
+defer: backend.stopAndCleanup(vm) # Guaranteed cleanup on scope exit
+
+# Execute command inside the guest
+let res = backend.execInGuest(
+  vm,
+  initTable[string, string](),
+  @["/bin/sh", "-c", "uname -s"]
+)
+
+assert res.exitCode == 0
+echo res.stdout
+```
+
+---
+
+## Supported Backends
+
+Gosti selects a backend automatically from the `(host OS, guest OS)` pair via `--backend auto`, or accepts `--backend <id>` explicitly:
+
+| Host OS | Guest OS | Backend ID | Technology & Reset Mechanism |
+| :--- | :--- | :--- | :--- |
+| **Windows** | Windows | `hyperv` | Hyper-V checkpoint revert (`Restore-VMCheckpoint`) |
+| **Windows** | Linux | `wsl` | WSL2 import from cached rootfs |
+| **Linux** | Linux | `libvirt` | QEMU/KVM snapshot revert (`virsh snapshot-revert`) |
+| **Linux** | Windows | `libvirt` | QEMU/KVM with autounattend recipe |
+| **Linux** | Linux (containers) | `incus` | Incus system container (`incus launch` / ephemeral delete) |
+| **macOS (Apple Silicon)** | macOS | `tart-macos` | Tart VM clone from OCI cache |
+| **macOS (Apple Silicon)** | Linux | `tart-linux-arm` | Tart VM clone from OCI cache |
+| **macOS (Apple Silicon)** | Windows | `utm-windows-arm` | UTM clone from local VM bundle |
+| **macOS / Linux** | Linux | `lima` | Lima VM instance recreate (`limactl`) |
+
+---
+
 ## Documentation
 
-- **[User Guide](https://metacraft-labs.github.io/gosti/)** (source in `docs/site/` and `docs/user-guide/`):
-  - [Getting Started](https://metacraft-labs.github.io/gosti/getting_started/getting-started)
-  - [Driving a VM from Code](https://metacraft-labs.github.io/gosti/guides/driving-a-vm)
-  - [Supported Backends](https://metacraft-labs.github.io/gosti/guides/backends)
-  - [Golden Guest OS Recipes](https://metacraft-labs.github.io/gosti/guides/guest-recipes)
-  - [CLI Reference](https://metacraft-labs.github.io/gosti/reference/cli-reference)
-- **Contributor Guides**:
-  - [`docs/design.md`](docs/design.md) — internal architecture and execution model.
-  - `docs/per-backend-notes/` — backend-specific implementation notes.
-- **Developer Instructions**: See [`AGENTS.md`](AGENTS.md).
+Comprehensive user documentation is published at **<https://metacraft-labs.github.io/gosti/>**:
 
-## Status
+- **Getting Started**:
+  - [Overview and Concepts](https://metacraft-labs.github.io/gosti/getting_started/overview-and-concepts) — The `VmBackend` abstraction, per-gate reset performance contract, and three-tier ownership model.
+  - [Getting Started Guide](https://metacraft-labs.github.io/gosti/getting_started/getting-started) — Walkthrough from installation to first in-guest assertion.
+- **Guides**:
+  - [Driving a VM from Code](https://metacraft-labs.github.io/gosti/guides/driving-a-vm) — Using the library API, ephemeral per-job workflows, and serial boot assertions.
+  - [Supported Backends](https://metacraft-labs.github.io/gosti/guides/backends) — Host prerequisites, configuration, and caveats for each hypervisor.
+  - [Authoring Guest Recipes](https://metacraft-labs.github.io/gosti/guides/guest-recipes) — Reproducible baseline image creation for Linux and Windows.
+  - [Durable Media Instances](https://metacraft-labs.github.io/gosti/guides/durable-media) — Managing persistent Linux/libvirt VM lifecycles under logical names.
+- **Reference**:
+  - [CLI Reference](https://metacraft-labs.github.io/gosti/reference/cli-reference) — Complete flags and subcommand manual for `gosti`.
+  - [Parameters Catalog](https://metacraft-labs.github.io/gosti/reference/parameters) — Stable parameter contract for runner recipes and provider options.
 
-Shipped milestones:
+### Contributor Documentation
 
-- **M1 — Hyper-V + WSL backends** (`src/vm_harness/backends/hyperv.nim`,
-  `wsl.nim`). PowerShell Direct over VMBus for Hyper-V; `wsl --import` /
-  `wsl --exec` for WSL2.
-- **M1.5 — bootFromMedia + serial-stream primitives**. Transient VM
-  bring-up around a VHDX/ISO/rootfs tarball with serial-console
-  capture for boot-time assertions.
-- **M2 — Tart** (`src/vm_harness/backends/tart.nim`). macOS Apple
-  Silicon host, macOS and Linux-ARM guests.
-- **M3 — UTM** (`src/vm_harness/backends/utm.nim`, partial).
-  Windows-on-ARM guest via UTM on macOS; clone-based per-gate revert
-  through `utmctl clone`.
-- **M4 Phase A slice — libvirt / QEMU/KVM** (`src/vm_harness/backends/libvirt.nim`).
-  Linux host, x86_64 Windows or Linux guests via `virt-install` +
-  `virsh`. Targets the windows-runner-001 prototype on
-  `high-mem-server`. See `docs/m4-libvirt.md` for Phase B/C scope.
-- **M5 — Lima** (`src/vm_harness/backends/lima.nim`). macOS / Linux
-  host, Linux guest via `limactl`.
-- **Incus — Linux system containers** (`src/vm_harness/backends/incus.nim`).
-  Linux host, Linux guest via the `incus` CLI. Ephemeral per-job
-  containers: `incus launch <base> <name>` → `incus exec` probe →
-  `incus delete --force` (no residual container or storage volume).
-  Plain runners need no `/dev/kvm`; trusted controllers may opt into fixed
-  pre-start nesting and `/dev/kvm` attachment for nested-capability classes.
-  `provisionEphemeralClone` leaves a
-  cloud-init `user-data` injection seam (`incus config set <name>
-  cloud-init.user-data ...`) for the GARM JIT bootstrap. The base image
-  is pinned locally (`incus image copy images:debian/12 local: --alias
-  vmh-base`); the daemon is initialized declaratively via the host's
-  NixOS `virtualisation.incus` config (storage pool + `incusbr0` NAT),
-  and the runner/service user is in the `incus-admin` group for socket
-  access. In a session that pre-dates the group grant, export
-  `VMH_INCUS_CMD="sudo -n incus"`. Gate:
-  `tests/e2e/t_vmharness_incus_ephemeral_run.nim`; authenticated remote
-  capability path: `tests/e2e/t_vmharness_serve_roundtrip_incus.nim`.
+- Architecture and design references: [`docs/design.md`](docs/design.md)
+- Per-backend technical implementation notes: `docs/per-backend-notes/`
+- Agent onboarding and workspace workflows: [`AGENTS.md`](AGENTS.md)
 
-- **Remoting — `vm-harness serve`** (`src/vm_harness/serve/`). An
-  authenticated network front-end (protocol v1, HTTP/JSON) that exposes this
-  host's VM/container lifecycle to a remote controller over a NetBird
-  overlay: `vm-harness serve --listen <overlay-ip>:8873 --auth-token-file
-  <f>`. Any operational subcommand gains `--remote <host:port>` to drive a
-  remote host, and `ServeClient` is the matching library (used later by the
-  GARM provider). It is a thin front-end — every op runs the SAME local
-  vm-harness binary. See `docs/serve.md`. Gate:
-  `tests/e2e/t_vmharness_serve_roundtrip.nim`.
-
-Cross-cutting infrastructure that ships across all of the above:
-
-- The `VmBackend` concept and supporting types (`docs/design.md` §3.2).
-- A `NoopBackend` reference fixture for testing the harness scaffolding
-  without any real hypervisor — the only allowed mock per the test
-  methodology in `docs/design.md` §9.
-- The Tier-1 in-guest scripts (`guest-scripts/posix.sh`,
-  `guest-scripts/windows.ps1`) embedded into the library via
-  `staticRead` (design choice #1 in `docs/design.md` §12).
-- The standardized output envelope writer (`00-provision.log`,
-  `02-<cmd>-run.txt`, `RESULT.txt`, `DONE`).
-- The CLI dispatcher
-  (`vm-harness {provision,run,probe,shell,backends,snapshot,baseline}`)
-  with `--backend auto` selection per (host OS, guest OS); every
-  backend listed above has its `--backend <id>` selector wired
-  through the registry.
-- The `try/finally` orchestrator that guarantees `stopAndCleanup` runs
-  even on gate failure or SIGINT.
-- M30 snapshot/restore parity (Hyper-V, Lima, Tart, UTM) and M31 hot
-  snapshots + portable baseline export/import (Hyper-V; clone-based
-  parity on Tart/UTM).
-
-Outstanding:
-
-- **M4 Phase B** — libvirt snapshot/restore is **done** (campaign WR0:
-  `snapshot` / `snapshotRunning` / `restoreSnapshot` / `listSnapshots` /
-  `removeSnapshot`, as external `virsh` snapshots); still outstanding are
-  the argv-trace shim, the serial-stream primitives, and
-  `exportBaseline` / `importBaseline` (campaign WR3). Tracked in
-  `docs/m4-libvirt.md`.
-- **M4 Phase C** — libvirt GPU + SR-IOV + USB passthrough. Gated on
-  applicable runner hardware.
-
-## Layout
-
-```
-vm-harness/
-├── flake.nix                # dev shell + package output
-├── repro.nim               # pure reprobuild build/test graph
-├── vm_harness.nimble        # Nimble package metadata
-├── src/
-│   ├── vm_harness.nim       # top-level re-export module
-│   └── vm_harness/
-│       ├── types.nim
-│       ├── output.nim
-│       ├── auto.nim
-│       ├── cli.nim
-│       ├── orchestrator.nim
-│       ├── guest_scripts.nim
-│       └── backends/
-│           ├── noop.nim
-│           ├── process_helpers.nim   # shared PS / wsl.exe helpers (M1)
-│           ├── hyperv.nim            # M1
-│           ├── wsl.nim               # M1
-│           ├── tart.nim              # M2
-│           ├── utm.nim               # M3
-│           ├── libvirt.nim           # M4 Phase A (slice)
-│           └── lima.nim              # M5
-├── guest-scripts/
-│   ├── posix.sh
-│   └── windows.ps1
-├── guest-recipes/           # OS-bootstrap recipes
-│   ├── windows-arm-base/    # UTM Win11-on-ARM golden (M3)
-│   └── windows-x64-base/    # libvirt Win11-on-x64 baseline (M4 Phase A)
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── e2e/
-├── golden-outputs/          # M12 cross-language reference artifacts
-└── docs/
-    ├── design.md            # canonical architecture reference
-    ├── m4-libvirt.md        # M4 Phase A slice scope + Phase B/C plan
-    └── per-backend-notes/
-```
-
-## Building and testing
-
-The Nix development path is:
-
-```sh
-nix develop --command just build
-nix develop --command just test
-```
-
-The pure reprobuild path is an additive equivalent on Linux x64/ARM64,
-macOS ARM64, and Windows x64/ARM64:
-
-```sh
-repro build --tool-provisioning=path --daemon=off
-repro test --tool-provisioning=path --daemon=off
-```
-
-The checked-in `repro.nim` builds the CLI and models every deterministic test
-as typed build and execute edges. Tests requiring a live host hypervisor remain
-in the explicit `just test-host` catalog.
-Both runners read `scripts/test-catalog.txt` through the same parser. Add each
-new `tests/{unit,integration,e2e}/t_*.nim` there: an unregistered file, duplicate
-entry or missing source fails validation before execution. The `test` tier is
-the deterministic suite; `host` selects the existing live-host runner;
-`specialized` records gates requiring their documented guest or provider harness.
-Existing test-level platform guards remain in force. Linux's real TCG boot and
-TPM gates are included in both deterministic runners; Reprobuild realizes the
-TPM guest through the same pinned flake output as the native shell.
-On Linux, the CLI's runtime profile also carries pinned `virsh`, `virt-install`,
-and `qemu-img` tools so downstream Reprobuild run edges do not depend on the
-daemon's ambient `PATH`.
-
-## CLI reference
-
-```
-vm-harness provision --backend <id|auto> --guest <linux|windows|macos> \
-                     --baseline <name> [--source-image <ref>] \
-                     [--cpus N] [--memory-mb N] [--disk-gb N]
-
-vm-harness boot      --backend <id|auto> --source-image <file-or-dir> \
-                     [--kind <auto|iso|qcow2|vhdx>] \
-                     [--cpus N] [--memory-mb N] \
-                     [--acceleration <auto|kvm|tcg>] \
-                     [--graphics <none|vnc|spice>] \
-                     [--screenshot <png> --screenshot-delay-sec N] \
-                     [--ssh-ready-timeout-sec N] \
-                     (--keep | --expect <serial-regex>)
-
-vm-harness install   --backend <id|auto> --source-image <installer.iso> \
-                     --target-disk <blank-disk-path> --disk-gb N \
-                     --expect <serial-success-regex> [--timeout-sec N]
-
-vm-harness run       --backend <id|auto> --guest <linux|windows|macos> \
-                     --baseline <name> --output-dir <path> \
-                     [--env KEY=VAL ...] [--copy-to host:guest ...] \
-                     [--copy-from guest:host ...] \
-                     [--install-shim binary:logpath ...] \
-                     -- <command args>
-
-vm-harness probe     # JSON report of available backends.
-vm-harness backends  # Tabular listing.
-vm-harness shell     --backend <id|auto> --baseline <name>   # placeholder in M0
-```
-
-Focused test executions are named Reprobuild run edges. For example,
-`repro run test-t_libvirt_backend` builds and executes only the libvirt
-regression binary; `repro build test` runs the portable aggregate suite.
-
-`boot` uses Hyper-V on Windows and libvirt/QEMU on Linux. Hyper-V cannot
-attach QCOW2 directly, so the backend converts it to a transient dynamic VHDX
-with `qemu-img` and removes that conversion when a self-cleaning boot finishes.
-Passing an output directory selects its newest `.iso`, `.qcow2`, or `.vhdx`,
-which supports content-addressed recipe outputs without scripting a filename.
-With `--screenshot`, the harness waits for the required `--expect` marker,
-captures the graphical console, and removes the transient VM unless `--keep`
-is also set.
-
-`install` is the persistent-disk counterpart to `boot`. It creates a blank
-caller-owned QCOW2 disk on libvirt or VHDX disk on Hyper-V, boots the installer,
-requires both the serial success marker and a guest-initiated clean shutdown,
-then removes the transient VM while preserving the installed disk. Existing
-target paths are rejected. Use `--secondary-iso` when an installer needs a
-separate unattended seed; do not place per-instance secrets on reusable install
-media.
-
-For a named installed Linux VM that survives separate CLI invocations, use
-`boot --keep --name NAME --state-dir ROOT` with libvirt, then
-`instance start|ssh|exec|status|logs|stop|destroy|screenshot NAME --state-dir ROOT`.
-Default destroy preserves the writable disk, firmware, TPM and SSH identity;
-explicit UUID-checked `destroy --purge` permits replacement. See the
-[durable media contract](docs/user-guide/durable-media.md) for JSON fields,
-failure recovery, ownership and platform limits.
-
-### Generic CRUD (`vm-harness crud`)
-
-`vm-harness crud <verb> [<name>] … --backend <id>` is gosti's canonical public
-API for programs that drive VMs, such as the ah-vm `GostiOrchestrator`
-binding. The verbs are `create_vm`, `start_vm`, `stop_vm`, `delete_vm`,
-`get_vm`, `list_vms`, `exec`, `copy_to_vm`, `copy_from_vm`, `ssh_endpoint`,
-`snapshot`, `restore_snapshot` and `list_snapshots`. Each call prints one JSON
-envelope and returns a documented exit code
-([design doc §8.1](docs/design.md)). The same argv works remotely through
-`vm-harness serve`'s `POST /v1/exec`.
-
-VMs persist across invocations in a crud store (`--state-dir ROOT`, otherwise
-`$VMH_CRUD_STATE_DIR`, the service's `$STATE_DIRECTORY` or the user state dir).
-Their live state is re-derived from the hypervisor on every call
-([§8.6](docs/design.md)).
-
-For hermetic consumer tests, `--backend mock` is a deterministic,
-file-backed stand-in for a hypervisor. The `vm-harness-fixture` wrapper
-(`scripts/vm-harness-fixture.sh`, installed next to `vm-harness`) runs it
-against a per-test state dir:
-
-```sh
-export VMH_FIXTURE_STATE_DIR=$(mktemp -d)
-vm-harness-fixture create_vm vm1
-vm-harness-fixture exec vm1 -- echo hi     # exit_code 0, stdout "mock-exec: echo hi\n"
-VMH_MOCK_FAIL=exec vm-harness-fixture exec vm1 -- true   # exit 5 (backend-error)
-```
-
-`--backend auto` picks per the dispatch table (design doc §6):
-
-| Host                  | Guest    | Backend              |
-| --------------------- | -------- | -------------------- |
-| Windows               | Windows  | hyperv               |
-| Windows               | Linux    | wsl                  |
-| Linux                 | Linux    | libvirt              |
-| Linux                 | Windows  | libvirt              |
-| macOS (Apple Silicon) | macOS    | tart-macos           |
-| macOS (Apple Silicon) | Linux    | tart-linux-arm       |
-| macOS (Apple Silicon) | Windows  | utm-windows-arm      |
-
-## Per-gate reset performance contract
-
-Each backend implements `revertToBaseline` as the fastest reset its tech
-allows. Targets:
-
-| Backend      | Target reset | Mechanism                          |
-| ------------ | ------------ | ---------------------------------- |
-| Hyper-V      | ≤ 10s        | `Restore-VMCheckpoint`             |
-| libvirt/QEMU | ≤ 10s        | `virsh snapshot-revert --running`  |
-| UTM          | ≤ 20s        | `utmctl clone` from local bundle   |
-| Tart         | ≤ 30s        | `tart clone` from local OCI cache  |
-| WSL          | ≤ 20s        | `wsl --import` of cached rootfs    |
-| Lima         | ≤ 30s        | `limactl delete + create + start`  |
-
-Regressions of more than 50% over budget trigger
-`e2e_vm_harness_per_gate_revert_meets_m0_budget` (M12).
-
-## Three-tier ownership
-
-vm-harness ships **generic primitives only**. Consumers compose them:
-
-- **Tier 1 — this library**: VM lifecycle + generic in-guest scripts.
-- **Tier 2 — reprobuild**: gate orchestration, argv-shim installations
-  for tool-specific commands (`useradd`, `dscl`, `launchctl`, ...).
-- **Tier 3 — Agent Harbor**: mutagen source sync, cargo test isolation,
-  JUnit XML extraction.
-
-vm-harness never imports Tier 2 or Tier 3 code.
+---
 
 ## License
 
-Apache-2.0 — see `LICENSE` and `NOTICE`. gosti was relicensed from MIT to
-Apache-2.0 by its copyright holder on 2026-09-21.
-
-Every source file carries an SPDX header; files that cannot (prose, data,
-binary assets) are covered by `REUSE.toml`. The documentation site bundles a
-few third-party assets under their own licenses (Geist font — OFL-1.1;
-Material Symbols icons — Apache-2.0; Font Awesome GitHub icon — CC-BY-4.0);
-their texts are in `LICENSES/`. `just lint` runs `reuse lint`, so a new
-source file without a header fails the lint gate.
+Apache-2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
