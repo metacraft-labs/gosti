@@ -1,6 +1,6 @@
 # Gosti
 
-> Cross-platform VM lifecycle orchestration library and CLI (formerly `vm-harness`). One abstraction over Tart, UTM, Hyper-V, WSL, libvirt/QEMU, and Lima — so test code and automation drive any of them through the same primitives.
+> Cross-platform VM lifecycle orchestration library and CLI. One abstraction over Tart, UTM, Hyper-V, WSL, libvirt/QEMU, and Lima — so test code and automation drive any of them through the same primitives.
 
 📖 **Documentation: <https://metacraft-labs.github.io/gosti/>** — complete user guide (getting started, driving a VM, backends, guest recipes) and CLI reference.
 

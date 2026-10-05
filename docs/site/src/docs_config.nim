@@ -14,7 +14,7 @@ import core/config
 proc vmhDocsConfig*(): DocsConfig =
   DocsConfig(
     siteTitle: "Gosti docs",
-    siteDescription: "Documentation for Gosti (formerly vm-harness) -- a general-purpose, " &
+    siteDescription: "Documentation for Gosti -- a general-purpose, " &
       "cross-platform VM lifecycle orchestration toolkit (library + CLI).",
     defaultRoute: "/",
     stylesheetHref: "/assets/style.css",
