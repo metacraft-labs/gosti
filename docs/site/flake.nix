@@ -18,7 +18,7 @@
 
     # The static-site framework this site consumes. Its isonim follows ours so
     # there is exactly one isonim in the closure.
-    isonim-docs.url = "github:metacraft-labs/isonim-docs/main";
+    isonim-docs.url = "github:metacraft-labs/isonim-docs/dev";
     isonim-docs.inputs.isonim.follows = "isonim";
 
     # Shared Nim libraries the framework/isonim source depends on. Consumed as
