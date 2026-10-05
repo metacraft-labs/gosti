@@ -1,41 +1,69 @@
-# vm-harness
+# Gosti
 
-Cross-platform VM lifecycle orchestration for test harnesses and dev
-workflows. One abstraction over Tart, UTM, Hyper-V, WSL, libvirt/QEMU,
-and Lima — so test code drives any of them through the same primitives.
+> Cross-platform VM lifecycle orchestration library and CLI (formerly `vm-harness`). One abstraction over Tart, UTM, Hyper-V, WSL, libvirt/QEMU, and Lima — so test code and automation drive any of them through the same primitives.
 
-📖 **Documentation: <https://metacraft-labs.github.io/vm-harness/>** — the
-user guide (overview, getting started, driving a VM, backends, guest recipes)
-plus the CLI and parameters reference.
+📖 **Documentation: <https://metacraft-labs.github.io/gosti/>** — complete user guide (getting started, driving a VM, backends, guest recipes) and CLI reference.
 
-This repository is the **canonical Nim implementation**; a nearly-identical
-Rust port lives at `agent-harbor/main/crates/ah-vm/` (M17). The two ports
-implement the same backend trait and the same CLI surface, and are held in
-step by the cross-language reference artifacts under `golden-outputs/`. The
-design both of them follow is [`docs/design.md`](docs/design.md).
+This repository is the **canonical Nim implementation**; a Rust port lives at `agent-harbor/main/crates/ah-vm/`. Both implement the same backend trait and CLI surface.
 
-> **Need to boot / provision / drive / record a guest OS (Linux, macOS, or
-> Windows incl. Windows-on-ARM)? Use this — don't hand-roll
-> `qemu`/`swtpm`/`tart`/`limactl`/`autounattend.xml`.** The backends below cover
-> the lifecycle; the one-time "how to build a golden guest" scripts live in
-> **`guest-recipes/`** (e.g. `guest-recipes/windows-arm-base/` is the maintained
-> Win11-on-ARM golden — official ISO + autounattend + OpenSSH + VirtIO, built via
-> **UTM** because raw `qemu` can't cleanly hand the Win11-ARM installer off to
-> WinPE). Consumers add only their task-specific logic on top (see "Three-tier
-> ownership").
+## Installation
+
+### Quick install
+
+Install the latest release using the official Metacraft Labs bootstrapper:
+
+- **POSIX Shell (Linux, macOS, WSL)**:
+  ```bash
+  curl -fsSL https://install-package.metacraft-labs.com/gosti/sh | sh
+  ```
+- **PowerShell (Windows)**:
+  ```powershell
+  irm https://install-package.metacraft-labs.com/gosti/pwsh | iex
+  ```
+
+### Package managers
+
+Gosti is published across official Metacraft package repositories:
+
+- **Debian / Ubuntu**:
+  ```bash
+  sudo apt-get install -y metacraft-gosti
+  ```
+  *(Requires `deb.metacraft-labs.com` repository keyring; see [docs](https://metacraft-labs.github.io/gosti/))*
+- **Fedora / RHEL / openSUSE**:
+  ```bash
+  sudo dnf install -y metacraft-gosti
+  ```
+  *(Requires `rpm.metacraft-labs.com` repository)*
+- **macOS (Homebrew)**:
+  ```bash
+  brew tap metacraft-labs/metacraft
+  brew install gosti
+  ```
+- **Windows (Scoop)**:
+  ```powershell
+  scoop bucket add metacraft https://github.com/metacraft-labs/metacraft-desktop-packages
+  scoop install gosti
+  ```
+- **Nix**:
+  ```bash
+  nix profile install github:metacraft-labs/nixpkgs#gosti
+  ```
+
+Direct binary archives and release checksums are available on [GitHub Releases](https://github.com/metacraft-labs/gosti/releases).
 
 ## Documentation
 
-- **User guide** (`docs/user-guide/`) — task-oriented docs for *using*
-  vm-harness: [getting started](docs/user-guide/getting-started.md),
-  [driving a VM from code](docs/user-guide/driving-a-vm.md),
-  [backends](docs/user-guide/backends.md),
-  [guest recipes](docs/user-guide/guest-recipes.md), the
-  [CLI reference](docs/user-guide/cli-reference.md), and the
-  [parameters catalog](docs/user-guide/parameters.md) (the stable consumer
-  contract).
-- **Design reference** (`docs/design.md`) — internal architecture; see also the
-  per-backend notes under `docs/per-backend-notes/`.
+- **[User Guide](https://metacraft-labs.github.io/gosti/)** (source in `docs/site/` and `docs/user-guide/`):
+  - [Getting Started](https://metacraft-labs.github.io/gosti/getting_started/getting-started)
+  - [Driving a VM from Code](https://metacraft-labs.github.io/gosti/guides/driving-a-vm)
+  - [Supported Backends](https://metacraft-labs.github.io/gosti/guides/backends)
+  - [Golden Guest OS Recipes](https://metacraft-labs.github.io/gosti/guides/guest-recipes)
+  - [CLI Reference](https://metacraft-labs.github.io/gosti/reference/cli-reference)
+- **Contributor Guides**:
+  - [`docs/design.md`](docs/design.md) — internal architecture and execution model.
+  - `docs/per-backend-notes/` — backend-specific implementation notes.
+- **Developer Instructions**: See [`AGENTS.md`](AGENTS.md).
 
 ## Status
 
