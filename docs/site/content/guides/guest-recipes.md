@@ -115,7 +115,7 @@ capability enabled:
 | Bake env var | What it adds to the image | Provider option that enables it at run time |
 | --- | --- | --- |
 | `VMH_RUNNER_DOCKER=1` | docker/moby + fuse-overlayfs + a `docker.service`/`socket` (unprivileged, fuse-overlayfs storage driver) | `incusSecurityNesting = true` (`security.nesting` + mknod/setxattr intercepts) |
-| `VMH_RUNNER_KVM=1` | `qemu-system-x86` + a guest kernel | `incusNestedKvm = true` (`/dev/kvm` device + `security.nesting`) |
+| `VMH_RUNNER_KVM=1` | `qemu-system-x86` + a guest kernel + a udev rule keeping `/dev/kvm` at `0666` (so a Nix build sandbox user can open it) | `incusNestedKvm = true` (`/dev/kvm` device + `security.nesting`) |
 
 Baking the capability into the image and enabling the provider option are two
 halves of the same feature — the image ships the userspace, the provider grants
