@@ -1738,14 +1738,71 @@ proc buildDetachedBootstrapCommand*(guest: GuestOs, guestPath: string): seq[stri
                         guestPath) &
       "}).ReturnValue -ne 0) { exit 1 }; exit 0"]
   else:
-    # `nohup … &` detaches from the SSH session's controlling terminal and
-    # survives its hangup. Redirect all three streams: a child still holding
-    # the session's stdout keeps the SSH channel open, and `execInGuest` would
-    # then block for the runner's entire life — which is precisely the
-    # foreground behaviour this path exists to avoid.
+    # `nohup … &` detaches from the SSH session and survives its hangup. All
+    # three streams of the BACKGROUNDED process must be redirected: anything
+    # still holding the session's stdout keeps the SSH channel open, and
+    # `execInGuest` then blocks for the runner's entire life.
+    #
+    # The `&` must apply to a SIMPLE command, never to a list. The previous
+    # form was `chmod +x P && nohup P >/dev/null … & echo started`, and `&`
+    # binds looser than `&&`, so what went to the background was the SUBSHELL
+    # `(chmod && nohup P …)`. The redirections belonged to the inner `nohup`
+    # only; the subshell itself kept the SSH session's stdout open and waited
+    # for the bootstrap. dash happens to exec the last command of such a
+    # subshell (so Ubuntu tart-linux-arm guests escaped), but bash — macOS's
+    # `/bin/sh` — forks it, so on every tart-macos guest the launch SSH never
+    # returned. At the exec timeout (600s) `timeout` killed it, the launch was
+    # reported as failed, and the error path DESTROYED the guest under a
+    # runner that had long since registered and taken a job: every macOS job
+    # longer than ~10 minutes died with "lost communication with the server".
+    #
+    # The bootstrap's own output goes to `<path>.log` and its exit status to
+    # `<path>.exit` (written by a wrapper shell, since the bootstrap is not
+    # our child once we return), so `buildBootstrapStatusCommand` can check
+    # readiness in a SEPARATE, short session.
+    let q = quoteShellPosix(guestPath)
+    let logQ = quoteShellPosix(guestPath & ".log")
+    let exitQ = quoteShellPosix(guestPath & ".exit")
+    let pidQ = quoteShellPosix(guestPath & ".pid")
+    let wrapper = q & "; echo $? > " & exitQ
     @["/bin/sh", "-c",
-      "chmod +x " & guestPath & " && nohup " & guestPath &
-      " >/dev/null 2>&1 </dev/null & echo started"]
+      "chmod +x " & q & " || exit 1; rm -f " & exitQ & " " & pidQ & "; " &
+      "nohup /bin/sh -c " & quoteShellPosix(wrapper) &
+      " </dev/null >" & logQ & " 2>&1 & " &
+      "echo $! > " & pidQ & "; echo started"]
+
+const BootstrapRunning* = "bootstrap: running"
+const BootstrapExitedOk* = "bootstrap: exited 0"
+const BootstrapFailedPrefix* = "bootstrap: exited "
+
+proc buildBootstrapStatusCommand*(guestPath: string): seq[string] =
+  ## Readiness probe for a bootstrap started by `buildDetachedBootstrapCommand`
+  ## (unix guests). Runs in its own short SSH session, so the launch itself
+  ## never has to wait on the bootstrap. Prints exactly one of
+  ## `BootstrapRunning`, `BootstrapExitedOk`, or `BootstrapFailedPrefix<code>`
+  ## followed by the tail of the bootstrap log; exits non-zero only for a
+  ## bootstrap that already failed or never started.
+  let logQ = quoteShellPosix(guestPath & ".log")
+  let exitQ = quoteShellPosix(guestPath & ".exit")
+  let pidQ = quoteShellPosix(guestPath & ".pid")
+  @["/bin/sh", "-c",
+    "if [ -s " & exitQ & " ]; then c=$(cat " & exitQ & "); " &
+    "if [ \"$c\" = 0 ]; then echo '" & BootstrapExitedOk & "'; exit 0; fi; " &
+    "echo \"" & BootstrapFailedPrefix & "$c\"; tail -n 20 " & logQ &
+    " 2>/dev/null; exit 1; fi; " &
+    "p=$(cat " & pidQ & " 2>/dev/null); " &
+    "if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then echo '" &
+    BootstrapRunning & "'; exit 0; fi; " &
+    # Lost the race between the wrapper exiting and the status file landing.
+    "sleep 1; if [ -s " & exitQ & " ] && [ \"$(cat " & exitQ & ")\" = 0 ]; " &
+    "then echo '" & BootstrapExitedOk & "'; exit 0; fi; " &
+    "echo 'bootstrap: not running'; tail -n 20 " & logQ & " 2>/dev/null; exit 1"]
+
+const BootstrapLaunchTimeoutSec* = 120
+  ## The launch returns as soon as the bootstrap is backgrounded, so it needs
+  ## seconds, not the ready-timeout. Bounding it separately means a launch
+  ## that DOES hang fails fast at provision time, before any runner exists,
+  ## instead of ten minutes later under a running job.
 
 proc cmdRunEphemeralVmRun(opts: CliOpts): int =
   ## Per-job ephemeral instance for the vm-harness-run backends (tart-macos,
@@ -1827,11 +1884,26 @@ proc cmdRunEphemeralVmRun(opts: CliOpts): int =
         discard
       let launch = buildDetachedBootstrapCommand(guest, guestPath)
       let r = backend.execInGuest(vm, initTable[string, string](), launch,
-                                  timeoutSec = readyTimeout)
+                                  timeoutSec = min(readyTimeout,
+                                                   BootstrapLaunchTimeoutSec))
       if r.exitCode != 0:
         raise newVmHarnessError($id, lpExec,
           "ephemeral bootstrap did not start in the guest (exit " &
-          $r.exitCode & "): " & r.stderr.strip())
+          $r.exitCode & "): " & (r.stdout & r.stderr).strip())
+      if guest != goWindows:
+        # Readiness, checked separately from the launch: the bootstrap must
+        # still be running, or have finished successfully. Give a bootstrap
+        # that dies on its first line a moment to do so, so the failure
+        # surfaces here (and the guest is reclaimed) rather than as a runner
+        # that never registers.
+        sleep(2000)
+        let st = backend.execInGuest(vm, initTable[string, string](),
+                                     buildBootstrapStatusCommand(guestPath),
+                                     timeoutSec = 60)
+        if st.exitCode != 0:
+          raise newVmHarnessError($id, lpExec,
+            "ephemeral bootstrap is not running in the guest (exit " &
+            $st.exitCode & "): " & (st.stdout & st.stderr).strip())
       logEvent(opts.logFormat, "info", "ephemeral vm: bootstrap launched",
                {"name": vm.name, "guest_path": guestPath})
   except CatchableError:

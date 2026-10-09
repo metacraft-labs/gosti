@@ -22,7 +22,8 @@
 ## instance reclaimable. A test that only asserted "tart is in the dispatch
 ## set" would pass against a stub; these drive the real code paths.
 
-import std/[json, options, os, strutils, tables, tempfiles, unittest]
+import std/[options, os, osproc, streams, strutils, tables, tempfiles, times,
+            unittest]
 import vm_harness/cli
 import vm_harness/types
 import vm_harness/ephemeral_handle
@@ -205,7 +206,104 @@ suite "the detached bootstrap must outlive its SSH session":
       # Holding the session's stdout keeps the SSH channel open, so execInGuest
       # would block for the runner's whole life — the exact foreground
       # behaviour the ephemeral path exists to avoid.
-      check ">/dev/null" in joined
-      check "2>&1" in joined
+      # stdout goes to the bootstrap's log, not the session.
+      check ">/tmp/garm-bootstrap.sh.log 2>&1" in joined
       check "</dev/null" in joined
       check "chmod +x" in joined
+
+# ---------------------------------------------------------------------------
+# Behavioural: actually RUN the launch command under each shell a guest may
+# have as /bin/sh, with stdout on a pipe exactly like the SSH channel, and
+# require the pipe to reach EOF while the bootstrap is still running.
+#
+# THE DEFECT THIS PINS. The launch used to be
+# `chmod +x P && nohup P >/dev/null … & echo started`; `&` binds looser than
+# `&&`, so the backgrounded job was the SUBSHELL, which kept the session's
+# stdout open until the bootstrap exited. bash (macOS's /bin/sh) forks that
+# subshell's last command instead of exec'ing it, so on tart-macos guests the
+# launch SSH never returned; the 600s exec timeout killed it, the launch was
+# reported failed, and the error path destroyed the guest under a runner
+# already running a job ("lost communication with the server" at ~10-15 min).
+# The string-shape assertions above all passed against that code; this test
+# fails on it under bash.
+#
+# No mocks: real shells, real pipes, real background processes.
+
+proc shellsUnderTest(): seq[string] =
+  for name in ["bash", "dash", "zsh", "sh"]:
+    let exe = findExe(name)
+    if exe.len > 0: result.add(exe)
+
+proc runAsSession(shell: string, argv: seq[string]): (string, float) =
+  ## Run `argv` (whose argv[0] is /bin/sh) under `shell`, reading stdout to
+  ## EOF the way an SSH client waits on its channel. Returns output + seconds.
+  let start = epochTime()
+  var p = startProcess(shell, args = argv[1 .. ^1],
+                       options = {poStdErrToStdOut})
+  let output = p.outputStream.readAll()
+  discard p.waitForExit()
+  p.close()
+  (output, epochTime() - start)
+
+proc killBootstrap(path: string) =
+  let pidFile = path & ".pid"
+  if fileExists(pidFile):
+    let pid = readFile(pidFile).strip()
+    if pid.len > 0:
+      discard execCmd("pkill -P " & pid & " >/dev/null 2>&1; kill " & pid &
+                      " >/dev/null 2>&1")
+
+suite "the detached bootstrap launch returns while the bootstrap runs":
+
+  test "the session's stdout reaches EOF immediately under every shell":
+    let shells = shellsUnderTest()
+    check shells.len > 0
+    for shell in shells:
+      let dir = createTempDir("vmh-detach-", "-test")
+      let path = dir / "garm-bootstrap.sh"
+      writeFile(path, "#!/bin/sh\necho bootstrapping\nsleep 20\n")
+      let (output, secs) = runAsSession(shell,
+        buildDetachedBootstrapCommand(goMacos, path))
+      checkpoint shell & " took " & $secs & "s: " & output
+      check "started" in output
+      # Old code: ~20s under bash (the bootstrap's whole life).
+      check secs < 5.0
+      # Still running after the session ended, and the probe says so.
+      let (st, _) = runAsSession(shell, buildBootstrapStatusCommand(path))
+      check BootstrapRunning in st
+      killBootstrap(path)
+      removeDir(dir)
+
+  test "the status probe reports a finished bootstrap's exit code":
+    for (body, wantOk) in [("exit 0", true), ("echo boom; exit 3", false)]:
+      let dir = createTempDir("vmh-detach-", "-test")
+      let path = dir / "garm-bootstrap.sh"
+      writeFile(path, "#!/bin/sh\n" & body & "\n")
+      discard runAsSession("/bin/sh",
+        buildDetachedBootstrapCommand(goLinux, path))
+      sleep(1500)
+      var p = startProcess("/bin/sh",
+        args = buildBootstrapStatusCommand(path)[1 .. ^1],
+        options = {poStdErrToStdOut})
+      let output = p.outputStream.readAll()
+      let code = p.waitForExit()
+      p.close()
+      checkpoint body & " -> " & output
+      if wantOk:
+        check code == 0
+        check BootstrapExitedOk in output
+      else:
+        check code != 0
+        check (BootstrapFailedPrefix & "3") in output
+        check "boom" in output   # the log tail travels with the failure
+      removeDir(dir)
+
+  test "a bootstrap that never started is not reported ready":
+    let dir = createTempDir("vmh-detach-", "-test")
+    var p = startProcess("/bin/sh",
+      args = buildBootstrapStatusCommand(dir / "garm-bootstrap.sh")[1 .. ^1],
+      options = {poStdErrToStdOut})
+    discard p.outputStream.readAll()
+    check p.waitForExit() != 0
+    p.close()
+    removeDir(dir)
