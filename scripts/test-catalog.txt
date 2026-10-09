@@ -27,6 +27,10 @@ test all tests/unit/t_crud_surface_growth.nim
 # each real backend's instancePresence decision ("gone" only on a successful
 # answer). Hermetic (temp dir + pure functions).
 test all tests/unit/t_crud_store.nim
+# GOSTI1b step 3: GOSTI_* read first, VMH_* / VM_HARNESS_* as fallback (new
+# wins), and gosti/ state dirs preferred over an existing vm-harness/ one.
+# Hermetic (process env + temp dirs).
+test all tests/unit/t_gosti_env_names.nim
 # ... and end to end: every verb as a SEPARATE CLI process against the
 # file-backed mock — lifecycle, vanished-instance reconciliation, fault
 # injection, lock-busy, store isolation, noop persistence, and the

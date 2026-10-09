@@ -20,6 +20,7 @@
 ##     are gated on four independent guards, each of which alone spares a
 ##     live VM — see that proc's doc comment.
 
+import ./env_names
 import std/[options, os, sets, strutils, times]
 import ./backends/qemu_windows_arm
 import ./backends/tart
@@ -150,7 +151,7 @@ proc pruneTartClones(scope: PruneScope, ageSec: int, rep: var PruneReport) =
     # A tart clone reap has no state dir to bound it; without a prefix it
     # would match every VM on the host, so we refuse to run unscoped.
     return
-  let tb = newTartBackend(tartCmd = getEnv("VMH_TART_CMD", "tart"))
+  let tb = newTartBackend(tartCmd = gostiEnv("VMH_TART_CMD", "tart"))
   var rowsOpt: Option[seq[TartVmListing]]
   try: rowsOpt = tb.tryListTartVmsDetailed()
   except CatchableError: return
@@ -250,7 +251,7 @@ proc pruneTartVmDirs(scope: PruneScope, ageSec: int, rep: var PruneReport) =
   # Source of truth #1, and it must be READABLE. `listTartVms` returns an
   # empty seq both for "no VMs" and for "tart is missing / failed", and the
   # two mean opposite things here.
-  let tb = newTartBackend(tartCmd = getEnv("VMH_TART_CMD", "tart"))
+  let tb = newTartBackend(tartCmd = gostiEnv("VMH_TART_CMD", "tart"))
   var listedOpt: Option[seq[string]]
   try:
     listedOpt = tb.tryListTartVms()

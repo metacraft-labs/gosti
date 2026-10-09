@@ -23,6 +23,7 @@
 ## booting UEFI with someone else's NVRAM template is how a gate ends up
 ## asserting against firmware it did not intend to test.
 
+import ./env_names
 import std/[algorithm, os, sequtils, strutils]
 
 type
@@ -74,8 +75,8 @@ proc resolveOvmfPair*(explicitLoader = "", explicitNvram = ""): OvmfPair =
   if acceptOvmfPair(explicitLoader, explicitNvram):
     return (explicitLoader, explicitNvram)
 
-  let envLoader = getEnv(OvmfLoaderEnvVar)
-  let envNvram = getEnv(OvmfNvramEnvVar)
+  let envLoader = gostiEnv(OvmfLoaderEnvVar)
+  let envNvram = gostiEnv(OvmfNvramEnvVar)
   if acceptOvmfPair(envLoader, envNvram):
     return (envLoader, envNvram)
 

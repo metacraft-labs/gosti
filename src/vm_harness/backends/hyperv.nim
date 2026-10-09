@@ -38,6 +38,7 @@
 # It sat under the `when defined(windows)` guard below, so every macOS/Linux
 # build failed with "undeclared identifier: 'base64'" — including the package
 # build, which is how gosti `dev` came to be red.
+import ../env_names
 import std/[base64, os, osproc, streams, strformat, strtabs,
             strutils, tables, times]
 when defined(windows):
@@ -1168,7 +1169,7 @@ proc ephemeralVmNamePrefix*(): string =
   ## hardcoded. libvirt/incus enforce no such prefix at all; tart/lima/utm
   ## already take it as a parameter — this brings hyperv in line. Defaults to
   ## `EphemeralVmNamePrefix` so nothing changes unless the env is set.
-  getEnv("VMH_HYPERV_EPH_PREFIX", EphemeralVmNamePrefix)
+  gostiEnv("VMH_HYPERV_EPH_PREFIX", EphemeralVmNamePrefix)
 
 type
   HyperVEphemeralCloneSpec* = object
@@ -1824,7 +1825,7 @@ proc runEphemeralHyperVJob*(b: HyperVBackend, spec: HyperVEphemeralCloneSpec,
           var bootstrap = spec.userData
           let (found, target) = findGuestMetadataTarget(bootstrap)
           if found and spec.switchName.len > 0 and
-             getEnv("VMH_HYPERV_METADATA_PROXY") != "0":
+             gostiEnv("VMH_HYPERV_METADATA_PROXY") != "0":
             let proxyIp = b.ensureGuestMetadataProxy(spec.switchName, target)
             bootstrap = rewriteGuestMetadataHost(bootstrap, target, proxyIp)
           b.launchGuestRunnerBootstrap(vm, bootstrap)

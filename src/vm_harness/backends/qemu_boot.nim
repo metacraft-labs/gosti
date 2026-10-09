@@ -74,6 +74,7 @@
 ## ``-append``). That is what makes a guest that reaches userspace in
 ## about a second — and therefore an unconditional vTPM gate — possible.
 
+import ../env_names
 import std/[hashes, options, os, osproc, streams, strutils, tables, times]
 
 when defined(posix):
@@ -1061,8 +1062,8 @@ proc sweepStaleQemuBootProcesses*(b: QemuBootBackend): seq[string] =
 registerBackend(biQemuBoot,
   proc(): VmBackend =
     newQemuBootBackend(
-      qemuCmd = getEnv("VMH_QEMU_BOOT_QEMU_CMD", "qemu-system-x86_64"),
-      qemuImgCmd = getEnv("VMH_QEMU_BOOT_QEMU_IMG_CMD", "qemu-img"),
-      swtpmCmd = getEnv("VMH_QEMU_BOOT_SWTPM_CMD", "swtpm"),
-      stateDir = getEnv("VM_HARNESS_QEMU_BOOT_STATE_DIR", ""),
-      namePrefix = getEnv("VMH_QEMU_BOOT_NAME_PREFIX", QemuBootNamePrefix)))
+      qemuCmd = gostiEnv("VMH_QEMU_BOOT_QEMU_CMD", "qemu-system-x86_64"),
+      qemuImgCmd = gostiEnv("VMH_QEMU_BOOT_QEMU_IMG_CMD", "qemu-img"),
+      swtpmCmd = gostiEnv("VMH_QEMU_BOOT_SWTPM_CMD", "swtpm"),
+      stateDir = gostiEnv("VM_HARNESS_QEMU_BOOT_STATE_DIR", ""),
+      namePrefix = gostiEnv("VMH_QEMU_BOOT_NAME_PREFIX", QemuBootNamePrefix)))

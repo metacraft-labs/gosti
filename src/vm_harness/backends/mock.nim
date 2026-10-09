@@ -62,6 +62,7 @@
 ##   together with its fault injection (``VMH_MOCK_FAIL`` /
 ##   ``VMH_MOCK_UNAVAILABLE``).
 
+import ../env_names
 import std/[algorithm, json, options, os, strutils, tables]
 import ../types
 
@@ -273,10 +274,10 @@ const
   MockUnavailableEnv* = "VMH_MOCK_UNAVAILABLE"
 
 proc mockUnavailable*(): bool =
-  getEnv(MockUnavailableEnv).len > 0 and getEnv(MockUnavailableEnv) != "0"
+  gostiEnv(MockUnavailableEnv).len > 0 and gostiEnv(MockUnavailableEnv) != "0"
 
 proc injectFault(b: MockBackend, op: string, phase: LifecyclePhase) =
-  let spec = getEnv(MockFailEnv)
+  let spec = gostiEnv(MockFailEnv)
   if spec.len == 0: return
   for want in spec.split(','):
     if want.strip() == op:

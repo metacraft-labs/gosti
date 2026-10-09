@@ -16,6 +16,7 @@
 ## CLI falls back to NoopBackend if ``--allow-noop-fallback`` is set
 ## (used by the M0 selection test on hosts without real hypervisors).
 
+import ./env_names
 import std/[json, options, os, osproc, sequtils, strformat, strutils, tables,
             terminal, times]
 import ./types, ./output, ./auto, ./orchestrator, ./detached_bootstrap
@@ -600,7 +601,7 @@ proc resolveRecipeDir*(recipeId: string): string =
     raise newException(ValueError,
       &"--recipe expects a bare id (e.g. 'windows-x64-base'), got '{recipeId}'")
   var candidates: seq[string] = @[]
-  let envOverride = getEnv("VMH_RECIPES_DIR")
+  let envOverride = gostiEnv("VMH_RECIPES_DIR")
   if envOverride.len > 0:
     candidates.add(envOverride / recipeId)
   candidates.add(getCurrentDir() / "guest-recipes" / recipeId)
@@ -1607,7 +1608,7 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
     raise newException(ValueError,
       "run --ephemeral --backend hyperv: golden VHDX is required " &
       "(pass --golden-image, or --source-image/--base-image)")
-  let credCache = getEnv("VMH_HYPERV_CRED_CACHE")
+  let credCache = gostiEnv("VMH_HYPERV_CRED_CACHE")
   let hb = HyperVBackend(newBackend(biHyperv))
   if credCache.len > 0:
     hb.credentialCachePath = credCache
@@ -1624,14 +1625,14 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
   let spec = HyperVEphemeralCloneSpec(
     name: opts.baseline,
     goldenVhdx: golden,
-    useDifferencing: getEnv("VMH_HYPERV_FULL_COPY") == "",
+    useDifferencing: gostiEnv("VMH_HYPERV_FULL_COPY") == "",
     cpus: opts.cpus,
     memoryMB: opts.memoryMB,
     generation: 2,
     secureBootEnabled: true,
     tpmEnabled: true,
-    switchName: getEnv("VMH_HYPERV_SWITCH"),
-    configDriveIso: getEnv("VMH_HYPERV_CONFIG_DRIVE"),
+    switchName: gostiEnv("VMH_HYPERV_SWITCH"),
+    configDriveIso: gostiEnv("VMH_HYPERV_CONFIG_DRIVE"),
     userData: userData,
     diskGB: effectiveDiskGB(opts),
     diskGBDefaulted: opts.diskGB <= 0)
@@ -2704,7 +2705,7 @@ proc resolveAuthToken(authToken, authTokenFile: string): string =
       raise newException(ValueError,
         "--auth-token-file '" & authTokenFile & "': file not found")
     return readFile(authTokenFile).strip()
-  getEnv("VMH_SERVE_TOKEN").strip()
+  gostiEnv("VMH_SERVE_TOKEN").strip()
 
 proc cmdServe(opts: CliOpts): int =
   ## Run the remoting daemon. Binds an authenticated HTTP/JSON endpoint and
