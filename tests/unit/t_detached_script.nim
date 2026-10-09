@@ -20,9 +20,38 @@
 ## host tier's job; what is checkable here — and what this change decides — is
 ## how the follower treats such a failure.
 
-import std/[os, osproc, strutils, tables, tempfiles, unittest]
+import std/[os, osproc, posix, strutils, tables, tempfiles, unittest]
 import vm_harness/types
 import vm_harness/detached_bootstrap
+
+proc runCleanSession(cmd: seq[string]): (string, int) =
+  ## Run argv with only stdio inherited, as sshd starts a session. Not
+  ## `execCmdEx`: on macOS osproc's capture-pipe ends are inheritable, so a
+  ## backgrounded child would hold the pipe and the launch would appear to
+  ## block for the script's whole life.
+  var fds: array[2, cint]
+  doAssert posix.pipe(fds) == 0
+  let pid = posix.fork()
+  if pid == 0:
+    discard posix.dup2(fds[1], 1)
+    discard posix.dup2(fds[1], 2)
+    discard posix.dup2(posix.open("/dev/null", O_RDONLY), 0)
+    for fd in 3.cint .. 1023.cint:
+      discard posix.close(fd)
+    var cargs = allocCStringArray(cmd)
+    discard posix.execv(cmd[0].cstring, cargs)
+    posix.exitnow(127)
+  discard posix.close(fds[1])
+  var output = ""
+  var buf: array[4096, char]
+  while true:
+    let n = posix.read(fds[0], addr buf[0], buf.len)
+    if n <= 0: break
+    for i in 0 ..< n: output.add(buf[i])
+  discard posix.close(fds[0])
+  var status: cint
+  discard posix.waitpid(pid, status, 0)
+  (output, int(WEXITSTATUS(status)))
 
 type LocalShellBackend = ref object of VmBackend
   outageProbes: int
@@ -37,7 +66,7 @@ method execInGuest*(b: LocalShellBackend, vm: VmHandle,
     if b.outageProbes > 0:
       dec b.outageProbes
       return ExecResult(exitCode: 255, stdout: "", stderr: "")
-  let (output, code) = execCmdEx(quoteShellCommand(cmd))
+  let (output, code) = runCleanSession(cmd)
   ExecResult(exitCode: code, stdout: output, stderr: "")
 
 proc scriptWith(body: string): (string, string) =
