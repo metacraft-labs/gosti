@@ -22,8 +22,8 @@
 ## instance reclaimable. A test that only asserted "tart is in the dispatch
 ## set" would pass against a stub; these drive the real code paths.
 
-import std/[options, os, osproc, streams, strutils, tables, tempfiles, times,
-            unittest]
+import std/[options, os, osproc, posix, streams, strutils, tables, tempfiles,
+            times, unittest]
 import vm_harness/cli
 import vm_harness/types
 import vm_harness/ephemeral_handle
@@ -235,14 +235,39 @@ proc shellsUnderTest(): seq[string] =
     if exe.len > 0: result.add(exe)
 
 proc runAsSession(shell: string, argv: seq[string]): (string, float) =
-  ## Run `argv` (whose argv[0] is /bin/sh) under `shell`, reading stdout to
-  ## EOF the way an SSH client waits on its channel. Returns output + seconds.
+  ## Run `argv` (whose argv[0] is /bin/sh) under `shell` with stdout+stderr on
+  ## a pipe and NO other inherited descriptor — exactly what sshd hands a
+  ## session — and read to EOF the way an SSH client waits on its channel.
+  ## Returns output + seconds.
+  ##
+  ## Not `startProcess`: on macOS osproc leaves its own pipe ends inheritable
+  ## (the close-on-exec patch in config.nims is Linux-only), so the backgrounded
+  ## bootstrap would inherit a write end of the capture pipe through an fd the
+  ## command never sees, and the test would measure osproc, not the command.
   let start = epochTime()
-  var p = startProcess(shell, args = argv[1 .. ^1],
-                       options = {poStdErrToStdOut})
-  let output = p.outputStream.readAll()
-  discard p.waitForExit()
-  p.close()
+  var fds: array[2, cint]
+  doAssert posix.pipe(fds) == 0
+  let pid = posix.fork()
+  if pid == 0:
+    discard posix.dup2(fds[1], 1)
+    discard posix.dup2(fds[1], 2)
+    let devnull = posix.open("/dev/null", O_RDONLY)
+    discard posix.dup2(devnull, 0)
+    for fd in 3.cint .. 1023.cint:
+      discard posix.close(fd)
+    var cargs = allocCStringArray(@[shell] & argv[1 .. ^1])
+    discard posix.execv(shell.cstring, cargs)
+    posix.exitnow(127)
+  discard posix.close(fds[1])
+  var output = ""
+  var buf: array[4096, char]
+  while true:
+    let n = posix.read(fds[0], addr buf[0], buf.len)
+    if n <= 0: break
+    for i in 0 ..< n: output.add(buf[i])
+  discard posix.close(fds[0])
+  var status: cint
+  discard posix.waitpid(pid, status, 0)
   (output, epochTime() - start)
 
 proc killBootstrap(path: string) =
