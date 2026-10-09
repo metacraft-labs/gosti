@@ -16,7 +16,7 @@
 ## ``stopAndCleanup``.
 
 import std/[options, tables, times]
-import ./types, ./output
+import ./types, ./output, ./detached_bootstrap
 
 when defined(posix):
   import std/[posix]
@@ -31,6 +31,9 @@ type
     copyFrom*: seq[tuple[guest: string, host: string]]
     shims*: seq[ArgvTraceShim]
     timeoutSec*: int
+    detachScript*: string                         ## run this guest script
+                                                  ## detached, then poll it
+    guest*: GuestOs                               ## needed by detachScript
 
   GateResult* = object
     verdict*: Verdict
@@ -100,10 +103,16 @@ proc runGate*(backend: VmBackend, gate: GateSpec,
     checkInterrupted()
 
     let execStart = epochTime()
-    let er = backend.execInGuest(vm, gate.env, gate.cmd,
-                                 timeoutSec = (if gate.timeoutSec > 0:
-                                                gate.timeoutSec else: 600))
-    envelope.writeCommandRun(gate.cmd, er)
+    let gateTimeout = (if gate.timeoutSec > 0: gate.timeoutSec else: 600)
+    let er =
+      if gate.detachScript.len > 0:
+        runDetachedScript(backend, vm, gate.guest, gate.detachScript,
+                          gateTimeout)
+      else:
+        backend.execInGuest(vm, gate.env, gate.cmd, timeoutSec = gateTimeout)
+    envelope.writeCommandRun(
+      (if gate.detachScript.len > 0: @["detach", gate.detachScript]
+       else: gate.cmd), er)
     envelope.recordStep("exec:" & gate.name,
                        (if er.exitCode == 0: ssOk else: ssFail),
                        int((epochTime() - execStart) * 1000))

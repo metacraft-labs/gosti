@@ -18,7 +18,8 @@
 
 import std/[json, options, os, osproc, sequtils, strformat, strutils, tables,
             terminal, times]
-import ./types, ./output, ./auto, ./orchestrator
+import ./types, ./output, ./auto, ./orchestrator, ./detached_bootstrap
+export detached_bootstrap
 # Import every backend module so its registerBackend bootstrap runs.
 # Each import is a static side-effect: the backend's factory lands in
 # auto.factoryRegistry at module-init time. The CLI itself only ever
@@ -55,6 +56,7 @@ type
 
   CliOpts* = object
     subcommand*: string
+    detachScript*: string        ## run: guest script to start detached
     backend*: string             ## raw flag value; "auto" for dispatch
     guest*: GuestOs
     guestSet*: bool
@@ -500,6 +502,11 @@ Common flags:
   --env KEY=VAL                   (repeatable)
   --copy-to host:guest            (repeatable)
   --copy-from guest:host          (repeatable)
+  --detach-script <guest-path>    run: start this guest script detached from
+                                  the SSH session and follow it with short
+                                  polling sessions instead of one long one; a
+                                  transient SSH failure no longer kills it.
+                                  Replaces the `--` command (linux/macOS).
   --mount host:guest              crud create_vm (repeatable): host→guest share.
   --cwd <dir>                     crud exec: run argv with this guest CWD.
   --run-as <user>                 crud exec: run argv as this guest user.
@@ -797,6 +804,8 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       result.labels.add(args[i]); inc i
     of "--timeout-sec":
       inc i; result.timeoutSec = parseInt(args[i]); inc i
+    of "--detach-script":
+      inc i; result.detachScript = args[i]; inc i
     of "--ssh-ready-timeout-sec":
       inc i
       result.sshReadyTimeoutSec = parseInt(args[i])
@@ -1712,97 +1721,6 @@ proc guestOsFor*(id: BackendId): GuestOs =
   of biQemuWindowsArm, biUtmWindowsArm: goWindows
   else: goLinux
 
-proc buildDetachedBootstrapCommand*(guest: GuestOs, guestPath: string): seq[string] =
-  ## Start the injected bootstrap so it OUTLIVES the session that starts it.
-  ##
-  ## This is the whole difference between the local and remote models. Locally
-  ## the provider runs the bootstrap in the FOREGROUND and keeps the
-  ## `vm-harness run` process alive for the instance's life, so the runner
-  ## agent it spawns is anchored to that process. `run --ephemeral --keep`
-  ## returns immediately, so the bootstrap must be detached in the GUEST or the
-  ## runner dies with the SSH session that launched it.
-  ##
-  ## On Windows that means `Win32_Process.Create`, NOT `Start-Process`, and the
-  ## reason is measured rather than assumed: Windows OpenSSH puts every process
-  ## of a session into a job object and kills the job at session end, and a
-  ## `Start-Process` child stays inside it. The same finding — and the same
-  ## `$`-free constraint, because sshd's DefaultShell is powershell and an
-  ## OUTER parse expands `$` inside double quotes — is recorded at length on
-  ## `buildSysprepRemoteCommand`, which solved this first for sysprep.
-  case guest
-  of goWindows:
-    @["powershell.exe", "-NoLogo", "-NoProfile", "-Command",
-      "if ((Invoke-CimMethod -ClassName Win32_Process -MethodName Create " &
-      "-Arguments @{CommandLine = " &
-      powershellLiteral("powershell.exe -ExecutionPolicy Bypass -NoProfile -File " &
-                        guestPath) &
-      "}).ReturnValue -ne 0) { exit 1 }; exit 0"]
-  else:
-    # `nohup … &` detaches from the SSH session and survives its hangup. All
-    # three streams of the BACKGROUNDED process must be redirected: anything
-    # still holding the session's stdout keeps the SSH channel open, and
-    # `execInGuest` then blocks for the runner's entire life.
-    #
-    # The `&` must apply to a SIMPLE command, never to a list. The previous
-    # form was `chmod +x P && nohup P >/dev/null … & echo started`, and `&`
-    # binds looser than `&&`, so what went to the background was the SUBSHELL
-    # `(chmod && nohup P …)`. The redirections belonged to the inner `nohup`
-    # only; the subshell itself kept the SSH session's stdout open and waited
-    # for the bootstrap. dash happens to exec the last command of such a
-    # subshell (so Ubuntu tart-linux-arm guests escaped), but bash — macOS's
-    # `/bin/sh` — forks it, so on every tart-macos guest the launch SSH never
-    # returned. At the exec timeout (600s) `timeout` killed it, the launch was
-    # reported as failed, and the error path DESTROYED the guest under a
-    # runner that had long since registered and taken a job: every macOS job
-    # longer than ~10 minutes died with "lost communication with the server".
-    #
-    # The bootstrap's own output goes to `<path>.log` and its exit status to
-    # `<path>.exit` (written by a wrapper shell, since the bootstrap is not
-    # our child once we return), so `buildBootstrapStatusCommand` can check
-    # readiness in a SEPARATE, short session.
-    let q = quoteShellPosix(guestPath)
-    let logQ = quoteShellPosix(guestPath & ".log")
-    let exitQ = quoteShellPosix(guestPath & ".exit")
-    let pidQ = quoteShellPosix(guestPath & ".pid")
-    let wrapper = q & "; echo $? > " & exitQ
-    @["/bin/sh", "-c",
-      "chmod +x " & q & " || exit 1; rm -f " & exitQ & " " & pidQ & "; " &
-      "nohup /bin/sh -c " & quoteShellPosix(wrapper) &
-      " </dev/null >" & logQ & " 2>&1 & " &
-      "echo $! > " & pidQ & "; echo started"]
-
-const BootstrapRunning* = "bootstrap: running"
-const BootstrapExitedOk* = "bootstrap: exited 0"
-const BootstrapFailedPrefix* = "bootstrap: exited "
-
-proc buildBootstrapStatusCommand*(guestPath: string): seq[string] =
-  ## Readiness probe for a bootstrap started by `buildDetachedBootstrapCommand`
-  ## (unix guests). Runs in its own short SSH session, so the launch itself
-  ## never has to wait on the bootstrap. Prints exactly one of
-  ## `BootstrapRunning`, `BootstrapExitedOk`, or `BootstrapFailedPrefix<code>`
-  ## followed by the tail of the bootstrap log; exits non-zero only for a
-  ## bootstrap that already failed or never started.
-  let logQ = quoteShellPosix(guestPath & ".log")
-  let exitQ = quoteShellPosix(guestPath & ".exit")
-  let pidQ = quoteShellPosix(guestPath & ".pid")
-  @["/bin/sh", "-c",
-    "if [ -s " & exitQ & " ]; then c=$(cat " & exitQ & "); " &
-    "if [ \"$c\" = 0 ]; then echo '" & BootstrapExitedOk & "'; exit 0; fi; " &
-    "echo \"" & BootstrapFailedPrefix & "$c\"; tail -n 20 " & logQ &
-    " 2>/dev/null; exit 1; fi; " &
-    "p=$(cat " & pidQ & " 2>/dev/null); " &
-    "if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then echo '" &
-    BootstrapRunning & "'; exit 0; fi; " &
-    # Lost the race between the wrapper exiting and the status file landing.
-    "sleep 1; if [ -s " & exitQ & " ] && [ \"$(cat " & exitQ & ")\" = 0 ]; " &
-    "then echo '" & BootstrapExitedOk & "'; exit 0; fi; " &
-    "echo 'bootstrap: not running'; tail -n 20 " & logQ & " 2>/dev/null; exit 1"]
-
-const BootstrapLaunchTimeoutSec* = 120
-  ## The launch returns as soon as the bootstrap is backgrounded, so it needs
-  ## seconds, not the ready-timeout. Bounding it separately means a launch
-  ## that DOES hang fails fast at provision time, before any runner exists,
-  ## instead of ten minutes later under a running job.
 
 proc cmdRunEphemeralVmRun(opts: CliOpts): int =
   ## Per-job ephemeral instance for the vm-harness-run backends (tart-macos,
@@ -2270,8 +2188,15 @@ proc cmdRun(opts: CliOpts): int =
     raise newException(ValueError, "run: --baseline is required")
   if opts.outputDir.len == 0:
     raise newException(ValueError, "run: --output-dir is required")
-  if opts.cmd.len == 0:
-    raise newException(ValueError, "run: no command supplied after `--`")
+  if opts.cmd.len == 0 and opts.detachScript.len == 0:
+    raise newException(ValueError,
+      "run: no command supplied after `--` (or --detach-script)")
+  if opts.cmd.len > 0 and opts.detachScript.len > 0:
+    raise newException(ValueError,
+      "run: --detach-script and a `--` command are mutually exclusive")
+  if opts.detachScript.len > 0 and opts.envPairs.len > 0:
+    raise newException(ValueError,
+      "run: --env is not forwarded to a --detach-script; set it in the script")
   # Provision is idempotent — safe to call before every run.
   var spec: BaselineSpec
   applyDefaults(spec, opts)
@@ -2279,14 +2204,17 @@ proc cmdRun(opts: CliOpts): int =
   let envelope = newOutputEnvelope(opts.outputDir)
   envelope.logProvision(&"backend={id} baseline={opts.baseline}")
   let gate = GateSpec(
-    name: extractFilename(opts.cmd[0]),
+    name: extractFilename(
+      if opts.detachScript.len > 0: opts.detachScript else: opts.cmd[0]),
     baseline: opts.baseline,
     env: opts.envPairs,
     cmd: opts.cmd,
     copyTo: opts.copyTo,
     copyFrom: opts.copyFrom,
     shims: opts.shims,
-    timeoutSec: opts.timeoutSec)
+    timeoutSec: opts.timeoutSec,
+    detachScript: opts.detachScript,
+    guest: (if opts.guestSet: opts.guest else: guestOsFor(id)))
   let r = runGate(backend, gate, envelope)
   logEvent(opts.logFormat, "info", "gate complete",
            {"verdict": $r.verdict, "elapsed_ms": $r.elapsedMs})

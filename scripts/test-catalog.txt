@@ -290,6 +290,7 @@ host all tests/e2e/t_incus_layered_base_image.nim
 
 # Previously Reprobuild-only deterministic CLI coverage.
 test posix tests/unit/t_cli_ephemeral_vmrun.nim
+test posix tests/unit/t_detached_script.nim
 # Incus bootstrap contract: uses the existing fake-command seam, no daemon.
 test all tests/unit/t_cli_incus_bootstrap.nim
 # Catalog validation and real filesystem drift controls.
