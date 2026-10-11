@@ -17,6 +17,7 @@ path = [
   "NOTICE",
   "**/*.md",
   "flake.lock",
+  "repro.lock",
   ".github/release.json",
   "docs/site/flake.lock",
   "golden-outputs/**",
