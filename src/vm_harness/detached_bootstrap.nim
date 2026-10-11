@@ -91,17 +91,18 @@ proc buildBootstrapStatusCommand*(guestPath: string): seq[string] =
   let logQ = quoteShellPosix(guestPath & ".log")
   let exitQ = quoteShellPosix(guestPath & ".exit")
   let pidQ = quoteShellPosix(guestPath & ".pid")
+  # Liveness FIRST, status file second. The wrapper writes the status file
+  # before it exits, so "pid gone" implies "status file present" — whereas
+  # checking the file first races a script that finishes between the two
+  # checks (seen in CI: a script exiting 7 was reported "not running").
   @["/bin/sh", "-c",
+    "p=$(cat " & pidQ & " 2>/dev/null); " &
+    "if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then echo '" &
+    BootstrapRunning & "'; exit 0; fi; " &
     "if [ -s " & exitQ & " ]; then c=$(cat " & exitQ & "); " &
     "if [ \"$c\" = 0 ]; then echo '" & BootstrapExitedOk & "'; exit 0; fi; " &
     "echo \"" & BootstrapFailedPrefix & "$c\"; tail -n 20 " & logQ &
     " 2>/dev/null; exit 1; fi; " &
-    "p=$(cat " & pidQ & " 2>/dev/null); " &
-    "if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then echo '" &
-    BootstrapRunning & "'; exit 0; fi; " &
-    # Lost the race between the wrapper exiting and the status file landing.
-    "sleep 1; if [ -s " & exitQ & " ] && [ \"$(cat " & exitQ & ")\" = 0 ]; " &
-    "then echo '" & BootstrapExitedOk & "'; exit 0; fi; " &
     "echo 'bootstrap: not running'; tail -n 20 " & logQ & " 2>/dev/null; exit 1"]
 
 const BootstrapLaunchTimeoutSec* = 120
