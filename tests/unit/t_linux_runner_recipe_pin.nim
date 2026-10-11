@@ -225,4 +225,16 @@ suite "linux runner recipe: pin hygiene":
     check "actual_sha256\" != \"$RUNNER_SHA256\"" in text
 
   test "the runner version is stamped as an image property":
-    check "set-property \"$ALIAS\" vmh.runner_version \"$RUNNER_VERSION\"" in text
+    # Stamped on the freshly published image by fingerprint, before the alias
+    # is moved onto it (publish-then-swap).
+    check "set-property \"$NEW_FP\" vmh.runner_version \"$RUNNER_VERSION\"" in text
+
+  test "the alias moves only after the new image is published and stamped":
+    let publishAt = text.find("publish \"$BLD\"")
+    let stampAt = text.find("set-property \"$NEW_FP\" vmh.recipe_revision")
+    let aliasAt = text.find("image alias create \"$ALIAS\" \"$NEW_FP\"")
+    check publishAt >= 0
+    check stampAt > publishAt
+    check aliasAt > stampAt
+    # The old flow refused to publish while the alias survived a failed delete.
+    check "publish \"$BLD\" --alias" notin text
