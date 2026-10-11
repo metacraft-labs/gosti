@@ -30,12 +30,19 @@
 ## `LibvirtBackend`). This is the small, flat thing the ephemeral lifecycle
 ## needs: write once, read once, delete.
 
+import ./env_names
 import std/[json, options, os, strutils, tables]
 import ./types
 
 const
   EphemeralStateDirEnv* = "VMH_EPHEMERAL_STATE_DIR"
   DefaultEphemeralStateDir* = "/var/lib/vm-harness/ephemeral"
+    ## The LEGACY default; see ``defaultEphemeralStateDir``.
+
+proc defaultEphemeralStateDir*(): string =
+  ## ``/var/lib/gosti/ephemeral``, or the legacy
+  ## ``/var/lib/vm-harness/ephemeral`` while only that one exists (never moved).
+  preferGostiDir("/var/lib") / "ephemeral"
 
 proc ephemeralStateRoot*(): string =
   ## Where kept-instance handles live. One root for every backend, keyed by
@@ -43,8 +50,8 @@ proc ephemeralStateRoot*(): string =
   ## independently (`VM_HARNESS_TART_STATE_DIR`,
   ## `VM_HARNESS_QEMU_WINDOWS_ARM_STATE_DIR`, …) and a teardown must be able to
   ## find the record without first constructing the backend that wrote it.
-  let configured = getEnv(EphemeralStateDirEnv)
-  if configured.len > 0: configured else: DefaultEphemeralStateDir
+  let configured = gostiEnv(EphemeralStateDirEnv)
+  if configured.len > 0: configured else: defaultEphemeralStateDir()
 
 proc sanitizeKey*(s: string): string =
   ## `--baseline` is a GARM instance name (`garm-xxxxxxxxxxxx`), but nothing

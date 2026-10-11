@@ -33,6 +33,7 @@
 ##   by ``tart ip --wait 60 <eph>`` and an SSH readiness poll. Target wall-
 ##   clock ≤30s per revert per the Per-Gate Reset Performance Contract.
 
+import ../env_names
 import std/[json, os, osproc, options, streams, strtabs,
             strutils, tables, times]
 import ../types
@@ -152,7 +153,7 @@ proc tartHomeDir*(): string =
   let tartHome = getEnv("TART_HOME")
   if tartHome.len > 0:
     return tartHome
-  let vmhState = getEnv("VM_HARNESS_TART_STATE_DIR")
+  let vmhState = gostiEnv("VM_HARNESS_TART_STATE_DIR")
   if vmhState.len > 0:
     return vmhState
   getHomeDir() / ".tart"
@@ -226,7 +227,7 @@ proc newTartBackend*(guestOs: GuestOs = goLinux,
                  of goMacos: DefaultEphemeralPrefixMacos
                  of goLinux: DefaultEphemeralPrefixLinuxArm
                  of goWindows: ""  ## unreachable
-  let tartStateDir = getEnv("VM_HARNESS_TART_STATE_DIR")
+  let tartStateDir = gostiEnv("VM_HARNESS_TART_STATE_DIR")
   if tartStateDir.len > 0 and getEnv("TART_HOME").len == 0:
     createDir(tartStateDir)
     putEnv("TART_HOME", tartStateDir)

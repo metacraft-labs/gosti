@@ -38,6 +38,7 @@
 ##     its secret). A revoked/unknown keyId is rejected before the MAC is even
 ##     checked.
 
+import ../env_names
 import std/[json, os, sysrand, algorithm, sets, tables, strutils]
 import ./hmac
 import ./capability
@@ -243,7 +244,7 @@ proc resolveEnrollmentSecret*(secret, secretFile, stateDir: string): string =
       raise newException(ValueError,
         "--enroll-secret-file '" & secretFile & "': file not found")
     return readFile(secretFile).strip()
-  let env = getEnv("VMH_ENROLL_SECRET").strip()
+  let env = gostiEnv("VMH_ENROLL_SECRET").strip()
   if env.len > 0: return env
   if stateDir.len > 0:
     let p = stateDir / "enrollment-secret"

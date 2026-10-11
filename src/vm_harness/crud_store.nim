@@ -22,6 +22,7 @@
 ## any consumer; it is a flat, atomically-written record directory plus a
 ## portable per-name lock.
 
+import ./env_names
 import std/[algorithm, json, options, os, strutils, times]
 import ./ephemeral_handle
 when defined(posix):
@@ -59,22 +60,22 @@ proc crudStateRoot*(stateDirFlag = ""): string =
   ## crud records next to its label records.
   if stateDirFlag.len > 0:
     return absolutePath(stateDirFlag) / "crud"
-  let explicit = getEnv(CrudStateDirEnv)
+  let explicit = gostiEnv(CrudStateDirEnv)
   if explicit.len > 0: return explicit
-  if getEnv(EphemeralStateDirEnv).len > 0:
-    return getEnv(EphemeralStateDirEnv) / "crud"
+  if gostiEnv(EphemeralStateDirEnv).len > 0:
+    return gostiEnv(EphemeralStateDirEnv) / "crud"
   let sd = getEnv("STATE_DIRECTORY").split(':')[0]
   if sd.len > 0: return sd / "crud"
   when defined(windows):
     let local = getEnv("LOCALAPPDATA")
-    if local.len > 0: return local / "vm-harness" / "crud"
+    if local.len > 0: return preferGostiDir(local) / "crud"
   else:
     let xdg = getEnv("XDG_STATE_HOME")
-    if xdg.len > 0: return xdg / "vm-harness" / "crud"
+    if xdg.len > 0: return preferGostiDir(xdg) / "crud"
     let home = getEnv("HOME")
     if home.len > 0 and home != "/homeless-shelter":
-      return home / ".local" / "state" / "vm-harness" / "crud"
-  DefaultEphemeralStateDir / "crud"
+      return preferGostiDir(home / ".local" / "state") / "crud"
+  defaultEphemeralStateDir() / "crud"
 
 proc newCrudStore*(root: string): CrudStore =
   CrudStore(root: root)

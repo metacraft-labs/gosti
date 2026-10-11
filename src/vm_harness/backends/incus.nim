@@ -45,6 +45,7 @@
 ## on any host so the small unit tests can run anywhere; ``probeAvailability``
 ## returns false on non-Linux hosts / when ``incus`` is absent.
 
+import ../env_names
 import std/[options, os, osproc, streams, strtabs,
             strutils, tables, times]
 import ../types
@@ -130,7 +131,7 @@ proc resolveIncusCmd(incusCmd: seq[string]): seq[string] =
   ## production registration (plain ``incus``).
   if incusCmd != @["incus"]:
     return incusCmd
-  let envCmd = getEnv("VMH_INCUS_CMD")
+  let envCmd = gostiEnv("VMH_INCUS_CMD")
   if envCmd.len > 0:
     return envCmd.splitWhitespace()
   return incusCmd
@@ -260,7 +261,7 @@ const
 
 proc envSeconds(name: string, default: int): int =
   ## A positive integer from the environment, else ``default``.
-  let v = getEnv(name).strip()
+  let v = gostiEnv(name).strip()
   if v.len == 0: return default
   try:
     let n = parseInt(v)
@@ -279,7 +280,7 @@ proc incusCreateConcurrency*(): int =
 proc incusCreateLockDir*(): string =
   ## Writable by the serve user: /run/lock is root-only on NixOS, and the serve
   ## daemon runs unprivileged.
-  result = getEnv("VMH_INCUS_CREATE_LOCK_DIR").strip()
+  result = gostiEnv("VMH_INCUS_CREATE_LOCK_DIR").strip()
   if result.len == 0: result = getEnv("RUNTIME_DIRECTORY").strip()
   if result.len == 0: result = getTempDir()
 
