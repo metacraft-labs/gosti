@@ -921,17 +921,39 @@ fi
     '${CLOUD_BASE}' '${RUNNER_VERSION}' \"${DOCKER:+ + docker ${DOCKER_VERSION} (${DOCKER_STORAGE_DRIVER}) [HR1 nested]}\" \"${KVM:+ + qemu-system-x86 [HR2 nested-kvm]}\" \"${REPRO_PROV}\" > /etc/vmh-linux-runner-release
 "
 
-# 7. Stop + publish as the runner image alias (replace any prior copy).
+# 7. Stop + publish, then move the runner image alias onto the new image.
+#    Publish first WITHOUT the alias and swap the alias afterwards: the old
+#    order (delete the aliased image, then publish under the alias) failed for
+#    good whenever the delete did not go through (on ZFS a previous image's
+#    dataset can stay busy while containers cloned from it run), because the
+#    alias still existed and `publish --alias` refused it ("Aliases already
+#    exists"). Only the alias moves now, so a busy old image cannot block the
+#    new one, and launches find the alias for all but the instant of the swap.
 log "stopping container + publishing image alias '$ALIAS'"
 "${INCUS[@]}" stop "$BLD"
-"${INCUS[@]}" image delete "$ALIAS" >/dev/null 2>&1 || true
-"${INCUS[@]}" publish "$BLD" --alias "$ALIAS" \
+OLD_FP="$("${INCUS[@]}" image info "$ALIAS" 2>/dev/null | awk '/^Fingerprint:/ {print $2; exit}' || true)"
+PUBLISH_OUT="$("${INCUS[@]}" publish "$BLD" \
   --public=false \
-  description="vmh linux runner: ${CLOUD_BASE} + actions-runner ${RUNNER_VERSION} + cloud-init"
-"${INCUS[@]}" image set-property "$ALIAS" vmh.recipe_revision "$RECIPE_REVISION"
+  description="vmh linux runner: ${CLOUD_BASE} + actions-runner ${RUNNER_VERSION} + cloud-init" 2>&1)" || {
+  printf '%s\n' "$PUBLISH_OUT" >&2
+  log "ERROR: incus publish of '$BLD' failed" >&2
+  exit 1
+}
+NEW_FP="$(printf '%s\n' "$PUBLISH_OUT" | grep -oE '[0-9a-f]{64}' | tail -1)"
+if [ -z "$NEW_FP" ]; then
+  log "ERROR: could not read the published image fingerprint from: $PUBLISH_OUT" >&2
+  exit 1
+fi
+"${INCUS[@]}" image set-property "$NEW_FP" vmh.recipe_revision "$RECIPE_REVISION"
 # Machine-readable runner version, so fleet checks can compare what an image
 # actually carries against upstream without parsing the description.
-"${INCUS[@]}" image set-property "$ALIAS" vmh.runner_version "$RUNNER_VERSION"
+"${INCUS[@]}" image set-property "$NEW_FP" vmh.runner_version "$RUNNER_VERSION"
+"${INCUS[@]}" image alias delete "$ALIAS" >/dev/null 2>&1 || true
+"${INCUS[@]}" image alias create "$ALIAS" "$NEW_FP"
+if [ -n "$OLD_FP" ] && [ "$OLD_FP" != "$NEW_FP" ]; then
+  "${INCUS[@]}" image delete "$OLD_FP" >/dev/null 2>&1 \
+    || log "WARNING: could not delete the previous image ${OLD_FP:0:12} (busy?); it stays unaliased"
+fi
 
 log "done: image '$ALIAS' built"
 "${INCUS[@]}" image list "$ALIAS"
