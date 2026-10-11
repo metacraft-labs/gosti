@@ -47,7 +47,8 @@ suite "crud store location":
     when not defined(windows):
       withEnv([("VMH_CRUD_STATE_DIR", ""), ("VMH_EPHEMERAL_STATE_DIR", ""),
                ("STATE_DIRECTORY", ""), ("XDG_STATE_HOME", "/x/xdg")]) do:
-        check crudStateRoot() == "/x/xdg/vm-harness/crud"
+        # Neither /x/xdg/gosti nor /x/xdg/vm-harness exists: the new name.
+        check crudStateRoot() == "/x/xdg/gosti/crud"
 
 suite "crud store names":
   test "valid names are accepted":

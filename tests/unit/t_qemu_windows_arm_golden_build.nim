@@ -59,6 +59,50 @@
 ## INTO each gate that uses it).
 include qwa_fake_qemu
 
+import std/monotimes
+
+proc cleanupOwnedFakeChild(pid: int) =
+  ## This single-threaded fixture has no other waiter. An unreaped direct
+  ## child holds PID authority; ECHILD never authorizes a foreign signal.
+  if pid <= 0:
+    raise newException(IOError, "fake QEMU cleanup: positive direct-child PID required")
+  when defined(posix):
+    proc pollUntil(deadline: MonoTime): bool =
+      while getMonoTime() < deadline:
+        var status: cint
+        let waited = posix.waitpid(Pid(pid), status, WNOHANG)
+        if waited == Pid(pid): return true
+        if waited < Pid(0):
+          if osLastError() == OSErrorCode(EINTR): continue
+          raise newException(IOError, "fake QEMU cleanup: direct-child authority lost")
+        sleep(10)
+      return false
+    proc signalOwned(sig: cint): bool =
+      var status: cint
+      let authorityDeadline = getMonoTime() + initDuration(milliseconds = 2000)
+      while true:
+        if getMonoTime() >= authorityDeadline:
+          raise newException(IOError, "fake QEMU cleanup: interrupted authority check exhausted")
+        let owned = posix.waitpid(Pid(pid), status, WNOHANG)
+        if owned == Pid(pid): return true
+        if owned < Pid(0):
+          if osLastError() == OSErrorCode(EINTR): continue
+          raise newException(IOError, "fake QEMU cleanup: direct-child authority lost")
+        break
+      if posix.kill(Pid(pid), sig) != 0:
+        if osLastError() != OSErrorCode(ESRCH): raiseOSError(osLastError())
+        # It may have exited between waitpid and kill; only waitpid can
+        # resolve that race. No signal-0 or unrelated-PID fallback.
+      return false
+    if signalOwned(SIGTERM): return
+    if pollUntil(getMonoTime() + initDuration(milliseconds = 2000)): return
+    if signalOwned(SIGKILL): return
+    if not pollUntil(getMonoTime() + initDuration(milliseconds = 2000)):
+      raise newException(IOError, "fake QEMU cleanup: owned child not reaped; retain fixture root")
+  else:
+    raise newException(IOError, "fake QEMU cleanup requires the original POSIX fixture scope")
+
+
 # `sequtils` is used by the assertions in this file, not by the shared
 # harness, so it is imported here rather than there.
 import std/sequtils
@@ -102,14 +146,18 @@ suite "Golden build: power-off is read off the monitor, not off SSH":
 
   test "a live guest answering the monitor is not reported as powered off":
     let tmp = createTempDir("vmh-qwa-poweroff-live-", "")
-    defer: removeDir(tmp)
+    var cleanupComplete = false
+    defer:
+      if cleanupComplete: removeDir(tmp)
     let b = goldenBackend(tmp)
     createDir(tmp / "vm")
     writeFile(tmp / "vm" / "windows.qcow2", "")
     putEnv(FakeQemuEnv, "1")
     defer: delEnv(FakeQemuEnv)
     let started = b.startQemuWithAllocatedPort(tmp / "vm", 1, 64)
-    defer: discard execCmd("/bin/kill -9 " & $started.pid & " 2>/dev/null")
+    defer:
+      cleanupOwnedFakeChild(started.pid)
+      cleanupComplete = true
     let monitorPath = qwaMonitorSocketPath(tmp / "vm")
     let waitUntil = epochTime() + 10.0
     while epochTime() < waitUntil and not socketExists(monitorPath):

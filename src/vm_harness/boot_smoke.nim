@@ -33,6 +33,7 @@
 ## real machine code under real firmware — not a stub standing in for the
 ## thing under test.
 
+import ./env_names
 import std/[os, strutils, tables, times]
 
 import ./types
@@ -100,7 +101,7 @@ proc resolveArtifactDir*(repoRoot = ""): string =
   ## temp directory. Deliberately no checkout auto-detection: this module
   ## is consumed from several repositories and must not encode any one
   ## repository's marker file.
-  let fromEnv = getEnv(BootSmokeArtifactDirEnv)
+  let fromEnv = gostiEnv(BootSmokeArtifactDirEnv)
   if fromEnv.len > 0:
     return fromEnv
   if repoRoot.len > 0:

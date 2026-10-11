@@ -36,6 +36,7 @@
 ##   <eph>`` followed by ``utmctl ip-address`` polling and an SSH
 ##   readiness probe.
 
+import ../env_names
 import std/[options, os, osproc, streams, strtabs,
             strutils, tables, times]
 import ../types
@@ -118,7 +119,7 @@ const
 
 proc defaultUtmDocumentsDir*(): string =
   ## ``VM_HARNESS_UTM_DOCUMENTS_DIR``, else UTM's sandboxed documents folder.
-  let d = getEnv("VM_HARNESS_UTM_DOCUMENTS_DIR")
+  let d = gostiEnv("VM_HARNESS_UTM_DOCUMENTS_DIR")
   if d.len > 0: d
   else: getHomeDir() / "Library/Containers/com.utmapp.UTM/Data/Documents"
 

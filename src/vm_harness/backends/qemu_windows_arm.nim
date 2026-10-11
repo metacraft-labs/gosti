@@ -9,6 +9,7 @@
 ## host port forwarding. It exists as an unblock path when UTM's control plane
 ## cannot enumerate or clone registered bundles.
 
+import ../env_names
 import std/[algorithm, hashes, json, monotimes, net, options, os, osproc, streams,
             strutils, tables, times]
 when defined(posix):
@@ -311,10 +312,10 @@ type
       fd*: cint
 
 proc defaultStateDir*(): string =
-  let override = getEnv("VM_HARNESS_QEMU_WINDOWS_ARM_STATE_DIR")
+  let override = gostiEnv("VM_HARNESS_QEMU_WINDOWS_ARM_STATE_DIR")
   if override.len > 0:
     return override
-  getHomeDir() / ".local" / "state" / "vm-harness" / "qemu-windows-arm"
+  preferGostiDir(getHomeDir() / ".local" / "state") / "qemu-windows-arm"
 
 proc newQemuWindowsArmBackend*(qemuCmd: string = "qemu-system-aarch64",
                                swtpmCmd: string = "swtpm",
@@ -614,8 +615,8 @@ proc pathExists(path: string): bool =
     false
 
 proc qemuFirmwareArgs(vmDir: string): seq[string] =
-  let explicitCode = getEnv("VMH_QEMU_EFI_CODE")
-  let explicitVars = getEnv("VMH_QEMU_EFI_VARS")
+  let explicitCode = gostiEnv("VMH_QEMU_EFI_CODE")
+  let explicitVars = gostiEnv("VMH_QEMU_EFI_VARS")
   let codeCandidates = @[
     explicitCode,
     vmDir / "QEMU_EFI.fd",
@@ -911,7 +912,7 @@ proc qwaGoldenFloorGB*(diskGB: int): int =
   ## size costs nothing because the image stays sparse.
   ## ``VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB`` overrides the whole computation
   ## for operators who know better than this estimate.
-  let override = getEnv("VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB").strip()
+  let override = gostiEnv("VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB").strip()
   if override.len > 0:
     try:
       let v = parseInt(override)
@@ -1039,7 +1040,7 @@ proc createEphemeralOverlay*(baselineDir, destDir, qemuImgCmd: string,
 proc qwaDiskMode*(): string =
   ## ``overlay`` (default) or ``clone``, from
   ## ``VMH_QEMU_WINDOWS_ARM_DISK_MODE``.
-  let m = getEnv("VMH_QEMU_WINDOWS_ARM_DISK_MODE").strip().toLowerAscii()
+  let m = gostiEnv("VMH_QEMU_WINDOWS_ARM_DISK_MODE").strip().toLowerAscii()
   if m == QwaDiskModeClone: QwaDiskModeClone else: QwaDiskModeOverlay
 
 proc createEphemeralInstance*(b: QemuWindowsArmBackend,
@@ -2032,7 +2033,7 @@ proc qwaFirmwareSearchDirs(): seq[string] =
   ## ``VMH_QEMU_FIRMWARE_DIR`` REPLACES the well-known list rather than being
   ## prepended to it, so an operator who names a firmware directory gets that
   ## firmware and not whatever a package manager happens to have installed.
-  let explicit = getEnv("VMH_QEMU_FIRMWARE_DIR")
+  let explicit = gostiEnv("VMH_QEMU_FIRMWARE_DIR")
   if explicit.len > 0:
     return @[explicit]
   @["/opt/homebrew/share/qemu", "/usr/local/share/qemu",
@@ -2057,9 +2058,9 @@ proc stageGoldenFirmware*(buildDir: string) =
   let codeDest = buildDir / "QEMU_EFI.fd"
   let varsDest = buildDir / "QEMU_VARS.fd"
   if not fileExists(codeDest):
-    var code = getEnv("VMH_QEMU_EFI_CODE_TEMPLATE")
+    var code = gostiEnv("VMH_QEMU_EFI_CODE_TEMPLATE")
     if code.len == 0 or not fileExists(code):
-      code = getEnv("VMH_QEMU_EFI_CODE")
+      code = gostiEnv("VMH_QEMU_EFI_CODE")
     if code.len == 0 or not fileExists(code):
       code = findFirmwareFile(["edk2-aarch64-code.fd", "QEMU_EFI.fd",
                                "AAVMF_CODE.fd"])
@@ -2071,7 +2072,7 @@ proc stageGoldenFirmware*(buildDir: string) =
         "boots nothing and the install hangs with no diagnostic.")
     copyFile(code, codeDest)
   if not fileExists(varsDest):
-    var vars = getEnv("VMH_QEMU_EFI_VARS_TEMPLATE")
+    var vars = gostiEnv("VMH_QEMU_EFI_VARS_TEMPLATE")
     if vars.len == 0 or not fileExists(vars):
       vars = findFirmwareFile(["edk2-arm-vars.fd", "QEMU_VARS.fd",
                                "AAVMF_VARS.fd"])
@@ -2909,20 +2910,20 @@ method stopAndCleanup*(b: QemuWindowsArmBackend, vm: VmHandle,
 registerBackend(biQemuWindowsArm,
   proc(): VmBackend =
     newQemuWindowsArmBackend(
-      qemuCmd = getEnv("VMH_QEMU_WINDOWS_ARM_QEMU_CMD", "qemu-system-aarch64"),
-      qemuImgCmd = getEnv("VMH_QEMU_WINDOWS_ARM_QEMU_IMG_CMD", "qemu-img"),
-      swtpmCmd = getEnv("VMH_QEMU_WINDOWS_ARM_SWTPM_CMD", "swtpm"),
-      sshpassCmd = getEnv("VMH_QEMU_WINDOWS_ARM_SSHPASS_CMD", "sshpass"),
-      sshCmd = getEnv("VMH_QEMU_WINDOWS_ARM_SSH_CMD", "ssh"),
-      scpCmd = getEnv("VMH_QEMU_WINDOWS_ARM_SCP_CMD", "scp"),
-      stateDir = getEnv("VM_HARNESS_QEMU_WINDOWS_ARM_STATE_DIR", ""),
-      ephemeralPrefix = getEnv("VMH_QEMU_WINDOWS_ARM_EPHEMERAL_PREFIX",
+      qemuCmd = gostiEnv("VMH_QEMU_WINDOWS_ARM_QEMU_CMD", "qemu-system-aarch64"),
+      qemuImgCmd = gostiEnv("VMH_QEMU_WINDOWS_ARM_QEMU_IMG_CMD", "qemu-img"),
+      swtpmCmd = gostiEnv("VMH_QEMU_WINDOWS_ARM_SWTPM_CMD", "swtpm"),
+      sshpassCmd = gostiEnv("VMH_QEMU_WINDOWS_ARM_SSHPASS_CMD", "sshpass"),
+      sshCmd = gostiEnv("VMH_QEMU_WINDOWS_ARM_SSH_CMD", "ssh"),
+      scpCmd = gostiEnv("VMH_QEMU_WINDOWS_ARM_SCP_CMD", "scp"),
+      stateDir = gostiEnv("VM_HARNESS_QEMU_WINDOWS_ARM_STATE_DIR", ""),
+      ephemeralPrefix = gostiEnv("VMH_QEMU_WINDOWS_ARM_EPHEMERAL_PREFIX",
                                DefaultQemuWindowsArmPrefix),
-      sshUser = getEnv("VMH_QEMU_WINDOWS_ARM_SSH_USER",
+      sshUser = gostiEnv("VMH_QEMU_WINDOWS_ARM_SSH_USER",
                        DefaultQemuWindowsArmUser),
-      sshPassword = getEnv("VMH_QEMU_WINDOWS_ARM_SSH_PASSWORD",
+      sshPassword = gostiEnv("VMH_QEMU_WINDOWS_ARM_SSH_PASSWORD",
                            DefaultQemuWindowsArmPassword),
-      sshPort = parseInt(getEnv("VMH_QEMU_WINDOWS_ARM_SSH_PORT", "2223")),
-      bootTimeoutSec = parseInt(getEnv("VMH_QEMU_WINDOWS_ARM_BOOT_TIMEOUT", "300")),
-      sshReadyTimeoutSec = parseInt(getEnv("VMH_QEMU_WINDOWS_ARM_SSH_TIMEOUT", "300")),
-      probeTimeoutSec = parseInt(getEnv("VMH_QEMU_WINDOWS_ARM_PROBE_TIMEOUT", "10"))))
+      sshPort = parseInt(gostiEnv("VMH_QEMU_WINDOWS_ARM_SSH_PORT", "2223")),
+      bootTimeoutSec = parseInt(gostiEnv("VMH_QEMU_WINDOWS_ARM_BOOT_TIMEOUT", "300")),
+      sshReadyTimeoutSec = parseInt(gostiEnv("VMH_QEMU_WINDOWS_ARM_SSH_TIMEOUT", "300")),
+      probeTimeoutSec = parseInt(gostiEnv("VMH_QEMU_WINDOWS_ARM_PROBE_TIMEOUT", "10"))))

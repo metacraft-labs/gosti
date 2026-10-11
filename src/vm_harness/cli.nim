@@ -16,9 +16,11 @@
 ## CLI falls back to NoopBackend if ``--allow-noop-fallback`` is set
 ## (used by the M0 selection test on hosts without real hypervisors).
 
+import ./env_names
 import std/[json, options, os, osproc, sequtils, strformat, strutils, tables,
             terminal, times]
-import ./types, ./output, ./auto, ./orchestrator
+import ./types, ./output, ./auto, ./orchestrator, ./detached_bootstrap
+export detached_bootstrap
 # Import every backend module so its registerBackend bootstrap runs.
 # Each import is a static side-effect: the backend's factory lands in
 # auto.factoryRegistry at module-init time. The CLI itself only ever
@@ -55,6 +57,7 @@ type
 
   CliOpts* = object
     subcommand*: string
+    detachScript*: string        ## run: guest script to start detached
     backend*: string             ## raw flag value; "auto" for dispatch
     guest*: GuestOs
     guestSet*: bool
@@ -500,6 +503,11 @@ Common flags:
   --env KEY=VAL                   (repeatable)
   --copy-to host:guest            (repeatable)
   --copy-from guest:host          (repeatable)
+  --detach-script <guest-path>    run: start this guest script detached from
+                                  the SSH session and follow it with short
+                                  polling sessions instead of one long one; a
+                                  transient SSH failure no longer kills it.
+                                  Replaces the `--` command (linux/macOS).
   --mount host:guest              crud create_vm (repeatable): host→guest share.
   --cwd <dir>                     crud exec: run argv with this guest CWD.
   --run-as <user>                 crud exec: run argv as this guest user.
@@ -593,7 +601,7 @@ proc resolveRecipeDir*(recipeId: string): string =
     raise newException(ValueError,
       &"--recipe expects a bare id (e.g. 'windows-x64-base'), got '{recipeId}'")
   var candidates: seq[string] = @[]
-  let envOverride = getEnv("VMH_RECIPES_DIR")
+  let envOverride = gostiEnv("VMH_RECIPES_DIR")
   if envOverride.len > 0:
     candidates.add(envOverride / recipeId)
   candidates.add(getCurrentDir() / "guest-recipes" / recipeId)
@@ -797,6 +805,8 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       result.labels.add(args[i]); inc i
     of "--timeout-sec":
       inc i; result.timeoutSec = parseInt(args[i]); inc i
+    of "--detach-script":
+      inc i; result.detachScript = args[i]; inc i
     of "--ssh-ready-timeout-sec":
       inc i
       result.sshReadyTimeoutSec = parseInt(args[i])
@@ -1598,7 +1608,7 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
     raise newException(ValueError,
       "run --ephemeral --backend hyperv: golden VHDX is required " &
       "(pass --golden-image, or --source-image/--base-image)")
-  let credCache = getEnv("VMH_HYPERV_CRED_CACHE")
+  let credCache = gostiEnv("VMH_HYPERV_CRED_CACHE")
   let hb = HyperVBackend(newBackend(biHyperv))
   if credCache.len > 0:
     hb.credentialCachePath = credCache
@@ -1615,14 +1625,14 @@ proc cmdRunEphemeralHyperV(opts: CliOpts): int =
   let spec = HyperVEphemeralCloneSpec(
     name: opts.baseline,
     goldenVhdx: golden,
-    useDifferencing: getEnv("VMH_HYPERV_FULL_COPY") == "",
+    useDifferencing: gostiEnv("VMH_HYPERV_FULL_COPY") == "",
     cpus: opts.cpus,
     memoryMB: opts.memoryMB,
     generation: 2,
     secureBootEnabled: true,
     tpmEnabled: true,
-    switchName: getEnv("VMH_HYPERV_SWITCH"),
-    configDriveIso: getEnv("VMH_HYPERV_CONFIG_DRIVE"),
+    switchName: gostiEnv("VMH_HYPERV_SWITCH"),
+    configDriveIso: gostiEnv("VMH_HYPERV_CONFIG_DRIVE"),
     userData: userData,
     diskGB: effectiveDiskGB(opts),
     diskGBDefaulted: opts.diskGB <= 0)
@@ -1712,40 +1722,6 @@ proc guestOsFor*(id: BackendId): GuestOs =
   of biQemuWindowsArm, biUtmWindowsArm: goWindows
   else: goLinux
 
-proc buildDetachedBootstrapCommand*(guest: GuestOs, guestPath: string): seq[string] =
-  ## Start the injected bootstrap so it OUTLIVES the session that starts it.
-  ##
-  ## This is the whole difference between the local and remote models. Locally
-  ## the provider runs the bootstrap in the FOREGROUND and keeps the
-  ## `vm-harness run` process alive for the instance's life, so the runner
-  ## agent it spawns is anchored to that process. `run --ephemeral --keep`
-  ## returns immediately, so the bootstrap must be detached in the GUEST or the
-  ## runner dies with the SSH session that launched it.
-  ##
-  ## On Windows that means `Win32_Process.Create`, NOT `Start-Process`, and the
-  ## reason is measured rather than assumed: Windows OpenSSH puts every process
-  ## of a session into a job object and kills the job at session end, and a
-  ## `Start-Process` child stays inside it. The same finding — and the same
-  ## `$`-free constraint, because sshd's DefaultShell is powershell and an
-  ## OUTER parse expands `$` inside double quotes — is recorded at length on
-  ## `buildSysprepRemoteCommand`, which solved this first for sysprep.
-  case guest
-  of goWindows:
-    @["powershell.exe", "-NoLogo", "-NoProfile", "-Command",
-      "if ((Invoke-CimMethod -ClassName Win32_Process -MethodName Create " &
-      "-Arguments @{CommandLine = " &
-      powershellLiteral("powershell.exe -ExecutionPolicy Bypass -NoProfile -File " &
-                        guestPath) &
-      "}).ReturnValue -ne 0) { exit 1 }; exit 0"]
-  else:
-    # `nohup … &` detaches from the SSH session's controlling terminal and
-    # survives its hangup. Redirect all three streams: a child still holding
-    # the session's stdout keeps the SSH channel open, and `execInGuest` would
-    # then block for the runner's entire life — which is precisely the
-    # foreground behaviour this path exists to avoid.
-    @["/bin/sh", "-c",
-      "chmod +x " & guestPath & " && nohup " & guestPath &
-      " >/dev/null 2>&1 </dev/null & echo started"]
 
 proc cmdRunEphemeralVmRun(opts: CliOpts): int =
   ## Per-job ephemeral instance for the vm-harness-run backends (tart-macos,
@@ -1827,11 +1803,26 @@ proc cmdRunEphemeralVmRun(opts: CliOpts): int =
         discard
       let launch = buildDetachedBootstrapCommand(guest, guestPath)
       let r = backend.execInGuest(vm, initTable[string, string](), launch,
-                                  timeoutSec = readyTimeout)
+                                  timeoutSec = min(readyTimeout,
+                                                   BootstrapLaunchTimeoutSec))
       if r.exitCode != 0:
         raise newVmHarnessError($id, lpExec,
           "ephemeral bootstrap did not start in the guest (exit " &
-          $r.exitCode & "): " & r.stderr.strip())
+          $r.exitCode & "): " & (r.stdout & r.stderr).strip())
+      if guest != goWindows:
+        # Readiness, checked separately from the launch: the bootstrap must
+        # still be running, or have finished successfully. Give a bootstrap
+        # that dies on its first line a moment to do so, so the failure
+        # surfaces here (and the guest is reclaimed) rather than as a runner
+        # that never registers.
+        sleep(2000)
+        let st = backend.execInGuest(vm, initTable[string, string](),
+                                     buildBootstrapStatusCommand(guestPath),
+                                     timeoutSec = 60)
+        if st.exitCode != 0:
+          raise newVmHarnessError($id, lpExec,
+            "ephemeral bootstrap is not running in the guest (exit " &
+            $st.exitCode & "): " & (st.stdout & st.stderr).strip())
       logEvent(opts.logFormat, "info", "ephemeral vm: bootstrap launched",
                {"name": vm.name, "guest_path": guestPath})
   except CatchableError:
@@ -2198,8 +2189,15 @@ proc cmdRun(opts: CliOpts): int =
     raise newException(ValueError, "run: --baseline is required")
   if opts.outputDir.len == 0:
     raise newException(ValueError, "run: --output-dir is required")
-  if opts.cmd.len == 0:
-    raise newException(ValueError, "run: no command supplied after `--`")
+  if opts.cmd.len == 0 and opts.detachScript.len == 0:
+    raise newException(ValueError,
+      "run: no command supplied after `--` (or --detach-script)")
+  if opts.cmd.len > 0 and opts.detachScript.len > 0:
+    raise newException(ValueError,
+      "run: --detach-script and a `--` command are mutually exclusive")
+  if opts.detachScript.len > 0 and opts.envPairs.len > 0:
+    raise newException(ValueError,
+      "run: --env is not forwarded to a --detach-script; set it in the script")
   # Provision is idempotent — safe to call before every run.
   var spec: BaselineSpec
   applyDefaults(spec, opts)
@@ -2207,14 +2205,17 @@ proc cmdRun(opts: CliOpts): int =
   let envelope = newOutputEnvelope(opts.outputDir)
   envelope.logProvision(&"backend={id} baseline={opts.baseline}")
   let gate = GateSpec(
-    name: extractFilename(opts.cmd[0]),
+    name: extractFilename(
+      if opts.detachScript.len > 0: opts.detachScript else: opts.cmd[0]),
     baseline: opts.baseline,
     env: opts.envPairs,
     cmd: opts.cmd,
     copyTo: opts.copyTo,
     copyFrom: opts.copyFrom,
     shims: opts.shims,
-    timeoutSec: opts.timeoutSec)
+    timeoutSec: opts.timeoutSec,
+    detachScript: opts.detachScript,
+    guest: (if opts.guestSet: opts.guest else: guestOsFor(id)))
   let r = runGate(backend, gate, envelope)
   logEvent(opts.logFormat, "info", "gate complete",
            {"verdict": $r.verdict, "elapsed_ms": $r.elapsedMs})
@@ -2704,7 +2705,7 @@ proc resolveAuthToken(authToken, authTokenFile: string): string =
       raise newException(ValueError,
         "--auth-token-file '" & authTokenFile & "': file not found")
     return readFile(authTokenFile).strip()
-  getEnv("VMH_SERVE_TOKEN").strip()
+  gostiEnv("VMH_SERVE_TOKEN").strip()
 
 proc cmdServe(opts: CliOpts): int =
   ## Run the remoting daemon. Binds an authenticated HTTP/JSON endpoint and

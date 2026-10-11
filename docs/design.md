@@ -461,7 +461,8 @@ the corresponding production installer on each OS, then checks help output
 and a real daemon started through the compatibility name.
 Behaviour does not depend on the invoked name: argv, exit codes, output, and
 the serve daemon's worker re-exec (it runs the RESOLVED executable) are
-identical. Deliberately NOT renamed by this step, because each is a
+identical. Deliberately NOT renamed by this step (step 3, below, has since
+added `GOSTI_*` names and `gosti/` state dirs with fallback), because each is a
 compatibility surface whose consumers have to move first (see the GOSTI1
 consumer migration plan in reprobuild-specs): the `VMH_*` environment
 variables, the on-disk state directories (`…/vm-harness/crud`,
@@ -469,6 +470,29 @@ variables, the on-disk state directories (`…/vm-harness/crud`,
 `share/vm-harness/` payload path, the `vm_harness` Nim package/module name,
 and the `[vm-harness serve]` log prefix and `vm-harness:` message prefixes
 that consumers match on. Gated by `t_gosti_command_names`.
+
+#### 6.0.1 Environment variables and state directories (GOSTI1b step 3)
+
+Every setting the binary reads from the environment now has a canonical
+`GOSTI_<X>` name. The legacy name keeps working: `VMH_<X>` for most settings,
+`VM_HARNESS_<X>` for the per-backend state dirs (`VM_HARNESS_TART_STATE_DIR`
+→ `GOSTI_TART_STATE_DIR`). The canonical name is read first; if it is SET it
+wins (even when empty, like any set variable), otherwise the legacy one is
+read. A host can therefore export both during a rollout, and a host that still
+exports only `VMH_*` is unaffected. One helper, `env_names.gostiEnv`, does this
+for every reader, and `t_gosti_env_names` checks new-only / old-only / both for
+each variable, plus that no reader escapes the list.
+
+Default state directories (`$XDG_STATE_HOME/…`, `~/.local/state/…`,
+`%LOCALAPPDATA%\…`, `/var/lib/…/ephemeral`) prefer `…/gosti/…` and fall back to
+an EXISTING `…/vm-harness/…`; nothing is ever moved, because a running daemon
+may hold the old one. A fresh host with neither gets `gosti/`. Independent
+processes resolve the same way, so they still agree without probing.
+
+Unchanged by step 3: the guest-recipe shell seams (`VMH_RUNNER_*`,
+`VMH_BUILD_DIR`; libvirt now passes `GOSTI_BUILD_DIR` alongside), the
+PowerShell output markers (`VMH_GONE`, `VMH_DISK_GROWN=`, …) and the help/error
+texts, which still name `$VMH_*` (step 6).
 
 The examples below use `vm-harness`; `gosti` is interchangeable.
 

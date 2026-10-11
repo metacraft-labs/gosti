@@ -78,6 +78,7 @@
 ## helpers can run anywhere. Backend *registration* is unconditional,
 ## but ``probeAvailability`` returns false on non-Linux hosts.
 
+import ../env_names
 import std/[atomics, options, os, random, strutils, tables, times]
 when not defined(posix):
   import std/[osproc, streams, strtabs]
@@ -1631,6 +1632,7 @@ method provisionBaseline*(b: LibvirtBackend, spec: BaselineSpec) =
         let v = getEnv(k)
         if v.len > 0: builderEnv[k] = v
       builderEnv["VMH_BUILD_DIR"] = recipeBuildDir
+      builderEnv["GOSTI_BUILD_DIR"] = recipeBuildDir
       let br = runProcessCapture(buildArgv, cwd = recipeDir,
         timeoutSec = 120, env = builderEnv)
       if br.exitCode != 0:
@@ -2877,7 +2879,7 @@ registerBackend(biLibvirt,
     # provider renders one argv for every backend and has no place to put a
     # libvirt-only flag. An env var is the seam a deployment can set, which is
     # exactly the pattern the other backends use.
-    let poolDir = getEnv("VMH_LIBVIRT_IMAGE_POOL_DIR")
+    let poolDir = gostiEnv("VMH_LIBVIRT_IMAGE_POOL_DIR")
     if poolDir.len > 0:
       newLibvirtBackend(imagePoolDir = poolDir)
     else:

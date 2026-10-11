@@ -28,6 +28,7 @@
 ## ``state`` is normalized to GARM's own vocabulary (``running`` / ``stopped``
 ## / ``error`` / ``unknown``) so the provider forwards it verbatim.
 
+import ./env_names
 import std/[json, os, strutils, tables]
 import ./ephemeral_handle
 
@@ -168,21 +169,21 @@ proc labelStateRoot*(): string =
   ##      ``$XDG_STATE_HOME`` or ``$HOME/.local/state`` elsewhere (a launchd
   ##      or Windows-service daemon has no ``$STATE_DIRECTORY``)
   ##   5. ``<ephemeralStateRoot()>/labels``
-  let explicit = getEnv(LabelStateDirEnv)
+  let explicit = gostiEnv(LabelStateDirEnv)
   if explicit.len > 0: return explicit
-  if getEnv(EphemeralStateDirEnv).len > 0:
-    return getEnv(EphemeralStateDirEnv) / "labels"
+  if gostiEnv(EphemeralStateDirEnv).len > 0:
+    return gostiEnv(EphemeralStateDirEnv) / "labels"
   let sd = getEnv("STATE_DIRECTORY").split(':')[0]
   if sd.len > 0: return sd / "ephemeral-labels"
   when defined(windows):
     let local = getEnv("LOCALAPPDATA")
-    if local.len > 0: return local / "vm-harness" / "ephemeral-labels"
+    if local.len > 0: return preferGostiDir(local) / "ephemeral-labels"
   else:
     let xdg = getEnv("XDG_STATE_HOME")
-    if xdg.len > 0: return xdg / "vm-harness" / "ephemeral-labels"
+    if xdg.len > 0: return preferGostiDir(xdg) / "ephemeral-labels"
     let home = getEnv("HOME")
     if home.len > 0 and home != "/homeless-shelter":
-      return home / ".local" / "state" / "vm-harness" / "ephemeral-labels"
+      return preferGostiDir(home / ".local" / "state") / "ephemeral-labels"
   ephemeralStateRoot() / "labels"
 
 proc parseLabel*(arg: string): (string, string) =

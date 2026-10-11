@@ -877,6 +877,20 @@ if [ -n "$KVM" ]; then
     apt-get install -y -qq --no-install-recommends qemu-system-x86 linux-image-cloud-amd64 python3
     getent group kvm >/dev/null 2>&1 || groupadd kvm
     usermod -aG kvm '${RUNNER_USER}'
+    # Keep /dev/kvm world read/write for the container's lifetime. Debian
+    # resets it to 0660 root:kvm in two places: 50-udev-default.rules (on every
+    # systemd-udevd start) and tmpfiles.d/static-nodes-permissions.conf (on
+    # every unprefixed systemd-tmpfiles --create). The runner user is in kvm,
+    # but the Nix build sandbox runs as a build uid with no supplementary
+    # groups, so a nixosTest could not open /dev/kvm and fell back to TCG.
+    # 0666 is the NixOS default for this node.
+    printf '%s\n' 'KERNEL==\"kvm\", GROUP=\"kvm\", MODE=\"0666\", OPTIONS+=\"static_node=kvm\"' \
+      > /etc/udev/rules.d/99-vmh-nested-kvm.rules
+    # Same file name in /etc masks the packaged one; only the kvm line changes.
+    sed 's#^z /dev/kvm .*#z /dev/kvm 0666 - kvm -#' \
+      /usr/lib/tmpfiles.d/static-nodes-permissions.conf \
+      > /etc/tmpfiles.d/static-nodes-permissions.conf
+    grep -qx 'z /dev/kvm 0666 - kvm -' /etc/tmpfiles.d/static-nodes-permissions.conf
   "
 
   # (b) Smoke: qemu is present + reports a version (offline — the actual
