@@ -254,7 +254,7 @@ proc runLimactl(cmd: seq[string], cwd: string = "",
       return ExecResult(
         exitCode: -1,
         stdout: partialOut,
-        stderr: "vm-harness: process timed out after " & $timeoutSec & "s",
+        stderr: "gosti: process timed out after " & $timeoutSec & "s",
         elapsedMs: int((epochTime() - start) * 1000))
     sleep(50)
   let code = p.waitForExit(timeout = -1)

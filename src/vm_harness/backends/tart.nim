@@ -321,13 +321,13 @@ proc runProcessCapture(cmd: seq[string], cwd: string = "",
         return ExecResult(
           exitCode: -1,
           stdout: stdout,
-          stderr: stderr & "vm-harness: process timed out after " &
+          stderr: stderr & "gosti: process timed out after " &
                   $timeoutSec & "s",
           elapsedMs: int((epochTime() - start) * 1000))
       sleep(50)
   let code = p.waitForExit(timeout = -1)
   if code == 124 and timeoutSec > 0:
-    stderr.add("vm-harness: process timed out after " & $timeoutSec & "s")
+    stderr.add("gosti: process timed out after " & $timeoutSec & "s")
   ExecResult(
     exitCode: code,
     stdout: stdout,

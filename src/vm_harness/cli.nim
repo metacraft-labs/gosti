@@ -2419,7 +2419,7 @@ proc cmdSnapshot(opts: CliOpts): int =
   ## M30: dispatch ``snapshot create|restore|list <vm> [<name>]`` to the
   ## resolved backend. Positional args land in ``opts.cmd``.
   if opts.cmd.len < 2:
-    stderr.writeLine("vm-harness: snapshot requires <action> <vm> [<name>]")
+    stderr.writeLine("gosti: snapshot requires <action> <vm> [<name>]")
     stderr.writeLine("  actions: create, restore, list")
     return 2
   let action = opts.cmd[0]
@@ -2428,7 +2428,7 @@ proc cmdSnapshot(opts: CliOpts): int =
   case action
   of "create":
     if opts.cmd.len < 3:
-      stderr.writeLine("vm-harness: snapshot create requires <name>")
+      stderr.writeLine("gosti: snapshot create requires <name>")
       return 2
     let snap = opts.cmd[2]
     let mode = if opts.running: "running" else: "stopped"
@@ -2444,7 +2444,7 @@ proc cmdSnapshot(opts: CliOpts): int =
     0
   of "restore":
     if opts.cmd.len < 3:
-      stderr.writeLine("vm-harness: snapshot restore requires <name>")
+      stderr.writeLine("gosti: snapshot restore requires <name>")
       return 2
     let snap = opts.cmd[2]
     logEvent(opts.logFormat, "info",
@@ -2465,7 +2465,7 @@ proc cmdSnapshot(opts: CliOpts): int =
       echo($arr)
     0
   else:
-    stderr.writeLine("vm-harness: unknown snapshot action '" & action & "'")
+    stderr.writeLine("gosti: unknown snapshot action '" & action & "'")
     stderr.writeLine("  actions: create, restore, list")
     2
 
@@ -2473,7 +2473,7 @@ proc cmdBaseline(opts: CliOpts): int =
   ## Dispatch `baseline export <vm> <dest-dir> [--baseline <name>]`
   ## or `baseline import <src-dir>` to the resolved backend.
   if opts.cmd.len < 2:
-    stderr.writeLine("vm-harness: baseline requires <action> <vm-or-srcdir> [...]")
+    stderr.writeLine("gosti: baseline requires <action> <vm-or-srcdir> [...]")
     stderr.writeLine("  actions: export, import")
     return 2
   let action = opts.cmd[0]
@@ -2481,7 +2481,7 @@ proc cmdBaseline(opts: CliOpts): int =
   case action
   of "export":
     if opts.cmd.len < 3:
-      stderr.writeLine("vm-harness: baseline export requires <vm> <dest-dir>")
+      stderr.writeLine("gosti: baseline export requires <vm> <dest-dir>")
       return 2
     let vmName = opts.cmd[1]
     let destDir = opts.cmd[2]
@@ -2509,7 +2509,7 @@ proc cmdBaseline(opts: CliOpts): int =
       echo($arr)
     0
   else:
-    stderr.writeLine("vm-harness: unknown baseline action '" & action & "'")
+    stderr.writeLine("gosti: unknown baseline action '" & action & "'")
     stderr.writeLine("  actions: export, import")
     2
 
@@ -2596,7 +2596,7 @@ proc cmdLayer(opts: CliOpts): int =
   ## of its scope -- which is what lets the gate exercise the real decision
   ## without a hypervisor.
   if opts.cmd.len < 1:
-    stderr.writeLine("vm-harness: layer requires <action>")
+    stderr.writeLine("gosti: layer requires <action>")
     stderr.writeLine("  actions: gc, sweep-overlays")
     return 2
   if opts.imagePoolDir.len == 0:
@@ -2641,7 +2641,7 @@ proc cmdLayer(opts: CliOpts): int =
   case opts.cmd[0]
   of "gc":
     if opts.cmd.len < 2:
-      stderr.writeLine("vm-harness: layer gc requires <layer-path>")
+      stderr.writeLine("gosti: layer gc requires <layer-path>")
       return 2
     let res = deleteLayer(scope, opts.cmd[1])
     case opts.logFormat
@@ -2691,7 +2691,7 @@ proc cmdLayer(opts: CliOpts): int =
            &"kept {rep.keptLive.len} live + {rep.keptFresh.len} fresh."
     return 0
   else:
-    stderr.writeLine("vm-harness: unknown layer action '" & opts.cmd[0] & "'")
+    stderr.writeLine("gosti: unknown layer action '" & opts.cmd[0] & "'")
     stderr.writeLine("  actions: gc, sweep-overlays")
     return 2
 
@@ -2949,7 +2949,7 @@ proc dispatch*(opts: CliOpts): int =
   of "crud":      cmdCrud(opts)
   of "manifest":  cmdManifest(opts)
   else:
-    stderr.writeLine("vm-harness: unknown subcommand '" & opts.subcommand & "'")
+    stderr.writeLine("gosti: unknown subcommand '" & opts.subcommand & "'")
     stderr.writeLine(HelpText)
     2
 
@@ -2994,7 +2994,7 @@ proc runRemote(remote: string, opts: CliOpts, forwarded: seq[string]): int =
   try:
     client = newServeClient(remote, token)
   except ValueError as e:
-    stderr.writeLine("vm-harness: " & e.msg)
+    stderr.writeLine("gosti: " & e.msg)
     return 2
   # `manifest` is a control-plane read, not a worker exec: fetch the daemon's
   # SIGNED identity + capability manifest over GET /v1/manifest (RA6), so the
@@ -3037,7 +3037,7 @@ proc runCli*(args: seq[string]): int =
   try:
     opts = parseCliOpts(args)
   except ValueError as e:
-    stderr.writeLine("vm-harness: " & e.msg)
+    stderr.writeLine("gosti: " & e.msg)
     stderr.writeLine(HelpText)
     return 2
 
@@ -3049,8 +3049,8 @@ proc runCli*(args: seq[string]): int =
 when isMainModule:
   try: quit(runCli(commandLineParams()))
   except ValueError as error:
-    stderr.writeLine("vm-harness: " & error.msg)
+    stderr.writeLine("gosti: " & error.msg)
     quit(2)
   except CatchableError as error:
-    stderr.writeLine("vm-harness: " & error.msg)
+    stderr.writeLine("gosti: " & error.msg)
     quit(1)

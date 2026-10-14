@@ -199,7 +199,7 @@ proc runProcessCapture(cmd: seq[string], cwd: string = "",
     return ExecResult(
       exitCode: -1,
       stdout: stdout,
-      stderr: stderr & "vm-harness: process timed out after " &
+      stderr: stderr & "gosti: process timed out after " &
               $timeoutSec & "s",
       elapsedMs: elapsedMs)
   ExecResult(

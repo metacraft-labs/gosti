@@ -23,7 +23,12 @@
 # defect: before this file there was neither a `.pre-commit-config.yaml` nor a
 # `.git/hooks/pre-commit` here, so §4.3 was satisfied on paper by nothing at all.
 #
-# Install:  prek install        (or: pre-commit install)
+# Install:  automatic on dev-shell entry: scripts/install-git-hooks.sh, called
+#           from the shellHook in flake.nix, installs THIS file as the
+#           pre-commit hook (chained as `.repro-local` under a Reprobuild
+#           dispatcher), run by the flake's pre-commit. The flake provides the
+#           tool; this file provides the rules. Elsewhere `prek install`
+#           (or: pre-commit install).
 # Run:      prek run --all-files
 #
 # ON NixOS, `uv` MUST BE ON PATH BEFORE EITHER OF THOSE. prek otherwise

@@ -383,7 +383,7 @@ proc runProcessCapture(cmd: seq[string], cwd: string = "",
   let code = p.waitForExit(timeout = -1)
   if timedOut:
     return ExecResult(exitCode: -1, stdout: "",
-                      stderr: "vm-harness: process timed out after " &
+                      stderr: "gosti: process timed out after " &
                               $timeoutSec & "s",
                       elapsedMs: int((epochTime() - start) * 1000))
   let stdout = outStream.readAll()

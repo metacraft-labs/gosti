@@ -63,7 +63,7 @@ proc captureCommand*(cmd: seq[string], cwd = "", timeoutSec = 0,
         p.kill()
         discard p.waitForExit()
         result.exitCode = 124
-        result.stderr.add("vm-harness: process timed out\n")
+        result.stderr.add("gosti: process timed out\n")
         result.elapsedMs = int((epochTime() - started) * 1000)
         return
       sleep(5)

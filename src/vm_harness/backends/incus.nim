@@ -208,7 +208,7 @@ proc runProcessCapture(cmd: seq[string], cwd: string = "",
         return ExecResult(
           exitCode: -1,
           stdout: stdout,
-          stderr: "vm-harness: process timed out after " & $timeoutSec & "s",
+          stderr: "gosti: process timed out after " & $timeoutSec & "s",
           elapsedMs: int((epochTime() - start) * 1000))
       sleep(50)
   let code = p.waitForExit(timeout = -1)
@@ -321,7 +321,7 @@ when defined(posix):
         discard posix.close(fd)
       if opened == 0:
         # A throttle that silently never engages is worse than a loud one.
-        stderr.writeLine("vm-harness: VMH_INCUS_CREATE_CONCURRENCY=" & $slots &
+        stderr.writeLine("gosti: VMH_INCUS_CREATE_CONCURRENCY=" & $slots &
           " ignored: cannot open lock files under " & prefix.parentDir)
         return -1
       if epochTime() > deadline: return -1
@@ -370,7 +370,7 @@ static int vmh_try_create_slot(const wchar_t *path, int *contended) {
         if fd >= 0: return fd
         anyContended = anyContended or contended != 0
       if not anyContended:
-        stderr.writeLine("vm-harness: VMH_INCUS_CREATE_CONCURRENCY=" & $slots &
+        stderr.writeLine("gosti: VMH_INCUS_CREATE_CONCURRENCY=" & $slots &
           " ignored: cannot open lock files under " & prefix.parentDir)
         return -1
       if epochTime() > deadline: return -1
