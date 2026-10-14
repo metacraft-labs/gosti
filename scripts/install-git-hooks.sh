@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
 # Installs this repository's committed .pre-commit-config.yaml as its git hooks.
 #
 # The flake provides the tools, the committed config provides the rules
