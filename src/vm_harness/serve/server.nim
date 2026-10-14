@@ -151,7 +151,7 @@ proc daemonLog(ctx: ServeContext, msg: string) {.gcsafe.} =
     return
   {.cast(gcsafe).}:
     withLock serveLogLock:
-      stderr.writeLine("[vm-harness serve] " & msg)
+      stderr.writeLine("[gosti serve] " & msg)
 
 proc hostnameOrUnknown(): string =
   ## Best-effort host name for the identity ``host`` label. Nim's stdlib has no

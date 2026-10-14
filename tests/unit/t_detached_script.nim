@@ -92,7 +92,7 @@ suite "classifying a status probe":
     # What ssh produces when the guest is unreachable: exit 255, no sentinel.
     check classifyBootstrapStatus(ExecResult(exitCode: 255)).state == dsUnreachable
     check classifyBootstrapStatus(ExecResult(exitCode: -1,
-      stderr: "vm-harness: process timed out after 60s")).state == dsUnreachable
+      stderr: "gosti: process timed out after 60s")).state == dsUnreachable
 
 suite "following a detached script":
   let vm = VmHandle(name: "local", extra: initTable[string, string]())

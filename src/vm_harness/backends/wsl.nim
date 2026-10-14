@@ -123,7 +123,7 @@ proc runProcessCapture(cmd: seq[string], cwd: string = "",
         result = ExecResult(
           exitCode: -1,
           stdout: stdout,
-          stderr: "vm-harness: process timed out after " &
+          stderr: "gosti: process timed out after " &
                   $timeoutSec & "s",
           elapsedMs: int((epochTime() - start) * 1000))
         return

@@ -467,9 +467,15 @@ compatibility surface whose consumers have to move first (see the GOSTI1
 consumer migration plan in reprobuild-specs): the `VMH_*` environment
 variables, the on-disk state directories (`…/vm-harness/crud`,
 `…/vm-harness/ephemeral-labels`, `/var/lib/vm-harness-serve`), the
-`share/vm-harness/` payload path, the `vm_harness` Nim package/module name,
-and the `[vm-harness serve]` log prefix and `vm-harness:` message prefixes
-that consumers match on. Gated by `t_gosti_command_names`.
+`share/vm-harness/` payload path, and the `vm_harness` Nim package/module
+name. Gated by `t_gosti_command_names`.
+
+GOSTI1b step 6 has since renamed the message prefixes: diagnostics are
+`gosti: …` and the serve daemon logs `[gosti serve] …`. No consumer keys on the
+prefix: the GARM provider identifies an old daemon by the substrings
+`Unknown flag: '--label'` / `unknown subcommand '<verb>'`, and the enrollment
+harvest greps `identity keyId`, so both prefixes are accepted wherever text is
+matched. The `vm-harness` command name stays as a symlink indefinitely.
 
 #### 6.0.1 Environment variables and state directories (GOSTI1b step 3)
 
