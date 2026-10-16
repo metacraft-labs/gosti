@@ -58,19 +58,20 @@
       "inputs": {
         "isonim": [
           "isonim"
-        ]
+        ],
+        "standard-hook-source": "standard-hook-source"
       },
       "locked": {
-        "lastModified": 1787052468,
-        "narHash": "sha256-ounK9JoVpXIqnLxIglCdNDyPwiPorHnet0wcrTCi3CQ=",
+        "lastModified": 1791222892,
+        "narHash": "sha256-xjfB1Pf4t2Yupd95Rmw1jAXZspy6xEKXFM0m9Wtgs40=",
         "owner": "metacraft-labs",
         "repo": "isonim-docs",
-        "rev": "4138122e911b108a6bbbc2b3af01626a6b90ded3",
+        "rev": "465a170a345aa3e87cea747adf3406316054c7f1",
         "type": "github"
       },
       "original": {
         "owner": "metacraft-labs",
-        "ref": "main",
+        "ref": "dev",
         "repo": "isonim-docs",
         "type": "github"
       }
@@ -148,6 +149,23 @@
         "nim-everywhere": "nim-everywhere",
         "nim-faststreams": "nim-faststreams",
         "nim-stew": "nim-stew"
+      }
+    },
+    "standard-hook-source": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791010525,
+        "narHash": "sha256-wTBTyTJwShLWCUShUsFS35ck5VygVJbVvJtRoyV+hIc=",
+        "owner": "metacraft-labs",
+        "repo": "devops-modules",
+        "rev": "c8ef41d446e211892fe9775182b43d5d517554ac",
+        "type": "github"
+      },
+      "original": {
+        "owner": "metacraft-labs",
+        "repo": "devops-modules",
+        "rev": "c8ef41d446e211892fe9775182b43d5d517554ac",
+        "type": "github"
       }
     },
     "systems": {
