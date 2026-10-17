@@ -48,10 +48,21 @@ proc writeExe(path, body: string) =
   writeFile(path, body)
   setFilePermissions(path, {fpUserRead, fpUserWrite, fpUserExec})
 
-proc fakeIncus(work: string; busyDeletes: int; listFails = false): string =
+proc fakeIncus(work: string; busyDeletes: int; listFails = false;
+               refuseStop = false): string =
   ## A stateful fake incus. `<work>/containers` holds `name,STATE` rows.
-  ## `delete --force <n>` fails with the measured ZFS message `busyDeletes`
-  ## times (counted in `<work>/busy`), then removes the row.
+  ## A delete fails with the measured ZFS message `busyDeletes` times
+  ## (counted in `<work>/busy`), then removes the row.
+  ##
+  ## `stop --force <n>` flips that row to STOPPED, which is what lets a test
+  ## distinguish the H7 settled path (`delete <n>`, issued only after the row
+  ## reads STOPPED) from the old fold-the-stop shape (`delete --force <n>`).
+  ## With `refuseStop` the stop silently does nothing, so the container never
+  ## settles and the caller must fall back to `--force` rather than hang.
+  ##
+  ## NOTE the argument shape: `delete` takes the name in `$2` when called as
+  ## `delete <n>` and in `$3` as `delete --force <n>`, so the fake resolves the
+  ## name from whichever position is not a flag.
   let exe = work / "incus"
   writeFile(work / "busy", $busyDeletes)
   writeExe(exe, "#!/bin/sh\n" &
@@ -60,23 +71,61 @@ proc fakeIncus(work: string; busyDeletes: int; listFails = false): string =
     "case \"$1\" in\n" &
     "  list)\n" &
     (if listFails: "    echo 'Error: failed to connect to the incus daemon' >&2; exit 1 ;;\n"
-     else: "    cat \"$W/containers\"; exit 0 ;;\n") &
+     else:
+       # Honour the name filter and the requested column, like real incus.
+       # The old fake `cat`-ed every row for every shape, which made
+       # `incus list <name> --format csv -c s` return the WHOLE table — so
+       # `containerState` could never read a state and anything branching on
+       # it was untestable. Three shapes are used in the code under test:
+       #   list --format csv -c n        (names)
+       #   list --format csv -c ns       (name,state)
+       #   list <name> --format csv -c s (one state)
+       "    if [ \"$2\" = '--format' ]; then t=''; else t=$2; fi\n" &
+       "    for a in \"$@\"; do col=$a; done\n" &
+       "    if [ -n \"$t\" ]; then rows=$(grep \"^$t,\" \"$W/containers\"); " &
+       "else rows=$(cat \"$W/containers\"); fi\n" &
+       "    case \"$col\" in\n" &
+       "      s) printf '%s\\n' \"$rows\" | cut -d, -f2 ;;\n" &
+       "      n) printf '%s\\n' \"$rows\" | cut -d, -f1 ;;\n" &
+       "      *) printf '%s\\n' \"$rows\" ;;\n" &
+       "    esac\n" &
+       "    exit 0 ;;\n") &
+    "  stop)\n" &
+    (if refuseStop: "    exit 0 ;;\n"
+     else:
+       "    t=$2; [ \"$t\" = '--force' ] && t=$3\n" &
+       "    sed \"s/^$t,.*/$t,STOPPED/\" \"$W/containers\" > \"$W/c.tmp\"\n" &
+       "    mv \"$W/c.tmp\" \"$W/containers\"; exit 0 ;;\n") &
     "  delete)\n" &
+    "    t=$2; [ \"$t\" = '--force' ] && t=$3\n" &
     "    n=$(cat \"$W/busy\")\n" &
     "    if [ \"$n\" -gt 0 ]; then\n" &
     "      echo $((n-1)) > \"$W/busy\"\n" &
-    "      echo \"Error: Failed deleting instance \\\"$3\\\": zfs destroy -r zfs_root/containers/$3: dataset is busy\" >&2\n" &
+    "      echo \"Error: Failed deleting instance \\\"$t\\\": zfs destroy -r zfs_root/containers/$t: dataset is busy\" >&2\n" &
     "      exit 1\n" &
     "    fi\n" &
-    "    grep -v \"^$3,\" \"$W/containers\" > \"$W/c.tmp\"; mv \"$W/c.tmp\" \"$W/containers\"; exit 0 ;;\n" &
+    "    grep -v \"^$t,\" \"$W/containers\" > \"$W/c.tmp\"; mv \"$W/c.tmp\" \"$W/containers\"; exit 0 ;;\n" &
     "esac\n" &
     "exit 0\n")
   exe
 
 proc deleteAttempts(work: string): int =
+  ## Counts BOTH shapes. Before H7 every delete was `delete --force`; the
+  ## settled path issues a plain `delete`, so a prefix match on `--force`
+  ## alone would silently report zero attempts for the new behaviour.
+  if not fileExists(work / "log"): return 0
+  for l in readFile(work / "log").splitLines():
+    if l.startsWith("delete"): inc result
+
+proc forcedDeleteAttempts(work: string): int =
   if not fileExists(work / "log"): return 0
   for l in readFile(work / "log").splitLines():
     if l.startsWith("delete --force"): inc result
+
+proc stopAttempts(work: string): int =
+  if not fileExists(work / "log"): return 0
+  for l in readFile(work / "log").splitLines():
+    if l.startsWith("stop"): inc result
 
 template withEnv(key, value: string; body: untyped) =
   let previous = getEnv(key)
@@ -294,6 +343,53 @@ when defined(linux):
         check slept[1] == 4000
         for ms in slept: check ms <= 30_000
       check readFile(work / "containers") == "garm-stuck,STOPPED\n"
+
+    # ── H7: teardown ORDERING ────────────────────────────────────────────────
+    #
+    # `delete --force` folds the stop into the delete, so incusd races its own
+    # unmount of the rootfs and `zfs destroy -r` loses with "dataset is busy".
+    # Measured on high-mem-server 2026-10-17: 11 instances wedged a MEDIAN of
+    # 169 minutes over 46-48 attempts each. These two tests pin the fix and its
+    # fallback, which is the pair that matters — a stop-first that cannot fall
+    # back would turn an unstoppable container into one nobody ever deletes.
+    test "a RUNNING container is stopped and confirmed before a plain delete":
+      let work = createTempDir("vmh-eph-destroy-running", "")
+      defer: removeDir(work)
+      writeFile(work / "containers", "garm-run,RUNNING\n")
+      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 0)):
+        check runCli(@["ephemeral-destroy", "--backend", "incus",
+                       "--baseline", "garm-run"]) == 0
+      check stopAttempts(work) == 1
+      check deleteAttempts(work) == 1
+      # The point of the whole change: NOT one `--force` fold.
+      check forcedDeleteAttempts(work) == 0
+      check readFile(work / "containers") == ""
+
+    test "a container that will not stop still gets the --force fallback":
+      let work = createTempDir("vmh-eph-destroy-nostop", "")
+      defer: removeDir(work)
+      writeFile(work / "containers", "garm-stubborn,RUNNING\n")
+      withEnv("VMH_INCUS_CMD",
+              fakeIncus(work, busyDeletes = 0, refuseStop = true)):
+        let ib = IncusBackend(newIncusBackend(@[work / "incus"]))
+        # Injected sleeper so the settle budget is consumed instantly.
+        ib.destroyContainerVerified("garm-stubborn", budgetSec = 600,
+                                    sleeper = proc (ms: int) = discard)
+      check stopAttempts(work) >= 1
+      # It never reached STOPPED, so the old shape is what must have run.
+      check forcedDeleteAttempts(work) == 1
+      check readFile(work / "containers") == ""
+
+    test "an already-STOPPED container is deleted without a redundant stop":
+      let work = createTempDir("vmh-eph-destroy-stopped", "")
+      defer: removeDir(work)
+      writeFile(work / "containers", "garm-idle,STOPPED\n")
+      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 0)):
+        check runCli(@["ephemeral-destroy", "--backend", "incus",
+                       "--baseline", "garm-idle"]) == 0
+      check stopAttempts(work) == 0
+      check forcedDeleteAttempts(work) == 0
+      check deleteAttempts(work) == 1
 
     test "an absent container is success without issuing a delete":
       let work = createTempDir("vmh-eph-destroy-absent", "")
