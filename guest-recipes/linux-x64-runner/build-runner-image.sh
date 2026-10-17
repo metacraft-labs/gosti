@@ -482,18 +482,46 @@ log "checking runner runtime dependencies in the base image"
 #         repository in a separate sub-step below.
 #     apt needs egress, which incusbr0 does not lease; bring up the shared
 #     static build IP for the install (idempotent — the HR1/HR2 bakes reuse it).
-log "installing CI baseline tools (git, git-lfs, xz-utils, ca-certificates, fuse3, gawk, jq, gh)"
+log "installing CI baseline tools (git, git-lfs, xz-utils, ca-certificates, fuse3, gawk, jq, gh, dbus)"
 ensure_build_egress
 "${INCUS[@]}" exec "$BLD" -- sh -c "
   set -e
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq --no-install-recommends git git-lfs xz-utils ca-certificates fuse3 gawk jq
+  apt-get install -y -qq --no-install-recommends git git-lfs xz-utils ca-certificates fuse3 gawk jq dbus
   command -v git
   command -v git-lfs
   command -v gawk
   command -v jq
   command -v xz
+  # dbus is BASELINE, not a docker dependency. It used to be installed only in
+  # the HR1 docker bake, which left a non-docker image unable to start a
+  # session bus at all. Anything that needs a private bus needs it here:
+  # agent-harbor's Computer-Use substrate runs `dbus-daemon --session` with its
+  # own --address to drive a headless desktop, and that is unrelated to docker.
+  command -v dbus-daemon
+  # ...and `--session` needs its CONFIG, which Debian 12 ships in a different
+  # binary package from the daemon (dbus-session-bus-common, not dbus-daemon).
+  # Installing the `dbus` metapackage above pulls both; asserting the file here
+  # is what makes a future slimming of that package list fail the BUILD instead
+  # of a CI job a week later.
+  #
+  # This is the measured failure mode. Run by hand with no session config
+  # present, dbus-daemon dies exactly the way the ephemeral runners do:
+  #   $ dbus-daemon --session --nofork --address=unix:path=/tmp/x
+  #   Failed to start message bus: Failed to open ".../session.conf": No such file
+  #   exit 1
+  # which matches 'managed child exited before publishing its socket: exit
+  # status: 1' in ~50 ms, on every `garm-*` guest and on none of the persistent
+  # runners. See agent-harbor
+  # issues/2026-10-10-ephemeral-garm-runners-cannot-start-a-private-dbus.md.
+  #
+  # A machine id is NOT the cause, though it is the folklore answer. Verified by
+  # supplying a config file on a host with neither /etc/machine-id nor
+  # /var/lib/dbus/machine-id: dbus-daemon starts and keeps running. So no
+  # `dbus-uuidgen` here -- systemd still mints a per-instance id at boot, and
+  # baking one into the image would make every cloned guest share an identity.
+  test -f /usr/share/dbus-1/session.conf
   # Assert the helper is present AND setuid — an installed-but-not-setuid
   # fusermount3 fails later, at build time, with the far less obvious
   # 'fusermount3: mount failed: Operation not permitted'.
