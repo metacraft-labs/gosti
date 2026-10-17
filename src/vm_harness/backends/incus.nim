@@ -438,6 +438,15 @@ const
     ## what a ZFS ``destroy -r`` takes on a loaded pool, and the timeout path
     ## TERMINATED the client mid-delete — after the stop, before the destroy —
     ## which is precisely how a container is left STOPPED.
+  IncusStopSettleBudgetSec* = 60
+    ## How long to wait for a container to actually reach ``STOPPED`` after
+    ## ``incus stop --force``, before giving up and falling back to the old
+    ## fold-the-stop-into-the-delete behaviour. Bounded because a container
+    ## that will not stop must not consume the whole destroy budget before a
+    ## single delete has been attempted.
+  IncusStopPollMs* = 500
+    ## Poll interval while waiting for ``STOPPED``. Short: the wait is almost
+    ## always sub-second, and the point of the wait is ordering, not patience.
 
 proc deleteContainer*(b: IncusBackend, name: string): ExecResult =
   ## ``incus delete --force <name>`` — force-stop + delete in one shot.
@@ -500,18 +509,77 @@ proc destroyContainerVerified*(b: IncusBackend, name: string;
   var delayMs = 2000
   var attempt = 0
   var lastOutput = ""
+
+  # ── H7: SETTLE THE CONTAINER BEFORE DESTROYING IT ───────────────────────────
+  #
+  # `incus delete --force` folds the stop into the delete, so incusd starts
+  # unmounting the container rootfs while its own stop is still tearing the
+  # guest down. On a `security.nesting` + nested-KVM + Docker runner that rootfs
+  # is referenced by hundreds of processes across dozens of mount namespaces,
+  # and `zfs destroy -r` then loses the race with:
+  #
+  #     cannot destroy '<pool>/containers/<name>': dataset is busy
+  #
+  # Measured on high-mem-server 2026-10-17: 11 instances wedged for a MEDIAN OF
+  # 169 MINUTES (max 174), 46-48 attempts each, every one that message. The
+  # retry loop below is well-built and still could not win, because each attempt
+  # recreated the same race. Retrying an ordering bug harder does not fix it.
+  #
+  # So: stop as a SEPARATE, COMPLETED step, confirm `STOPPED`, then delete
+  # WITHOUT `--force`. That is the whole fix.
+  #
+  # FALLS BACK, deliberately. If the container will not reach `STOPPED` inside
+  # `IncusStopSettleBudgetSec` we still issue the old `delete --force`: a
+  # container that cannot stop must not become a container nobody ever tries to
+  # delete. The fallback is also what keeps this change safe for the
+  # non-GARM callers' expectations — worst case we behave exactly as before.
+  proc settled(): bool =
+    ## Best-effort stop-and-wait. True when the container is confirmed
+    ## `STOPPED` (so a plain `delete` is correct), false when it is not — or
+    ## when incus could not tell us, which must not be read as stopped.
+    let state = b.containerState(name)
+    if state.len == 0:
+      return false
+    if state == "STOPPED":
+      return true
+    # `stop --force` rather than a graceful stop: these are ephemeral CI
+    # runners whose job is already over by the time teardown runs, and a
+    # graceful shutdown on a loaded host is exactly the latency this defect
+    # is made of.
+    discard b.runIncus(@["stop", "--force", name], timeoutSec = 60)
+    var waitedMs = 0
+    while waitedMs < IncusStopSettleBudgetSec * 1000:
+      let s = b.containerState(name)
+      # Gone entirely is also settled — the delete below no-ops on absence.
+      if s.len == 0 or s == "STOPPED":
+        return true
+      doSleep(IncusStopPollMs)
+      waitedMs += IncusStopPollMs
+      sleptMs += IncusStopPollMs
+    false
+
   while true:
     if not b.containerPresent(name):
       return
     inc attempt
-    let r = b.runIncus(@["delete", "--force", name],
-                       timeoutSec = IncusDeleteTimeoutSec)
+    let wasSettled = settled()
+    let args =
+      if wasSettled: @["delete", name]
+      else: @["delete", "--force", name]
+    let r = b.runIncus(args, timeoutSec = IncusDeleteTimeoutSec)
     lastOutput = (r.stdout & r.stderr).strip()
     if r.exitCode == 0 and not b.containerPresent(name):
       return
     let transient = isTransientIncusDeleteError(lastOutput) or r.exitCode == -1
+    # Record WHICH shape was used. An operator reading
+    # `docs/CI-Runner-Fleet-Status.md`'s H7 section needs to tell at a glance
+    # whether a wedged teardown came from the settled path or from the
+    # fold-the-stop fallback, because they have different causes: the first
+    # means the rootfs is pinned by something outside the container, the second
+    # means the container would not stop.
     stderr.writeLine("[vm-harness] incus delete " & name & " attempt " &
-      $attempt & " failed (exit " & $r.exitCode & ", " &
+      $attempt & " (" & (if wasSettled: "stopped-first" else: "--force fallback") &
+      ") failed (exit " & $r.exitCode & ", " &
       (if transient: "transient" else: "unexpected") & "): " & lastOutput)
     if spentSec() + (delayMs.float / 1000.0) > budgetSec.float:
       break
