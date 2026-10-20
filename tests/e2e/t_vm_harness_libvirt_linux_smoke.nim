@@ -97,10 +97,30 @@ suite "e2e_vm_harness_libvirt_linux_smoke":
       serialLogPath: scratch / "serial.log",
       noCloudSeedIso: seed,
       sshForwardPort: freeLoopbackPort())
+    # Residue of an aborted run: a domain whose creating process is gone.
+    let dead = startProcess("true", options = {poUsePath})
+    discard dead.waitForExit()
+    let deadPid = dead.processID
+    dead.close()
+    let staleName = "repro-vm-libvirt-stale-" & $deadPid
+    let stale = b.provisionEphemeralClone(EphemeralCloneSpec(
+      name: staleName, goldenImage: golden, cpus: 1, memoryMB: 512,
+      serialLogPath: scratch / "stale.log", sshForwardPort: freeLoopbackPort()))
+    let staleOverlay = stale.extra.getOrDefault("overlayPath", "")
+    check b.domainExists(staleName)
+
     var vm = b.provisionEphemeralClone(spec)
     let overlay = vm.extra.getOrDefault("overlayPath", "")
     check vm.ipAddress == some("127.0.0.1")
     try:
+      # The sweep a session starts with removes the dead run's domain and
+      # keeps this live one, whose owner pid is this process.
+      let swept = b.sweepStaleLibvirtDomains()
+      check staleName in swept
+      check name notin swept
+      check not b.domainExists(staleName)
+      check not fileExists(staleOverlay)
+      check b.domainExists(name)
       b.startAndAwaitReady(vm, timeoutSec = 300)
       let ci = b.execInGuest(vm, initTable[string, string](),
                              @["cloud-init", "status", "--wait"],

@@ -909,6 +909,53 @@ proc removeEphemeralOverlay*(b: LibvirtBackend, name: string) =
     try: removeFile(overlay)
     except CatchableError: discard
 
+const StaleSweepPrefix* = "repro-vm-"
+  ## Domains the harness's own gates create carry this prefix and end in
+  ## ``-<pid>`` of the process that created them.
+
+proc staleSweepOwnerPid*(name: string, prefix = StaleSweepPrefix): int =
+  ## The creating process's pid parsed from ``<prefix>...-<pid>``, or 0 when
+  ## the name does not have that shape. A name without an owner pid is never
+  ## swept: nothing proves its run is over.
+  if not name.startsWith(prefix): return 0
+  let dash = name.rfind('-')
+  if dash < prefix.len or dash == name.high: return 0
+  try:
+    result = parseInt(name[dash + 1 .. ^1])
+  except ValueError:
+    return 0
+  if result <= 0: result = 0
+
+proc processAlive(pid: int): bool =
+  ## Unknown liveness reads as alive, so an unprovable domain is kept.
+  when defined(linux): dirExists("/proc/" & $pid)
+  else: true
+
+proc sweepStaleLibvirtDomains*(b: LibvirtBackend,
+                               prefix = StaleSweepPrefix): seq[string] =
+  ## Remove ``<prefix>*-<pid>`` domains whose creating process is gone: the
+  ## residue of a gate run that was killed before its ``finally`` ran. The
+  ## domain is destroyed and undefined, and its per-job overlay and seed /
+  ## config-drive ISOs in this backend's pool are deleted. A domain whose
+  ## owner is still alive belongs to a concurrent run and is left alone, as
+  ## is any name without an owner pid. Returns the names swept. Call it at
+  ## the start of a session, never in place of teardown.
+  let listing = b.tryListAllDomainNames()
+  if not listing.ok: return
+  for name in listing.names:
+    let owner = staleSweepOwnerPid(name, prefix)
+    if owner == 0 or processAlive(owner): continue
+    try: b.destroyDomain(name)
+    except CatchableError: discard
+    try: b.undefineDomain(name)
+    except CatchableError: discard
+    b.removeEphemeralOverlay(name)
+    for iso in [b.noCloudSeedIsoPathFor(name), b.configDriveIsoPathFor(name)]:
+      if fileExists(iso):
+        try: removeFile(iso)
+        except CatchableError: discard
+    result.add(name)
+
 proc ensureSshForward*(b: LibvirtBackend, uuid: string, port: int)
 proc configuredSshAuth(b: LibvirtBackend): SshAuth
 

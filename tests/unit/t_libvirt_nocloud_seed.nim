@@ -141,3 +141,15 @@ suite "libvirt NoCloud seed — capability signal":
     # No backend attaches mounts yet, so --mount stays fail-closed everywhere.
     check not lv.honorsMounts()
     check not mk.honorsMounts()
+
+suite "libvirt stale-domain sweep — owner pid parsing":
+  test "a harness gate name yields its creator's pid":
+    check staleSweepOwnerPid("repro-vm-libvirt-linux-smoke-4242") == 4242
+
+  test "names that prove no owner are never swept":
+    check staleSweepOwnerPid("garm-runner-17") == 0
+    check staleSweepOwnerPid("repro-vm-") == 0
+    check staleSweepOwnerPid("repro-vm-libvirt-smoke") == 0
+    check staleSweepOwnerPid("repro-vm-libvirt-smoke-") == 0
+    check staleSweepOwnerPid("repro-vm-libvirt-smoke-12ab") == 0
+    check staleSweepOwnerPid("windows-runner-001") == 0
