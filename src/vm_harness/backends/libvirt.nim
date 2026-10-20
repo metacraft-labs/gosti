@@ -664,6 +664,13 @@ type
                                  ## ``DiskSizeTooSmallError``.
     diskGBDefaulted*: bool       ## ``diskGB`` is a default, not a request: a
                                  ## golden that is already larger is kept.
+    sshForwardPort*: int         ## 0 ⇒ the NIC joins libvirt's ``default``
+                                 ## NAT network and the guest is reached at
+                                 ## its leased address. >0 ⇒ a user-mode NIC
+                                 ## with ``127.0.0.1:<port>`` forwarded to the
+                                 ## guest's port 22. ``qemu:///session`` has no
+                                 ## ``default`` network, so this is the only
+                                 ## way to reach a firmware-boot guest there.
 
 proc configDriveIsoPathFor*(b: LibvirtBackend, name: string): string =
   ## Per-job config-drive ISO path, named ``<domain>.config-drive.iso`` so
@@ -823,10 +830,17 @@ proc buildEphemeralDomainXml*(b: LibvirtBackend, spec: EphemeralCloneSpec,
   var netIface = ""
   if spec.kernel.len == 0:
     netIface =
-      "    <interface type='network'>\n" &
-      "      <source network='default'/>\n" &
-      "      <model type='virtio'/>\n" &
-      "    </interface>\n"
+      if spec.sshForwardPort > 0:
+        # The loopback forward is added through the monitor after start
+        # (``ensureSshForward``); libvirt names this NIC's netdev hostnet0.
+        "    <interface type='user'>\n" &
+        "      <model type='virtio'/>\n" &
+        "    </interface>\n"
+      else:
+        "    <interface type='network'>\n" &
+        "      <source network='default'/>\n" &
+        "      <model type='virtio'/>\n" &
+        "    </interface>\n"
   # Windows 11 on UEFI requires SMM + APIC; hyperv enlightenments improve
   # stability. The tiny-Linux path keeps the minimal <acpi/>-only features.
   var featuresBlock = "  <features><acpi/></features>\n"
@@ -894,6 +908,9 @@ proc removeEphemeralOverlay*(b: LibvirtBackend, name: string) =
   if fileExists(overlay):
     try: removeFile(overlay)
     except CatchableError: discard
+
+proc ensureSshForward*(b: LibvirtBackend, uuid: string, port: int)
+proc configuredSshAuth(b: LibvirtBackend): SshAuth
 
 method provisionEphemeralClone*(b: LibvirtBackend,
                                 spec: EphemeralCloneSpec): VmHandle {.base.} =
@@ -985,10 +1002,32 @@ method provisionEphemeralClone*(b: LibvirtBackend,
         "virsh start (ephemeral) failed (exit " & $startRes.exitCode &
         "): " & startRes.stdout)
 
+    var address = none(string)
+    var sshAuth = SshAuth(kind: saNone)
+    if spec.sshForwardPort > 0:
+      try:
+        b.ensureSshForward(spec.name, spec.sshForwardPort)
+      except CatchableError as e:
+        try: b.destroyDomain(spec.name)
+        except CatchableError: discard
+        try: b.undefineDomain(spec.name)
+        except CatchableError: discard
+        b.removeEphemeralOverlay(spec.name)
+        raise newVmHarnessError($b.id, lpStartup,
+          "provisionEphemeralClone: SSH forward 127.0.0.1:" &
+          $spec.sshForwardPort & " -> guest:22 was not installed: " & e.msg)
+      # The SSH helpers read the port from the backend, as the durable
+      # media-boot path does (cli.nim sets ``sshPort`` the same way).
+      b.sshPort = spec.sshForwardPort
+      address = some("127.0.0.1")
+      sshAuth = b.configuredSshAuth()
+
     var extra = initTable[string, string]()
     extra["libvirtUri"] = b.libvirtUri
     extra["domain"] = spec.name
     extra["ephemeral"] = "true"
+    if spec.sshForwardPort > 0:
+      extra["sshForwardPort"] = $spec.sshForwardPort
     extra["overlayPath"] = overlay
     extra["goldenImage"] = spec.goldenImage
     extra["serialLogPath"] = serialLogPath
@@ -1002,10 +1041,10 @@ method provisionEphemeralClone*(b: LibvirtBackend,
       backend: b,
       name: spec.name,
       baseline: spec.goldenImage,
-      ipAddress: none(string),
+      ipAddress: address,
       sshPort: b.sshPort,
       sshUser: b.sshUser,
-      sshAuth: SshAuth(kind: saNone),
+      sshAuth: sshAuth,
       extra: extra)
   else:
     raise newException(BackendUnavailableError,

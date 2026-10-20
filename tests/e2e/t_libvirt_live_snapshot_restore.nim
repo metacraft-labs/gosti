@@ -49,6 +49,12 @@
 ##                                  campaign's gate wants 10)
 ##   VMH_LIBVIRT_WARM_STATE_DIR     snapshot artifact dir (default: the
 ##                                  image pool)
+##   VMH_LIBVIRT_WARM_SSH_FORWARD_PORT  reach the guest at 127.0.0.1:<port>
+##                                  through a user-mode NIC forward instead
+##                                  of a libvirt-network lease. Needed on
+##                                  qemu:///session, which has no NAT
+##                                  network; the forward is re-installed
+##                                  after every restore.
 ##   LIBVIRT_DEFAULT_URI            e.g. qemu:///session
 ##
 ## GUEST OS. The resume-not-boot witness is a value that a kernel/OS can
@@ -77,8 +83,9 @@
 ##   export VMH_LIBVIRT_WARM_SSH_USER=root VMH_LIBVIRT_WARM_SSH_KEY=~/.ssh/id_ed25519
 ##   nim r --hints:off tests/e2e/t_libvirt_live_snapshot_restore.nim
 
-import std/[algorithm, os, strutils, tables, times, unittest]
+import std/[algorithm, options, os, strutils, tables, times, unittest]
 import vm_harness
+import vm_harness/backends/libvirt
 
 when not defined(linux):
   echo "[skip] t_libvirt_live_snapshot_restore: Linux host required"
@@ -123,12 +130,16 @@ if guestOsName notin ["linux", "windows"]:
   quit(1)
 let isWindows = guestOsName == "windows"
 let stateDir = getEnv("VMH_LIBVIRT_WARM_STATE_DIR")
+let forwardPort = (let p = getEnv("VMH_LIBVIRT_WARM_SSH_FORWARD_PORT");
+                   if p.len > 0: parseInt(p) else: 0)
 
 let b = newLibvirtBackend(snapshotStateDir = stateDir,
                           sshUser = sshUser,
                           sshPassword = sshPassword,
                           sshKeyPath = sshKey,
                           sshGuestOs = (if isWindows: goWindows else: goLinux))
+if forwardPort > 0:
+  b.sshPort = forwardPort
 
 if not b.probeAvailability():
   echo "[skip] t_libvirt_live_snapshot_restore: libvirt not reachable at " &
@@ -252,8 +263,25 @@ proc sentinelRunning(pid: string): string =
   else:
     sh("grep -qs sleep /proc/" & pid & "/comm && echo yes || echo no")
 
+proc reForward() =
+  ## A user-mode NIC loses its monitor-added forward whenever the QEMU
+  ## process is replaced, so re-assert it after every restore. Idempotent.
+  if forwardPort > 0:
+    b.ensureSshForward(domName, forwardPort)
+
+proc restore(snap: string) =
+  b.restoreSnapshot(domName, snap)
+  reForward()
+
 proc bringUp(timeoutSec: int = 300) =
-  vm = b.revertToBaseline(domName)
+  if forwardPort > 0:
+    b.startDomain(domName)
+    reForward()
+    vm = VmHandle(backend: b, name: domName, baseline: domName,
+                  ipAddress: some("127.0.0.1"), sshPort: forwardPort,
+                  sshUser: sshUser)
+  else:
+    vm = b.revertToBaseline(domName)
   b.startAndAwaitReady(vm, timeoutSec = timeoutSec)
 
 proc msSince(t: float): int = int((epochTime() - t) * 1000.0)
@@ -296,7 +324,7 @@ suite "t_libvirt_live_snapshot_restore":
     check markerPresent() == "no"
     check sentinelRunning(sentinelPid) == "yes"
 
-    b.restoreSnapshot(domName, WarmSnap)
+    restore(WarmSnap)
     b.startAndAwaitReady(vm, timeoutSec = 300)
 
     # Disk state came back with the snapshot.
@@ -316,7 +344,7 @@ suite "t_libvirt_live_snapshot_restore":
     # proving nothing.
     let idBefore = bootWitness()
     check b.snapshot(domName, ColdSnap) == ColdSnap
-    b.restoreSnapshot(domName, ColdSnap)
+    restore(ColdSnap)
     b.startAndAwaitReady(vm, timeoutSec = 300)
     let idAfter = bootWitness()
     echo "  boot witness before/after cold restore: ", idBefore, " / ", idAfter
@@ -328,12 +356,12 @@ suite "t_libvirt_live_snapshot_restore":
     var coldMs: seq[int] = @[]
     for i in 1 .. reps:
       let w = epochTime()
-      b.restoreSnapshot(domName, WarmSnap)
+      restore(WarmSnap)
       b.startAndAwaitReady(vm, timeoutSec = 300)
       warmMs.add(msSince(w))
 
       let c = epochTime()
-      b.restoreSnapshot(domName, ColdSnap)
+      restore(ColdSnap)
       b.startAndAwaitReady(vm, timeoutSec = 300)
       coldMs.add(msSince(c))
 

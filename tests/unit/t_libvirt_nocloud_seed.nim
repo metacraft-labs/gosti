@@ -91,6 +91,25 @@ suite "libvirt NoCloud seed — attached to the domain XML":
     check "cidata" notin xml
     check "dev='sdb'" notin xml
 
+  test "an SSH forward port selects a user-mode NIC instead of the NAT network":
+    # qemu:///session has no 'default' network; the forward is installed
+    # through the monitor after start, so the XML carries only the NIC.
+    let fwd = EphemeralCloneSpec(
+      name: "fwd",
+      goldenImage: "/storage/libvirt/base.qcow2",
+      sshForwardPort: 40022)
+    let xml = b.buildEphemeralDomainXml(fwd, "/storage/libvirt/fwd.overlay.qcow2",
+                                        "/tmp/fwd.serial.log")
+    check "<interface type='user'>" in xml
+    check "network='default'" notin xml
+    let nat = EphemeralCloneSpec(
+      name: "nat",
+      goldenImage: "/storage/libvirt/base.qcow2")
+    let natXml = b.buildEphemeralDomainXml(nat, "/storage/libvirt/nat.overlay.qcow2",
+                                           "/tmp/nat.serial.log")
+    check "<source network='default'/>" in natXml
+    check "type='user'" notin natXml
+
   test "the per-instance seed path is named after the domain":
     check b.noCloudSeedIsoPathFor("ci-abc123").endsWith("ci-abc123.cidata.iso")
 
