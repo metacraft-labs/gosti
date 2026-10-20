@@ -20,6 +20,7 @@ import ./env_names
 import std/[json, options, os, osproc, sequtils, strformat, strutils, tables,
             terminal, times]
 import ./types, ./output, ./auto, ./orchestrator, ./detached_bootstrap
+import ./cloud_init_seed
 export detached_bootstrap
 # Import every backend module so its registerBackend bootstrap runs.
 # Each import is a static side-effect: the backend's factory lands in
@@ -1905,7 +1906,13 @@ proc cmdRunEphemeral(opts: CliOpts): int =
   # M3: build the config-drive ISO from --user-data so cloudbase-init runs
   # the injected bootstrap on first boot. Per-job artifacts (ISO + nvram)
   # live next to the overlay and are removed on teardown.
+  #
+  # A Linux guest reads cloud-init's NoCloud `cidata` seed instead, built from
+  # the same --user-data / --meta-data (meta-data defaults to an instance-id
+  # and hostname named after the domain).
   var configDriveIso = ""
+  var noCloudSeedIso = ""
+  let linuxGuest = opts.guestSet and opts.guest == goLinux
   if opts.userDataFile.len > 0:
     if not fileExists(opts.userDataFile):
       raise newException(ValueError,
@@ -1914,8 +1921,32 @@ proc cmdRunEphemeral(opts: CliOpts): int =
     var metaData = ""
     if opts.metaDataFile.len > 0 and fileExists(opts.metaDataFile):
       metaData = readFile(opts.metaDataFile)
-    configDriveIso = lb.configDriveIsoPathFor(opts.baseline)
-    discard buildConfigDriveIso(configDriveIso, userData, metaData)
+    if linuxGuest:
+      if metaData.len == 0:
+        metaData = "instance-id: " & opts.baseline & "\n" &
+          "local-hostname: " & opts.baseline & "\n"
+      createDir(lb.imagePoolDir)
+      noCloudSeedIso = lb.noCloudSeedIsoPathFor(opts.baseline)
+      writeNoCloudIso(noCloudSeedIso, userData, metaData)
+    else:
+      configDriveIso = lb.configDriveIsoPathFor(opts.baseline)
+      discard buildConfigDriveIso(configDriveIso, userData, metaData)
+  # --ssh-forward-port: reach the guest at 127.0.0.1:<port> over a user-mode
+  # NIC (qemu:///session has no NAT network), and probe with the command after
+  # `--` over SSH instead of waiting for a serial marker.
+  let sshForwardPort =
+    if opts.sshForwardPort == -1: pickTcpPort(0) else: opts.sshForwardPort
+  if sshForwardPort != 0:
+    if opts.sshUser.len == 0 or opts.sshPrivateKey.len == 0:
+      raise newException(ValueError,
+        "run --ephemeral --ssh-forward-port needs --ssh-user and --ssh-private-key")
+    lb.sshUser = opts.sshUser
+    lb.sshPassword = ""
+    lb.sshKeyPath = absolutePath(opts.sshPrivateKey)
+    if opts.sshKnownHosts.len > 0:
+      lb.sshKnownHostsPath = absolutePath(opts.sshKnownHosts)
+    if opts.guestSet:
+      lb.sshGuestOs = opts.guest
   var uefiNvram = ""
   if opts.uefiLoader.len > 0:
     uefiNvram = lb.imagePoolDir / (opts.baseline & "_VARS.fd")
@@ -1928,11 +1959,44 @@ proc cmdRunEphemeral(opts: CliOpts): int =
     initrd: opts.initrd,
     cmdline: opts.kernelCmdline,
     configDriveIso: configDriveIso,
+    noCloudSeedIso: noCloudSeedIso,
     uefiLoader: opts.uefiLoader,
     uefiNvramTemplate: opts.uefiNvramTemplate,
     uefiNvram: uefiNvram,
     diskGB: effectiveDiskGB(opts),
-    diskGBDefaulted: opts.diskGB <= 0)
+    diskGBDefaulted: opts.diskGB <= 0,
+    sshForwardPort: sshForwardPort)
+  if sshForwardPort != 0 and not opts.keepEphemeral:
+    # SSH probe: boot, wait for SSH, run the command, tear down.
+    logEvent(opts.logFormat, "info", "ephemeral clone: boot",
+             {"backend": $id, "name": opts.baseline, "golden": golden,
+              "ssh": "127.0.0.1:" & $sshForwardPort})
+    var vm = lb.provisionEphemeralClone(spec)
+    var verdict = 1
+    try:
+      let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 300
+      lb.startAndAwaitReady(vm, timeoutSec = readyTimeout)
+      if opts.cmd.len > 0:
+        let r = lb.execInGuest(vm, initTable[string, string](), opts.cmd,
+                               timeoutSec = readyTimeout)
+        stdout.write(r.stdout)
+        verdict = (if r.exitCode == 0: 0 else: 1)
+        logEvent(opts.logFormat,
+                 (if verdict == 0: "info" else: "error"),
+                 "ephemeral probe", {"cmd": opts.cmd.join(" "),
+                                     "exit": $r.exitCode})
+      else:
+        verdict = 0
+      if opts.outputDir.len > 0:
+        let serialLog = vm.extra.getOrDefault("serialLogPath", "")
+        if serialLog.len > 0 and fileExists(serialLog):
+          createDir(opts.outputDir)
+          copyFile(serialLog, opts.outputDir / "serial.log")
+    finally:
+      lb.stopAndCleanup(vm, deleteVm = true)
+      logEvent(opts.logFormat, "info", "ephemeral clone: destroyed",
+               {"name": opts.baseline})
+    return verdict
   let expectMarker = if opts.cmd.len > 0: opts.cmd[0] else: ""
   let timeoutSec = if opts.timeoutSec > 0: opts.timeoutSec else: 120
   logEvent(opts.logFormat, "info", "ephemeral clone: boot",
