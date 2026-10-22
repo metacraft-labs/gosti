@@ -210,6 +210,23 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--sweep-tmp` | Also age-sweep transient `/tmp` scratch. |
 | `--dry-run` | Report what would be reclaimed. |
 
+### Path-pair arguments
+
+`--copy-to`, `--copy-from` and `--mount` take two non-empty filesystem paths
+separated by `:`. An absolute Windows source such as
+`C:\source:/guest` keeps its drive colon; the following colon separates the
+paths. The destination is preserved verbatim, including its own drive colon.
+`--install-shim` instead takes a binary name and a log path, so
+`C:/host/log` still names the binary `C` and the log `/host/log`.
+
+A single-colon pair such as `a:/guest` retains its existing POSIX meaning.
+The spelling `a:/guest:part` is ambiguous: it is treated as the Windows source
+`a:/guest` and destination `part`. Spell a single-letter relative POSIX source
+as `./a:/guest:part` to select source `./a` and destination `/guest:part`.
+There is no new escaping syntax. Drive-relative and extended-length Windows
+source paths are outside this syntax; only a drive-letter absolute source
+gets special treatment.
+
 ## Environment variables
 
 Beyond flags, several backends and recipes read `VMH_*` environment variables

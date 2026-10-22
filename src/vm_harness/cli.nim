@@ -567,10 +567,19 @@ proc parseEnvPair(s: string): tuple[k: string, v: string] =
     raise newException(ValueError, &"--env expects KEY=VAL, got '{s}'")
   (k: s[0 ..< idx], v: s[idx + 1 .. ^1])
 
-proc parsePathPair(flag: string, s: string): tuple[a: string, b: string] =
-  let idx = s.find(':')
-  if idx < 0:
-    raise newException(ValueError, &"{flag} expects A:B, got '{s}'")
+proc parsePathPair(flag: string, s: string,
+                   sourceIsPath: bool): tuple[a: string, b: string] =
+  var idx = s.find(':')
+  # A Windows absolute source carries its own drive colon. Prefer the next
+  # colon as the pair separator, while leaving a single-colon POSIX pair
+  # intact. A shim's first field is a binary name, never a source path.
+  if sourceIsPath and s.len >= 3 and s[0].isAlphaAscii and
+      s[1] == ':' and s[2] in {'/', '\\'}:
+    let afterDrive = s.find(':', 2)
+    if afterDrive >= 0:
+      idx = afterDrive
+  if idx <= 0 or idx == s.high:
+    raise newException(ValueError, &"{flag} expects non-empty A:B, got '{s}'")
   (a: s[0 ..< idx], b: s[idx + 1 .. ^1])
 
 proc parseGuest(s: string): GuestOs =
@@ -825,17 +834,20 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       inc i
     of "--copy-to":
       inc i
-      let p = parsePathPair("--copy-to", args[i])
+      let p = parsePathPair("--copy-to", args[i],
+        sourceIsPath = true)
       result.copyTo.add((host: p.a, guest: p.b))
       inc i
     of "--copy-from":
       inc i
-      let p = parsePathPair("--copy-from", args[i])
+      let p = parsePathPair("--copy-from", args[i],
+        sourceIsPath = true)
       result.copyFrom.add((guest: p.a, host: p.b))
       inc i
     of "--mount":
       inc i
-      let p = parsePathPair("--mount", args[i])
+      let p = parsePathPair("--mount", args[i],
+        sourceIsPath = true)
       result.mounts.add((host: p.a, guest: p.b))
       inc i
     of "--cwd":
@@ -848,7 +860,8 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
         raise newException(ValueError, "--timeout expects a non-negative integer")
     of "--install-shim":
       inc i
-      let p = parsePathPair("--install-shim", args[i])
+      let p = parsePathPair("--install-shim", args[i],
+        sourceIsPath = false)
       result.shims.add(ArgvTraceShim(wrappedBinaryName: p.a,
                                     traceLogPath: p.b))
       inc i
