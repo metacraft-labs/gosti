@@ -9,6 +9,7 @@
 
 import std/[json, os, strutils, tables, tempfiles, unittest]
 import vm_harness
+import vm_harness/cli
 
 const IncusFixtureName = when defined(windows): "incus-fixture.exe" else: "incus-fixture"
 
@@ -44,6 +45,48 @@ proc lineIndex(lines: seq[string], wanted: string): int =
   -1
 
 suite "Incus ephemeral operator capabilities":
+  test "CLI preserves default root and NIC profile before the store overlay":
+    let work = createTempDir("vmh-incus-cli-profiles", "")
+    defer: removeDir(work)
+    let logPath = work / "argv.log"
+    let shim = work / IncusFixtureName
+    writeIncusShim(shim, logPath)
+    let previous = getEnv("VMH_INCUS_CMD")
+    putEnv("VMH_INCUS_CMD", quoteShellCommand(@[shim]))
+    defer: putEnv("VMH_INCUS_CMD", previous)
+
+    check runCli(@[
+      "run", "--ephemeral", "--backend", "incus", "--keep",
+      "--baseline", "profiled", "--base-image", "runner-base",
+      "--incus-profile", "default", "--incus-profile", "ci-store",
+    ]) == 0
+    check readFile(logPath).strip().splitLines() == @[
+      "info profiled",
+      "launch runner-base profiled --profile default --profile ci-store",
+    ]
+
+  test "a failed profile attachment cleans the exact container":
+    let work = createTempDir("vmh-incus-profile-failure", "")
+    defer: removeDir(work)
+    let logPath = work / "argv.log"
+    let shim = work / IncusFixtureName
+    let launch = "launch runner-base profile-failure --profile default " &
+      "--profile unavailable"
+    writeIncusShim(shim, logPath, failExact = launch)
+    let previous = getEnv("VMH_INCUS_CMD")
+    putEnv("VMH_INCUS_CMD", quoteShellCommand(@[shim]))
+    defer: putEnv("VMH_INCUS_CMD", previous)
+
+    expect VmHarnessError:
+      discard runCli(@[
+        "run", "--ephemeral", "--backend", "incus", "--keep",
+        "--baseline", "profile-failure", "--base-image", "runner-base",
+        "--incus-profile", "default", "--incus-profile", "unavailable",
+      ])
+    check readFile(logPath).strip().splitLines() == @[
+      "info profile-failure", launch, "delete --force profile-failure",
+    ]
+
   test "defaults preserve the original launch argv byte-for-byte":
     let work = createTempDir("vmh-incus-default", "")
     defer: removeDir(work)

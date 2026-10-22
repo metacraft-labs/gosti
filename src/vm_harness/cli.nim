@@ -183,6 +183,8 @@ type
                                  ## nesting/intercept configuration.
     incusNestedKvm*: bool        ## ``--incus-nested-kvm`` — trusted controller
                                  ## opt-in for the fixed /dev/kvm device.
+    incusProfiles*: seq[string]  ## Ordered, administrator-selected Incus
+                                 ## profiles; empty retains Incus's default.
     kernel*: string              ## ``--kernel <path>`` — optional direct-kernel
                                  ## boot bzImage for the ephemeral clone (the
                                  ## tiny Linux golden). Omit for a disk-bootable
@@ -493,6 +495,10 @@ Common flags:
                                   the container's limits.cpu (a CPU count)
                                   and limits.memory (MiB) before first start.
                                   Omitted ⇒ the container is uncapped.
+  --incus-profile <name>         Ordered Incus profile (repeatable), accepted
+                                  only with run --ephemeral --backend incus.
+                                  Include default explicitly to retain its
+                                  root disk and NIC alongside other profiles.
   --kernel <path>                 libvirt-only: optional direct-kernel-boot
                                   bzImage for --ephemeral (tiny Linux golden).
   --initrd <path>                 Initramfs for a direct-kernel boot: the
@@ -782,6 +788,12 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
     of "--incus-nested-kvm":
       result.incusNestedKvm = true
       inc i
+    of "--incus-profile":
+      inc i
+      if i >= args.len or args[i].len == 0 or '\0' in args[i]:
+        raise newException(ValueError, "--incus-profile requires a non-empty profile name")
+      result.incusProfiles.add(args[i])
+      inc i
     of "--kernel":
       inc i; result.kernel = args[i]; inc i
     of "--initrd":
@@ -985,11 +997,12 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
   if result.sshHostKeyAlias.anyIt(it.isSpaceAscii or ord(it) < 32):
     raise newException(ValueError,
       "--ssh-host-key-alias must not contain whitespace or control characters")
-  if result.incusSecurityNesting or result.incusNestedKvm:
+  if result.incusSecurityNesting or result.incusNestedKvm or
+      result.incusProfiles.len > 0:
     if result.subcommand != "run" or not result.ephemeral or
        result.backend.toLowerAscii() != $biIncus:
       raise newException(ValueError,
-        "--incus-security-nesting/--incus-nested-kvm require " &
+        "--incus-security-nesting/--incus-nested-kvm/--incus-profile require " &
         "run --ephemeral --backend incus")
 
 proc logEvent*(format: LogFormat, level: string, msg: string,
@@ -1518,6 +1531,7 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
     name: opts.baseline,
     baseImage: opts.baseImage,
     ephemeral: false,
+    profiles: opts.incusProfiles,
     userData: userData,
     config: incusEphemeralLimits(opts.cpus, opts.memoryMB),
     securityNesting: opts.incusSecurityNesting,
