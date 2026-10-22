@@ -181,8 +181,13 @@ pkgs.runCommand "guest-linux-tpm"
     cp ${initScript} $root/init
     chmod +x $root/init
 
-    ( cd $root && find . -print0 | \
-        cpio --null -o -H newc --quiet | gzip -9 ) > $out/initramfs.gz
+    # Preserve the guest payload and modes, while removing temporary filesystem
+    # allocation and build time from the archive identity. Normalize symlinks
+    # themselves too; cpio's reproducible mode renumbers inode/device fields.
+    find "$root" -exec touch -h -d @1 {} +
+    ( cd "$root" && LC_ALL=C find . -print0 | LC_ALL=C sort -z | \
+        cpio --null -o -H newc --quiet --reproducible --owner=0:0 | \
+        gzip -n -9 ) > $out/initramfs.gz
 
     # Record what the consumer asserts on, so the markers are not
     # hard-coded independently on both sides.

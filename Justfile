@@ -36,8 +36,16 @@ format:
 fmt: format
 
 nix-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
     mkdir -p test-logs
     nix build .#default 2>&1 | tee test-logs/nix-build.log
+    # The Linux-only guest fixture is consumed by the declared development
+    # environment. Exercise its reproducibility check in the existing CI gate.
+    if [[ "$(uname -s)" == Linux ]]; then
+        system="$(nix eval --raw --impure --expr builtins.currentSystem)"
+        nix build ".#checks.${system}.guest-linux-tpm-reproducible" 2>&1 | tee -a test-logs/nix-build.log
+    fi
 
 # Entering the dev shell from another git repository must write nothing there.
 # Runs `nix develop`, so it is not part of the in-shell test recipes.

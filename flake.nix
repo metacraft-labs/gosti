@@ -260,6 +260,20 @@
           checks = {
             inherit pre-commit-check;
             package-build = vm-harness;
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            # Independent builds must produce the same guest bytes; comparing
+            # only a store path cannot detect an input-addressed recipe's
+            # transient inode, directory ordering or timestamp dependencies.
+            guest-linux-tpm-reproducible =
+              let
+                first = guest-linux-tpm.overrideAttrs { name = "guest-linux-tpm-first"; };
+                second = guest-linux-tpm.overrideAttrs { name = "guest-linux-tpm-second"; };
+              in
+              pkgs.runCommand "guest-linux-tpm-reproducible" { } ''
+                ${pkgs.diffutils}/bin/diff --recursive ${first} ${second}
+                touch "$out"
+              '';
           };
 
           # Packaging the CLI does not require hypervisors or booting a guest.
