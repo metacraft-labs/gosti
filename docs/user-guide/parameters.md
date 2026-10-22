@@ -116,6 +116,13 @@ the prior `incus launch` argv exactly.
 | --- | --- | --- | --- |
 | `--incus-security-nesting` | bool | `false` | Before first start, sets `security.nesting=true` plus the fixed mknod/setxattr syscall intercepts used by unprivileged nested Docker/Podman. |
 | `--incus-nested-kvm` | bool | `false` | Implies nesting; before first start attaches exactly host `/dev/kvm` to guest `/dev/kvm` as a unix-char device with mode `0666`, then converges and verifies that exact guest mode and a real read/write open. The host path/type/mode are not caller-selectable. |
+| `--incus-profile <name>` | repeatable string | empty | Forwards existing administrator-created Incus profiles in the supplied order. Empty retains Incus's automatic `default` profile. An explicit list replaces it: include `--incus-profile default` first to retain its root disk and NIC before an overlay profile. |
+
+Profiles are applied at instance creation, before the first guest process.
+Their ordering and default behavior follow [Incus's profile contract](https://linuxcontainers.org/incus/docs/main/profiles/).
+This option selects existing host policy; it creates no profile or mount and
+must never be derived from guest user-data or workflow input. A profile failure
+cleans up the half-created instance rather than returning a degraded runner.
 
 The caller is part of the trusted host control plane. Locally it already needs
 the Incus administrative socket; remotely it must possess the overlay-only
@@ -154,6 +161,16 @@ privilege to the *container*.
 | `incusShareHostNixStore` | bool | `false` | Mounts the host `/nix/store` **read-only** into each container plus the nix-daemon socket dir, so guest builds go through the host daemon (`NIX_REMOTE=daemon`) — a build-once/cache-hit-everywhere farm. **Safe by design:** incus's idmap makes the guest an *untrusted* nix client (`Trusted: 0`), so it can add content-addressed paths but cannot set substituters/trusted-keys or import unsigned NARs as trusted, and cannot poison the cache (a malicious path content-addresses to a different hash). Residual risk is disk-DoS, contained by ephemeral one-job guests + store quotas. |
 | `incusReprobuildStore` | path (host) | `""` | HOST path of the reprobuild BLAKE3 content-addressed store, mounted **read-write** into each container. Writes are self-verifying (a tampered blob hashes to a different digest, so an existing entry cannot be corrupted); a job resolves prebuilt artifacts locally with no HTTP round-trip. Empty ⇒ no share. |
 | `incusReprobuildStoreGuestPath` | path (guest) | `""` | In-guest mount point for `incusReprobuildStore`. Empty ⇒ mirrors the host path. Only consulted when `incusReprobuildStore` is set. |
+
+### Remote provider profile selection
+
+For the remote provider route, `remote.incusProfiles` is an ordered list of
+existing administrator-created profiles (default `[]`). It reaches the same
+`--incus-profile` interface above. For example, `[ "default" "ci-overlay" ]`
+retains the base root disk and NIC before applying the overlay. Empty emits
+no profile flags. The local shared-store options are not implicitly forwarded
+by the remote route; creating and enabling a host profile remains operator
+configuration, not workflow or guest input.
 
 ### Networking options
 
