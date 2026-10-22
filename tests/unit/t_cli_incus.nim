@@ -6,6 +6,30 @@ import vm_harness/cli
 import vm_harness/backends/incus
 
 suite "CLI Incus lifecycle":
+  test "Incus profiles retain administrator order and reject other routes":
+    let opts = parseCliOpts(@[
+      "run", "--ephemeral", "--backend", "incus",
+      "--incus-profile", "default", "--incus-profile", "ci-store",
+      "--baseline", "runner-profiles", "--", "true",
+    ])
+    check opts.incusProfiles == @["default", "ci-store"]
+    let defaults = parseCliOpts(@[
+      "run", "--ephemeral", "--backend", "incus", "--baseline", "plain",
+    ])
+    check defaults.incusProfiles.len == 0
+    for invalid in [
+      @["run", "--backend", "incus", "--incus-profile", "ci-store"],
+      @["run", "--ephemeral", "--backend", "libvirt",
+        "--incus-profile", "ci-store"],
+      @["run", "--ephemeral", "--backend", "auto",
+        "--incus-profile", "ci-store"],
+      @["provision", "--backend", "incus", "--incus-profile", "ci-store"],
+      @["run", "--ephemeral", "--backend", "incus", "--incus-profile"],
+      @["run", "--ephemeral", "--backend", "incus", "--incus-profile", ""],
+    ]:
+      expect ValueError:
+        discard parseCliOpts(invalid)
+
   test "nested capability flags parse only for ephemeral Incus runs":
     let both = parseCliOpts(@[
       "run", "--ephemeral", "--backend", "incus",

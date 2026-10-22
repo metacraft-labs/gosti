@@ -12,7 +12,7 @@ name: Docs — GitHub Pages
 
 on:
   push:
-    branches: [dev, stable, agents]
+    branches: [dev, stable]
     paths:
       - "docs/site/**"
       - "docs/user-guide/**"

@@ -277,6 +277,11 @@ host all tests/e2e/t_vm_harness_lima_revert_under_30s.nim
 
 # Linux host: libvirt and Incus.
 host all tests/e2e/t_vmharness_libvirt_ephemeral_run.nim
+# Campaign M4: Ubuntu cloud golden + NoCloud seed + loopback SSH forward on
+# qemu:///session. Skips without VMH_LINUX_CLOUD_GOLDEN (see
+# guest-recipes/linux-x64-cloud/fetch-image.sh).
+host all tests/e2e/t_vm_harness_libvirt_linux_smoke.nim
+host all tests/e2e/t_vm_harness_libvirt_cli_linux_ephemeral.nim
 # Campaign WR0: the libvirt snapshot surface. Both self-skip loudly when
 # their prerequisites are absent -- the conformance gate needs
 # VMH_LIBVIRT_SCRATCH=1 on a /session URI (it DEFINES a throwaway domain),

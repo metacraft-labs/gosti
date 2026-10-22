@@ -142,3 +142,63 @@ suite "CLI boot media":
     sleep(1100)
     writeFile(newer, "new")
     check resolveBootMediaPath(root) == absolutePath(newer)
+
+
+suite "CLI copy and mount path pairs":
+  test "absolute Windows source and destination drive colons survive":
+    let opts = parseCliOpts(@[
+      "run", "--backend", "libvirt", "--guest", "windows",
+      "--copy-from", r"C:\Windows\Temp\result.json:/tmp/result.json",
+      "--copy-from", r"d:/folder with spaces/result:C:\host results\result",
+      "--copy-to", r"C:\host input\file:D:\guest input\file",
+      "--mount", r"D:\host tree:C:\guest tree",
+      "--", "true"])
+    check opts.copyFrom == @[
+      (guest: r"C:\Windows\Temp\result.json", host: "/tmp/result.json"),
+      (guest: "d:/folder with spaces/result", host: r"C:\host results\result")]
+    check opts.copyTo == @[
+      (host: r"C:\host input\file", guest: r"D:\guest input\file")]
+    check opts.mounts == @[
+      (host: r"D:\host tree", guest: r"C:\guest tree")]
+
+  test "POSIX relative UNC and destination colons retain their bytes":
+    let opts = parseCliOpts(@[
+      "run", "--backend", "libvirt",
+      "--copy-to", "/tmp/source:/guest/with:colon",
+      "--copy-from", "relative-source:relative-result",
+      "--mount", "a:/guest",
+      "--copy-to", r"\\server\share\file:C:\guest\file",
+      "--copy-from", "./a:/guest/with:colon",
+      "--", "true"])
+    check opts.copyTo == @[
+      (host: "/tmp/source", guest: "/guest/with:colon"),
+      (host: r"\\server\share\file", guest: r"C:\guest\file")]
+    check opts.copyFrom == @[
+      (guest: "relative-source", host: "relative-result"),
+      (guest: "./a", host: "/guest/with:colon")]
+    check opts.mounts == @[(host: "a", guest: "/guest")]
+
+  test "the documented multi-colon drive interpretation is explicit":
+    let opts = parseCliOpts(@[
+      "run", "--backend", "libvirt",
+      "--copy-from", "a:/guest:part", "--", "true"])
+    check opts.copyFrom == @[(guest: "a:/guest", host: "part")]
+
+  test "a single-letter shim is a name rather than a Windows source drive":
+    let opts = parseCliOpts(@[
+      "run", "--backend", "libvirt",
+      "--install-shim", "C:/host/path",
+      "--install-shim", r"x:C:\guest\trace.log", "--", "true"])
+    check opts.shims.len == 2
+    check opts.shims[0].wrappedBinaryName == "C"
+    check opts.shims[0].traceLogPath == "/host/path"
+    check opts.shims[1].wrappedBinaryName == "x"
+    check opts.shims[1].traceLogPath == r"C:\guest\trace.log"
+
+  test "missing separators and empty path or name fields are rejected":
+    for flag in ["--copy-to", "--copy-from", "--mount", "--install-shim"]:
+      for invalid in ["no-separator", ":destination", "source:", ":"]:
+        expect ValueError:
+          discard parseCliOpts(@["run", flag, invalid, "--", "true"])
+    expect ValueError:
+      discard parseCliOpts(@["run", "--copy-from", r"C:\source:", "--", "true"])

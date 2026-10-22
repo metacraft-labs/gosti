@@ -20,6 +20,7 @@ import ./env_names
 import std/[json, options, os, osproc, sequtils, strformat, strutils, tables,
             terminal, times]
 import ./types, ./output, ./auto, ./orchestrator, ./detached_bootstrap
+import ./cloud_init_seed
 export detached_bootstrap
 # Import every backend module so its registerBackend bootstrap runs.
 # Each import is a static side-effect: the backend's factory lands in
@@ -182,6 +183,8 @@ type
                                  ## nesting/intercept configuration.
     incusNestedKvm*: bool        ## ``--incus-nested-kvm`` — trusted controller
                                  ## opt-in for the fixed /dev/kvm device.
+    incusProfiles*: seq[string]  ## Ordered, administrator-selected Incus
+                                 ## profiles; empty retains Incus's default.
     kernel*: string              ## ``--kernel <path>`` — optional direct-kernel
                                  ## boot bzImage for the ephemeral clone (the
                                  ## tiny Linux golden). Omit for a disk-bootable
@@ -492,6 +495,10 @@ Common flags:
                                   the container's limits.cpu (a CPU count)
                                   and limits.memory (MiB) before first start.
                                   Omitted ⇒ the container is uncapped.
+  --incus-profile <name>         Ordered Incus profile (repeatable), accepted
+                                  only with run --ephemeral --backend incus.
+                                  Include default explicitly to retain its
+                                  root disk and NIC alongside other profiles.
   --kernel <path>                 libvirt-only: optional direct-kernel-boot
                                   bzImage for --ephemeral (tiny Linux golden).
   --initrd <path>                 Initramfs for a direct-kernel boot: the
@@ -566,10 +573,19 @@ proc parseEnvPair(s: string): tuple[k: string, v: string] =
     raise newException(ValueError, &"--env expects KEY=VAL, got '{s}'")
   (k: s[0 ..< idx], v: s[idx + 1 .. ^1])
 
-proc parsePathPair(flag: string, s: string): tuple[a: string, b: string] =
-  let idx = s.find(':')
-  if idx < 0:
-    raise newException(ValueError, &"{flag} expects A:B, got '{s}'")
+proc parsePathPair(flag: string, s: string,
+                   sourceIsPath: bool): tuple[a: string, b: string] =
+  var idx = s.find(':')
+  # A Windows absolute source carries its own drive colon. Prefer the next
+  # colon as the pair separator, while leaving a single-colon POSIX pair
+  # intact. A shim's first field is a binary name, never a source path.
+  if sourceIsPath and s.len >= 3 and s[0].isAlphaAscii and
+      s[1] == ':' and s[2] in {'/', '\\'}:
+    let afterDrive = s.find(':', 2)
+    if afterDrive >= 0:
+      idx = afterDrive
+  if idx <= 0 or idx == s.high:
+    raise newException(ValueError, &"{flag} expects non-empty A:B, got '{s}'")
   (a: s[0 ..< idx], b: s[idx + 1 .. ^1])
 
 proc parseGuest(s: string): GuestOs =
@@ -781,6 +797,12 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
     of "--incus-nested-kvm":
       result.incusNestedKvm = true
       inc i
+    of "--incus-profile":
+      inc i
+      if i >= args.len or args[i].len == 0 or '\0' in args[i]:
+        raise newException(ValueError, "--incus-profile requires a non-empty profile name")
+      result.incusProfiles.add(args[i])
+      inc i
     of "--kernel":
       inc i; result.kernel = args[i]; inc i
     of "--initrd":
@@ -824,17 +846,20 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       inc i
     of "--copy-to":
       inc i
-      let p = parsePathPair("--copy-to", args[i])
+      let p = parsePathPair("--copy-to", args[i],
+        sourceIsPath = true)
       result.copyTo.add((host: p.a, guest: p.b))
       inc i
     of "--copy-from":
       inc i
-      let p = parsePathPair("--copy-from", args[i])
+      let p = parsePathPair("--copy-from", args[i],
+        sourceIsPath = true)
       result.copyFrom.add((guest: p.a, host: p.b))
       inc i
     of "--mount":
       inc i
-      let p = parsePathPair("--mount", args[i])
+      let p = parsePathPair("--mount", args[i],
+        sourceIsPath = true)
       result.mounts.add((host: p.a, guest: p.b))
       inc i
     of "--cwd":
@@ -847,7 +872,8 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
         raise newException(ValueError, "--timeout expects a non-negative integer")
     of "--install-shim":
       inc i
-      let p = parsePathPair("--install-shim", args[i])
+      let p = parsePathPair("--install-shim", args[i],
+        sourceIsPath = false)
       result.shims.add(ArgvTraceShim(wrappedBinaryName: p.a,
                                     traceLogPath: p.b))
       inc i
@@ -984,11 +1010,12 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
   if result.sshHostKeyAlias.anyIt(it.isSpaceAscii or ord(it) < 32):
     raise newException(ValueError,
       "--ssh-host-key-alias must not contain whitespace or control characters")
-  if result.incusSecurityNesting or result.incusNestedKvm:
+  if result.incusSecurityNesting or result.incusNestedKvm or
+      result.incusProfiles.len > 0:
     if result.subcommand != "run" or not result.ephemeral or
        result.backend.toLowerAscii() != $biIncus:
       raise newException(ValueError,
-        "--incus-security-nesting/--incus-nested-kvm require " &
+        "--incus-security-nesting/--incus-nested-kvm/--incus-profile require " &
         "run --ephemeral --backend incus")
 
 proc logEvent*(format: LogFormat, level: string, msg: string,
@@ -1517,6 +1544,7 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
     name: opts.baseline,
     baseImage: opts.baseImage,
     ephemeral: false,
+    profiles: opts.incusProfiles,
     userData: userData,
     config: incusEphemeralLimits(opts.cpus, opts.memoryMB),
     securityNesting: opts.incusSecurityNesting,
@@ -1905,7 +1933,13 @@ proc cmdRunEphemeral(opts: CliOpts): int =
   # M3: build the config-drive ISO from --user-data so cloudbase-init runs
   # the injected bootstrap on first boot. Per-job artifacts (ISO + nvram)
   # live next to the overlay and are removed on teardown.
+  #
+  # A Linux guest reads cloud-init's NoCloud `cidata` seed instead, built from
+  # the same --user-data / --meta-data (meta-data defaults to an instance-id
+  # and hostname named after the domain).
   var configDriveIso = ""
+  var noCloudSeedIso = ""
+  let linuxGuest = opts.guestSet and opts.guest == goLinux
   if opts.userDataFile.len > 0:
     if not fileExists(opts.userDataFile):
       raise newException(ValueError,
@@ -1914,8 +1948,32 @@ proc cmdRunEphemeral(opts: CliOpts): int =
     var metaData = ""
     if opts.metaDataFile.len > 0 and fileExists(opts.metaDataFile):
       metaData = readFile(opts.metaDataFile)
-    configDriveIso = lb.configDriveIsoPathFor(opts.baseline)
-    discard buildConfigDriveIso(configDriveIso, userData, metaData)
+    if linuxGuest:
+      if metaData.len == 0:
+        metaData = "instance-id: " & opts.baseline & "\n" &
+          "local-hostname: " & opts.baseline & "\n"
+      createDir(lb.imagePoolDir)
+      noCloudSeedIso = lb.noCloudSeedIsoPathFor(opts.baseline)
+      writeNoCloudIso(noCloudSeedIso, userData, metaData)
+    else:
+      configDriveIso = lb.configDriveIsoPathFor(opts.baseline)
+      discard buildConfigDriveIso(configDriveIso, userData, metaData)
+  # --ssh-forward-port: reach the guest at 127.0.0.1:<port> over a user-mode
+  # NIC (qemu:///session has no NAT network), and probe with the command after
+  # `--` over SSH instead of waiting for a serial marker.
+  let sshForwardPort =
+    if opts.sshForwardPort == -1: pickTcpPort(0) else: opts.sshForwardPort
+  if sshForwardPort != 0:
+    if opts.sshUser.len == 0 or opts.sshPrivateKey.len == 0:
+      raise newException(ValueError,
+        "run --ephemeral --ssh-forward-port needs --ssh-user and --ssh-private-key")
+    lb.sshUser = opts.sshUser
+    lb.sshPassword = ""
+    lb.sshKeyPath = absolutePath(opts.sshPrivateKey)
+    if opts.sshKnownHosts.len > 0:
+      lb.sshKnownHostsPath = absolutePath(opts.sshKnownHosts)
+    if opts.guestSet:
+      lb.sshGuestOs = opts.guest
   var uefiNvram = ""
   if opts.uefiLoader.len > 0:
     uefiNvram = lb.imagePoolDir / (opts.baseline & "_VARS.fd")
@@ -1928,11 +1986,44 @@ proc cmdRunEphemeral(opts: CliOpts): int =
     initrd: opts.initrd,
     cmdline: opts.kernelCmdline,
     configDriveIso: configDriveIso,
+    noCloudSeedIso: noCloudSeedIso,
     uefiLoader: opts.uefiLoader,
     uefiNvramTemplate: opts.uefiNvramTemplate,
     uefiNvram: uefiNvram,
     diskGB: effectiveDiskGB(opts),
-    diskGBDefaulted: opts.diskGB <= 0)
+    diskGBDefaulted: opts.diskGB <= 0,
+    sshForwardPort: sshForwardPort)
+  if sshForwardPort != 0 and not opts.keepEphemeral:
+    # SSH probe: boot, wait for SSH, run the command, tear down.
+    logEvent(opts.logFormat, "info", "ephemeral clone: boot",
+             {"backend": $id, "name": opts.baseline, "golden": golden,
+              "ssh": "127.0.0.1:" & $sshForwardPort})
+    var vm = lb.provisionEphemeralClone(spec)
+    var verdict = 1
+    try:
+      let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 300
+      lb.startAndAwaitReady(vm, timeoutSec = readyTimeout)
+      if opts.cmd.len > 0:
+        let r = lb.execInGuest(vm, initTable[string, string](), opts.cmd,
+                               timeoutSec = readyTimeout)
+        stdout.write(r.stdout)
+        verdict = (if r.exitCode == 0: 0 else: 1)
+        logEvent(opts.logFormat,
+                 (if verdict == 0: "info" else: "error"),
+                 "ephemeral probe", {"cmd": opts.cmd.join(" "),
+                                     "exit": $r.exitCode})
+      else:
+        verdict = 0
+      if opts.outputDir.len > 0:
+        let serialLog = vm.extra.getOrDefault("serialLogPath", "")
+        if serialLog.len > 0 and fileExists(serialLog):
+          createDir(opts.outputDir)
+          copyFile(serialLog, opts.outputDir / "serial.log")
+    finally:
+      lb.stopAndCleanup(vm, deleteVm = true)
+      logEvent(opts.logFormat, "info", "ephemeral clone: destroyed",
+               {"name": opts.baseline})
+    return verdict
   let expectMarker = if opts.cmd.len > 0: opts.cmd[0] else: ""
   let timeoutSec = if opts.timeoutSec > 0: opts.timeoutSec else: 120
   logEvent(opts.logFormat, "info", "ephemeral clone: boot",
