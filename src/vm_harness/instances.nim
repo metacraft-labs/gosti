@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 ## Durable media ownership. Operation locks are not lifetime leases; the caller
 ## (for example Reprobuild) owns retention and scheduling.
-import std/[json, options, os, osproc, strutils, sysrand, tables, times,
+import std/[json, options, os, osproc, strutils, tables, times,
             xmlparser, xmltree]
-import ./types, ./orchestrator, ./process_capture
+import ./types, ./orchestrator, ./process_capture, ./domain_uuid
 import ./backends/libvirt
 when defined(linux):
   import std/posix
@@ -38,13 +38,7 @@ proc validateInstanceId*(id: string) =
       raise newException(ValueError, "instance UUID must be lowercase hexadecimal")
 
 proc newInstanceId*(): string =
-  var bytes: array[16, byte]
-  if not urandom(bytes): raise newException(IOError, "cannot generate instance UUID")
-  bytes[6] = (bytes[6] and 0x0f) or 0x40
-  bytes[8] = (bytes[8] and 0x3f) or 0x80
-  for i, b in bytes:
-    if i in [4, 6, 8, 10]: result.add('-')
-    result.add(toHex(b, 2).toLowerAscii())
+  newDomainUuid()
 
 proc ensureDirectory(path: string) =
   if symlinkExists(path) or fileExists(path):

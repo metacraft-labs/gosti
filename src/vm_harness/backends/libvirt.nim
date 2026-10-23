@@ -79,10 +79,11 @@
 ## but ``probeAvailability`` returns false on non-Linux hosts.
 
 import ../env_names
-import std/[atomics, options, os, random, strutils, tables, times]
+import std/[atomics, options, os, random, strutils, tables, times, xmlparser, xmltree]
 when not defined(posix):
   import std/[osproc, streams, strtabs]
 import ../types
+import ../domain_uuid
 import ../auto
 import ../firmware
 import ../serial
@@ -957,142 +958,308 @@ proc sweepStaleLibvirtDomains*(b: LibvirtBackend,
     result.add(name)
 
 proc ensureSshForward*(b: LibvirtBackend, uuid: string, port: int)
+# Internal acquisition evidence. These keys already round-trip through
+# VmHandle.extra; they do not change the durable-media receipt contract.
+proc validateCleanupParent(path: string) =
+  # Refuse aliases before creating a file or any missing parent directories.
+  # Identity is retained separately after allocation; this is not a global
+  # adversarial-filesystem race guarantee.
+  var parent = parentDir(absolutePath(path))
+  while true:
+    if symlinkExists(parent) or fileExists(parent):
+      raise newException(IOError, "cleanup destination has an aliased parent: " & parent)
+    if dirExists(parent) and getFileInfo(parent, followSymlink = false).kind != pcDir:
+      raise newException(IOError, "cleanup destination parent is not a directory")
+    let next = parentDir(parent)
+    if next.len == 0 or next == parent: break
+    parent = next
+
+proc cleanupFileIdentity(path: string): string =
+  let info = getFileInfo(path, followSymlink = false)
+  if info.kind != pcFile or info.linkCount != 1:
+    raise newException(IOError, "cleanup requires an unaliased regular file: " & path)
+  $info.id.device & ":" & $info.id.file
+
+proc cleanupParentIdentity(path: string): string =
+  var parent = parentDir(absolutePath(path))
+  while true:
+    let info = getFileInfo(parent, followSymlink = false)
+    if info.kind != pcDir:
+      raise newException(IOError, "cleanup parent is not a real directory: " & parent)
+    result.add(parent & ":" & $info.id.device & ":" & $info.id.file & "\n")
+    let next = parentDir(parent)
+    if next.len == 0 or next == parent: break
+    parent = next
+
+proc retainCleanupArtifact(vm: var VmHandle, path: string) =
+  if path.len == 0: return
+  let absolute = absolutePath(path)
+  let count = parseInt(vm.extra.getOrDefault("cleanupFileCount", "0"))
+  for i in 0 ..< count:
+    if vm.extra["cleanupFile" & $i & "Path"] == absolute: return
+  let key = "cleanupFile" & $count
+  vm.extra[key & "Path"] = absolute
+  vm.extra[key & "Identity"] = cleanupFileIdentity(absolute)
+  vm.extra[key & "Parents"] = cleanupParentIdentity(absolute)
+  vm.extra["cleanupFileCount"] = $(count + 1)
+
+proc verifyCleanupArtifacts(vm: VmHandle, allowMissing = false) =
+  for i in 0 ..< parseInt(vm.extra.getOrDefault("cleanupFileCount", "0")):
+    let key = "cleanupFile" & $i
+    let path = vm.extra[key & "Path"]
+    if cleanupParentIdentity(path) != vm.extra[key & "Parents"]:
+      raise newException(IOError, "cleanup artifact parent changed: " & path)
+    if allowMissing and not (fileExists(path) or dirExists(path) or symlinkExists(path)):
+      continue
+    if cleanupFileIdentity(path) != vm.extra[key & "Identity"]:
+      raise newException(IOError, "cleanup artifact identity changed: " & path)
+
+proc cleanupOwner(b: LibvirtBackend, vm: VmHandle): LibvirtDomainObservation =
+  if vm.extra.getOrDefault("libvirtUri") != b.libvirtUri:
+    raise newException(VmHarnessError, "cleanup connection identity is missing or changed")
+  let uuid = vm.extra.getOrDefault("cleanupUuid")
+  if uuid.len == 0:
+    raise newException(VmHarnessError, "cleanup requires the acquired domain UUID")
+  # A vanished name does not prove the acquired UUID has stopped: it might
+  # have been renamed. Both queries must succeed before absence is accepted.
+  result = b.requireDomainOwner(vm.name, uuid)
+  let uuids = b.checkedVirsh(["list", "--all", "--uuid"]).splitLines()
+  if not result.present and uuid in uuids:
+    raise newException(VmHarnessError, "acquired domain was renamed; cleanup refused")
+  if result.present and uuid notin uuids:
+    raise newException(VmHarnessError, "inconsistent libvirt domain inventory")
+
+proc retainCleanupOwner(b: LibvirtBackend, vm: var VmHandle,
+                        uuid: string, borrowedBaseline = false) =
+  vm.extra["libvirtUri"] = b.libvirtUri
+  vm.extra["cleanupUuid"] = uuid
+  vm.extra["cleanupBorrowedBaseline"] = $borrowedBaseline
+  discard b.cleanupOwner(vm)
+
+proc stopAcquiredDomain(b: LibvirtBackend, vm: VmHandle,
+                        immediate: bool) =
+  let uuid = vm.extra["cleanupUuid"]
+  let initial = b.cleanupOwner(vm)
+  if not initial.present: return
+  if domainNeedsForceStop(initial.state):
+    if immediate or initial.state != "running":
+      discard b.checkedVirsh(["destroy", uuid], timeoutSec = 60)
+    else:
+      # Keep the generic graceful-then-force policy and original 60s wait;
+      # the durable-media API's stricter policy is deliberately separate.
+      discard b.runVirsh(@["shutdown", uuid], timeoutSec = 30)
+      let deadline = epochTime() + 60.0
+      while true:
+        let current = b.cleanupOwner(vm)
+        if not current.present or not domainNeedsForceStop(current.state): break
+        if epochTime() >= deadline:
+          discard b.checkedVirsh(["destroy", uuid], timeoutSec = 60)
+          break
+        sleep(1000)
+  let stopped = b.cleanupOwner(vm)
+  if stopped.present and domainNeedsForceStop(stopped.state):
+    raise newException(VmHarnessError, "acquired domain is still active after stop")
+
+proc verifyNoOtherDomainUses(b: LibvirtBackend, vm: VmHandle)
+proc cleanupDomainFiles(b: LibvirtBackend, uuid: string): seq[string]
+
+proc cleanupAcquiredDomain*(b: LibvirtBackend, selected: VmHandle,
+                           deleteVm: bool) =
+  # Internal checked backend path shared with the CLI, not a new VmBackend
+  # method or persisted record schema. Finally cleanup catches this boundary;
+  # explicit destruction must propagate refusal instead of reporting success.
+  var vm = selected
+  if vm.extra.getOrDefault("cleanupExplicitSelection") == "true":
+    let owner = b.cleanupOwner(vm)
+    if not owner.present:
+      raise newException(VmHarnessError, "selected domain vanished before cleanup")
+    let sources = b.cleanupDomainFiles(vm.extra["cleanupUuid"])
+    for key in ["overlayPath", "configDriveIso", "noCloudSeedIso"]:
+      let path = vm.extra.getOrDefault(key)
+      if path.len > 0 and (fileExists(path) or symlinkExists(path) or dirExists(path)):
+        if absolutePath(path) notin sources:
+          raise newException(VmHarnessError, "selected cleanup file is not attached to the acquired domain")
+        vm.retainCleanupArtifact(path)
+    let xml = parseXml(b.checkedVirsh(["dumpxml", vm.extra["cleanupUuid"]]))
+    let osNode = xml.child("os")
+    if osNode != nil:
+      let nvram = osNode.child("nvram")
+      if nvram != nil and nvram.innerText.strip().len > 0:
+        vm.retainCleanupArtifact(nvram.innerText.strip())
+  let borrowed = vm.extra.getOrDefault("cleanupBorrowedBaseline") == "true"
+  let remove = deleteVm and not borrowed
+  let initialOwner = b.cleanupOwner(vm)
+  # Validate every retained file before touching the domain, rather than
+  # deleting an initial subset before discovering a later ownership failure.
+  if remove:
+    verifyCleanupArtifacts(vm, allowMissing = not initialOwner.present)
+    b.verifyNoOtherDomainUses(vm)
+  b.stopAcquiredDomain(vm, vm.extra.getOrDefault("ephemeral") == "true" or
+    vm.baseline == "<boot-from-media>")
+  if not remove: return
+  let current = b.cleanupOwner(vm)
+  verifyCleanupArtifacts(vm, allowMissing = not current.present)
+  b.verifyNoOtherDomainUses(vm)
+  if current.present:
+    # Preserve NVRAM here. Its later explicit unlink is subject to the same
+    # retained file checks as disks; undefine must not remove it first.
+    discard b.checkedVirsh(["undefine", vm.extra["cleanupUuid"], "--keep-nvram"],
+      timeoutSec = 60)
+  if b.cleanupOwner(vm).present:
+    raise newException(VmHarnessError, "acquired domain remains defined after undefine")
+  verifyCleanupArtifacts(vm, allowMissing = true)
+  b.verifyNoOtherDomainUses(vm)
+  for i in 0 ..< parseInt(vm.extra.getOrDefault("cleanupFileCount", "0")):
+    let key = "cleanupFile" & $i
+    let path = vm.extra[key & "Path"]
+    if cleanupParentIdentity(path) != vm.extra[key & "Parents"]:
+      raise newException(IOError, "cleanup artifact parent changed before unlink")
+    if not (fileExists(path) or dirExists(path) or symlinkExists(path)): continue
+    if cleanupFileIdentity(path) != vm.extra[key & "Identity"]:
+      raise newException(IOError, "cleanup artifact identity changed before unlink")
+    removeFile(path)
+
+proc cleanupDomainFiles(b: LibvirtBackend, uuid: string): seq[string] =
+  # Read the actual domain definition, including firmware, rather than
+  # recomputing storage paths from a mutable name.
+  let xml = parseXml(b.checkedVirsh(["dumpxml", uuid]))
+  var paths: seq[string]
+  proc visit(node: XmlNode) =
+    if node.kind != xnElement: return
+    if node.tag == "source":
+      for attribute in ["file", "dev", "path"]:
+        if node.attr(attribute).len > 0:
+          paths.add(absolutePath(node.attr(attribute)))
+    elif node.tag == "nvram" and node.innerText.strip().len > 0:
+      paths.add(absolutePath(node.innerText.strip()))
+    for child in node: visit(child)
+  visit(xml)
+  result = paths
+
+proc verifyNoOtherDomainUses(b: LibvirtBackend, vm: VmHandle) =
+  let owner = vm.extra["cleanupUuid"]
+  for uuid in b.checkedVirsh(["list", "--all", "--uuid"]).splitLines():
+    if uuid.len == 0 or uuid == owner: continue
+    for path in b.cleanupDomainFiles(uuid):
+      # A missing device/file is still an authenticated reference in XML;
+      # equal paths refuse even before inode comparison is possible.
+      for i in 0 ..< parseInt(vm.extra.getOrDefault("cleanupFileCount", "0")):
+        let key = "cleanupFile" & $i
+        if path == vm.extra[key & "Path"]:
+          raise newException(VmHarnessError, "cleanup artifact is used by another domain")
+        # Foreign references may themselves be symlinks. Compare their
+        # resolved target inode with our retained inode; the owned path's
+        # separate non-following checks still prohibit replacing it by a link.
+        # An unresolvable foreign reference cannot establish absence of use.
+        let info = getFileInfo(path, followSymlink = true)
+        if $info.id.device & ":" & $info.id.file == vm.extra[key & "Identity"]:
+          raise newException(VmHarnessError, "another domain aliases a cleanup artifact")
+
+proc retainCreatedFirmware(b: LibvirtBackend, vm: var VmHandle,
+                           expectedPath: string) =
+  if expectedPath.len == 0: return
+  if not (fileExists(expectedPath) or dirExists(expectedPath) or symlinkExists(expectedPath)):
+    return # Failed startup may not have allocated NVRAM at all.
+  let owner = b.cleanupOwner(vm)
+  if not owner.present: return
+  let xml = parseXml(b.checkedVirsh(["dumpxml", vm.extra["cleanupUuid"]]))
+  let osNode = xml.child("os")
+  if osNode == nil: raise newException(VmHarnessError, "domain firmware definition missing")
+  let nvramNode = osNode.child("nvram")
+  if nvramNode == nil or absolutePath(nvramNode.innerText.strip()) != absolutePath(expectedPath):
+    raise newException(VmHarnessError, "domain firmware path differs from acquired path")
+  if not (fileExists(expectedPath) or dirExists(expectedPath) or symlinkExists(expectedPath)):
+    return # A failed start need not have allocated firmware yet.
+  vm.retainCleanupArtifact(expectedPath)
+
 proc configuredSshAuth(b: LibvirtBackend): SshAuth
 
 method provisionEphemeralClone*(b: LibvirtBackend,
                                 spec: EphemeralCloneSpec): VmHandle {.base.} =
-  ## Materialise ONE fresh per-job VM: CoW-clone the golden into a thin
-  ## overlay, define a transient domain on it, and start it on KVM.
-  ##
-  ## Steps (exact commands):
-  ##   1. ``qemu-img create -f qcow2 -b <golden> -F qcow2 <overlay>``
-  ##      — thin CoW overlay; writes stay local to the overlay so the
-  ##      golden backs any number of concurrent jobs untouched.
-  ##   2. ``virsh define <xml>`` — a transient q35/KVM domain on the
-  ##      overlay (direct-kernel-boot when ``spec.kernel`` is set,
-  ##      firmware disk-boot otherwise), serial console → a host file.
-  ##   3. ``virsh start <name>`` — boot on /dev/kvm.
-  ##
-  ## The returned handle carries ``overlayPath`` + ``serialLogPath`` in
-  ## ``extra`` and is marked ``ephemeral=true`` so ``stopAndCleanup`` (the
-  ## DeleteInstance path) destroys + undefines the domain AND removes the
-  ## overlay + nvram, leaving no residue.
+  ## A fresh clone retains identity before its first lifecycle mutation.
+  ## Existing names and files are not evidence of ownership and are refused.
   when defined(linux):
-    if spec.name.len == 0:
-      raise newException(ValueError,
-        "provisionEphemeralClone: spec.name is empty")
-    if spec.goldenImage.len == 0:
-      raise newException(ValueError,
-        "provisionEphemeralClone: spec.goldenImage is empty")
+    if spec.name.len == 0 or spec.goldenImage.len == 0:
+      raise newException(ValueError, "clone name and golden image are required")
     if not fileExists(spec.goldenImage):
-      raise newException(IOError,
-        "provisionEphemeralClone: golden image does not exist: " &
-        spec.goldenImage)
-    if b.domainExists(spec.name):
-      raise newVmHarnessError($b.id, lpProvisioning,
-        "provisionEphemeralClone: domain '" & spec.name &
-        "' already exists; per-job clones require a fresh name")
-
-    # Size decision BEFORE anything is created: a refused request leaves
-    # nothing behind to clean up.
+      raise newException(IOError, "golden image does not exist: " & spec.goldenImage)
+    if b.inspectDomain(spec.name).present:
+      raise newException(VmHarnessError, "ephemeral domain already exists")
     let cloneBytes = planQcow2Clone(b.qemuImgCmd, spec.goldenImage,
       gibToBytes(spec.diskGB), spec.diskGBDefaulted, $b.id, lpProvisioning)
+    let uuid = newDomainUuid()
+    var actual = spec
+    if actual.uefiLoader.len > 0 and actual.uefiNvram.len == 0:
+      actual.uefiNvram = b.imagePoolDir / (spec.name & "-" & uuid & "_VARS.fd")
+    validateCleanupParent(b.imagePoolDir / "new-overlay")
     createDir(b.imagePoolDir)
     let overlay = b.overlayPathFor(spec.name)
-    # Start from a clean overlay so a stale file from a crashed prior run
-    # can't leak state into this job.
-    if fileExists(overlay):
-      try: removeFile(overlay)
-      except CatchableError: discard
-    var createArgs = @[b.qemuImgCmd, "create",
-      "-f", "qcow2",
-      "-b", spec.goldenImage,
-      "-F", "qcow2",
-      overlay]
-    if cloneBytes > 0:
-      # A larger virtual size than the backing file: the overlay exposes the
-      # extra space as unallocated, and the guest volume is grown into it.
-      createArgs.add($cloneBytes)
-      b.guestDiskBytes[spec.name] = cloneBytes
-    let createRes = runProcessCapture(createArgs, timeoutSec = 60)
-    if createRes.exitCode != 0:
-      raise newVmHarnessError($b.id, lpProvisioning,
-        "qemu-img create (CoW overlay over " & spec.goldenImage &
-        ") failed (exit " & $createRes.exitCode & "): " & createRes.stdout)
-
-    let serialLogPath =
-      if spec.serialLogPath.len > 0: spec.serialLogPath
+    if fileExists(overlay) or symlinkExists(overlay) or dirExists(overlay):
+      raise newException(IOError, "ephemeral overlay already exists: " & overlay)
+    let serialPath = if spec.serialLogPath.len > 0: spec.serialLogPath
       else: getTempDir() / "vm-harness-ephemeral" / (spec.name & ".serial.log")
-    createDir(parentDir(serialLogPath))
-    # Truncate any stale serial log for this domain name.
-    try: writeFile(serialLogPath, "")
-    except CatchableError: discard
-
-    let xml = b.buildEphemeralDomainXml(spec, overlay, serialLogPath)
     let xmlPath = getTempDir() / "vm-harness-ephemeral" / (spec.name & ".xml")
-    createDir(parentDir(xmlPath))
-    writeFile(xmlPath, xml)
-    let defineRes = b.runVirsh(@["define", xmlPath], timeoutSec = 60)
-    if defineRes.exitCode != 0:
-      b.removeEphemeralOverlay(spec.name)
-      raise newVmHarnessError($b.id, lpProvisioning,
-        "virsh define (ephemeral) failed (exit " & $defineRes.exitCode &
-        "): " & defineRes.stdout)
-
-    let startRes = b.runVirsh(@["start", spec.name], timeoutSec = 120)
-    if startRes.exitCode != 0:
-      # Best-effort teardown of the half-built domain.
-      try: b.undefineDomain(spec.name)
-      except CatchableError: discard
-      b.removeEphemeralOverlay(spec.name)
-      raise newVmHarnessError($b.id, lpStartup,
-        "virsh start (ephemeral) failed (exit " & $startRes.exitCode &
-        "): " & startRes.stdout)
-
-    var address = none(string)
-    var sshAuth = SshAuth(kind: saNone)
-    if spec.sshForwardPort > 0:
-      try:
-        b.ensureSshForward(spec.name, spec.sshForwardPort)
-      except CatchableError as e:
-        try: b.destroyDomain(spec.name)
-        except CatchableError: discard
-        try: b.undefineDomain(spec.name)
-        except CatchableError: discard
-        b.removeEphemeralOverlay(spec.name)
-        raise newVmHarnessError($b.id, lpStartup,
-          "provisionEphemeralClone: SSH forward 127.0.0.1:" &
-          $spec.sshForwardPort & " -> guest:22 was not installed: " & e.msg)
-      # The SSH helpers read the port from the backend, as the durable
-      # media-boot path does (cli.nim sets ``sshPort`` the same way).
-      b.sshPort = spec.sshForwardPort
-      address = some("127.0.0.1")
-      sshAuth = b.configuredSshAuth()
-
+    for path in [serialPath, xmlPath]:
+      validateCleanupParent(path)
+      if fileExists(path) or symlinkExists(path) or dirExists(path):
+        raise newException(IOError, "ephemeral acquisition path already exists: " & path)
     var extra = initTable[string, string]()
     extra["libvirtUri"] = b.libvirtUri
+    extra["cleanupUuid"] = uuid
     extra["domain"] = spec.name
     extra["ephemeral"] = "true"
-    if spec.sshForwardPort > 0:
-      extra["sshForwardPort"] = $spec.sshForwardPort
     extra["overlayPath"] = overlay
     extra["goldenImage"] = spec.goldenImage
-    extra["serialLogPath"] = serialLogPath
-    if spec.configDriveIso.len > 0:
-      extra["configDriveIso"] = spec.configDriveIso
-    if spec.noCloudSeedIso.len > 0:
-      extra["noCloudSeedIso"] = spec.noCloudSeedIso
-    if spec.uefiNvram.len > 0:
-      extra["uefiNvram"] = spec.uefiNvram
-    result = VmHandle(
-      backend: b,
-      name: spec.name,
-      baseline: spec.goldenImage,
-      ipAddress: address,
-      sshPort: b.sshPort,
-      sshUser: b.sshUser,
-      sshAuth: sshAuth,
-      extra: extra)
+    extra["serialLogPath"] = serialPath
+    if spec.configDriveIso.len > 0: extra["configDriveIso"] = spec.configDriveIso
+    if spec.noCloudSeedIso.len > 0: extra["noCloudSeedIso"] = spec.noCloudSeedIso
+    if actual.uefiNvram.len > 0: extra["uefiNvram"] = actual.uefiNvram
+    result = VmHandle(backend: b, name: spec.name, baseline: spec.goldenImage,
+      ipAddress: none(string), sshPort: b.sshPort, sshUser: b.sshUser,
+      sshAuth: SshAuth(kind: saNone), extra: extra)
+    for path in [spec.configDriveIso, spec.noCloudSeedIso, actual.uefiNvram]:
+      if path.len > 0 and fileExists(path): result.retainCleanupArtifact(path)
+    let goldenInfo = getFileInfo(spec.goldenImage)
+    let goldenIdentity = $goldenInfo.id.device & ":" & $goldenInfo.id.file
+    for i in 0 ..< parseInt(result.extra.getOrDefault("cleanupFileCount", "0")):
+      if result.extra["cleanupFile" & $i & "Identity"] == goldenIdentity:
+        raise newException(IOError, "owned clone artifact aliases the golden image")
+    try:
+      var args = @[b.qemuImgCmd, "create", "-f", "qcow2", "-b",
+        spec.goldenImage, "-F", "qcow2", overlay]
+      if cloneBytes > 0:
+        args.add($cloneBytes)
+        b.guestDiskBytes[spec.name] = cloneBytes
+      let created = runProcessCapture(args, timeoutSec = 60)
+      if fileExists(overlay): result.retainCleanupArtifact(overlay)
+      if created.exitCode != 0:
+        raise newVmHarnessError($b.id, lpProvisioning,
+          "qemu-img create failed: " & created.stdout & created.stderr)
+      createDir(parentDir(serialPath))
+      writeFile(serialPath, "")
+      createDir(parentDir(xmlPath))
+      let xml = b.buildEphemeralDomainXml(actual, overlay, serialPath).replace(
+        "<domain type='kvm'>", "<domain type='kvm'><uuid>" & uuid & "</uuid>")
+      writeFile(xmlPath, xml)
+      discard b.checkedVirsh(["define", xmlPath], timeoutSec = 60)
+      discard b.cleanupOwner(result)
+      discard b.checkedVirsh(["start", uuid], timeoutSec = 120)
+      discard b.cleanupOwner(result)
+      b.retainCreatedFirmware(result, actual.uefiNvram)
+      if spec.sshForwardPort > 0:
+        b.ensureSshForward(uuid, spec.sshForwardPort)
+        b.sshPort = spec.sshForwardPort
+        result.sshPort = b.sshPort
+        result.ipAddress = some("127.0.0.1")
+        result.sshAuth = b.configuredSshAuth()
+        result.extra["sshForwardPort"] = $spec.sshForwardPort
+    except CatchableError:
+      try:
+        b.retainCreatedFirmware(result, actual.uefiNvram)
+        b.cleanupAcquiredDomain(result, true)
+      except CatchableError as cleanupError:
+        stderr.writeLine("libvirt failed-clone cleanup refused: " & cleanupError.msg)
+      raise
   else:
     raise newException(BackendUnavailableError,
       "provisionEphemeralClone requires a Linux host")
@@ -1768,38 +1935,34 @@ method revertToBaseline*(b: LibvirtBackend, baselineName: string): VmHandle =
   ## still reaches libvirt through the per-job CoW clone path and
   ## changing that is campaign WR1, not WR0.
   when defined(linux):
-    if not b.domainExists(baselineName):
-      raise newVmHarnessError($b.id, lpRevert,
-        "LibvirtBackend.revertToBaseline: domain '" & baselineName &
-        "' is not defined; run provisionBaseline first")
-    b.startDomain(baselineName)
-    # Poll for a leased IP. Win11's first DHCP burst usually arrives
-    # within 30s of the OS reaching the desktop.
-    let deadline = epochTime() + b.sshReadyTimeoutSec.float
-    var ip = ""
-    while epochTime() < deadline:
-      ip = b.domainIpAddress(baselineName)
-      if ip.len > 0: break
-      sleep(2000)
-    if ip.len == 0:
-      raise (ref GuestBootFailureError)(
-        backend: $b.id, phase: lpStartup,
-        msg: "LibvirtBackend.revertToBaseline: domain " & baselineName &
-             " never acquired an IP within " & $b.sshReadyTimeoutSec & "s",
-        cause: nil)
+    let acquired = b.inspectDomain(baselineName)
+    if not acquired.present:
+      raise newVmHarnessError($b.id, lpRevert, "baseline is not defined")
     var extra = initTable[string, string]()
     extra["libvirtUri"] = b.libvirtUri
     extra["networkBridge"] = b.networkBridge
     extra["domain"] = baselineName
-    result = VmHandle(
-      backend: b,
-      name: baselineName,
-      baseline: baselineName,
-      ipAddress: some(ip),
-      sshPort: b.sshPort,
-      sshUser: b.sshUser,
-      sshAuth: b.configuredSshAuth(),
-      extra: extra)
+    result = VmHandle(backend: b, name: baselineName, baseline: baselineName,
+      ipAddress: none(string), sshPort: b.sshPort, sshUser: b.sshUser,
+      sshAuth: b.configuredSshAuth(), extra: extra)
+    b.retainCleanupOwner(result, acquired.uuid, borrowedBaseline = true)
+    try:
+      b.startDomain(acquired.uuid)
+      let deadline = epochTime() + b.sshReadyTimeoutSec.float
+      while epochTime() < deadline:
+        let ip = b.domainIpAddress(acquired.uuid)
+        if ip.len > 0:
+          result.ipAddress = some(ip)
+          discard b.cleanupOwner(result)
+          return
+        sleep(2000)
+      raise (ref GuestBootFailureError)(backend: $b.id, phase: lpStartup,
+        msg: "baseline never acquired an IP within the readiness timeout", cause: nil)
+    except CatchableError:
+      try: b.cleanupAcquiredDomain(result, false)
+      except CatchableError as cleanupError:
+        stderr.writeLine("libvirt failed-baseline cleanup refused: " & cleanupError.msg)
+      raise
   else:
     raise newException(BackendUnavailableError,
       "LibvirtBackend.revertToBaseline requires a Linux host")
@@ -1982,69 +2145,15 @@ method copyFromGuest*(b: LibvirtBackend, vm: VmHandle,
 
 method stopAndCleanup*(b: LibvirtBackend, vm: VmHandle,
                       deleteVm: bool = true) =
-  ## Safe from finally blocks: never raises. When ``deleteVm`` is
-  ## true and the domain was created by the harness (its name matches
-  ## the VmHandle), the domain is force-stopped and undefined; when
-  ## false, the harness only force-stops the domain (the long-lived
-  ## runner survives across maintenance windows).
-  ##
-  ## For the windows-runner-001 prototype, the orchestrator invokes
-  ## ``stopAndCleanup(vm, deleteVm = false)`` so the runner persists
-  ## between vm-harness invocations.
-  ##
-  ## For M2 per-job EPHEMERAL clones (``vm.extra["ephemeral"] == "true"``,
-  ## set by ``provisionEphemeralClone``) this is the DeleteInstance path:
-  ## the domain is force-destroyed and undefined, and the per-job CoW
-  ## overlay is removed, leaving NO residual domain/disk. The golden is
-  ## never touched (only the ``.overlay.qcow2`` is removed).
+  ## Finally-safe cleanup uses only the acquired UUID and retained files.
+  ## Borrowed baselines are stopped but never undefined or deleted. Legacy
+  ## handles without acquisition evidence fail closed; a mutable name alone
+  ## cannot grant authority over a different instance or its storage.
   when defined(linux):
-    let isEphemeral = vm.extra.getOrDefault("ephemeral", "") == "true"
-    let isTransientBoot = vm.baseline == "<boot-from-media>"
-    let preserveBootDisk =
-      vm.extra.getOrDefault("preserveBootDisk", "") == "true"
     try:
-      if isEphemeral or isTransientBoot:
-        # Force-stop immediately — a per-job VM has no state worth a
-        # graceful ACPI shutdown, and it may already have powered itself
-        # off (the tiny golden's init calls ``poweroff -f``).
-        try: b.destroyDomain(vm.name)
-        except CatchableError: discard
-      else:
-        # Graceful shutdown first; fall back to destroy.
-        try: b.shutdownDomain(vm.name)
-        except CatchableError: discard
-      if deleteVm:
-        try: b.undefineDomain(vm.name)
-        except CatchableError: discard
-        if isEphemeral:
-          # Remove ONLY this job's CoW overlay (never the golden or a
-          # shared ISO). Equivalent to the design-doc's
-          # ``undefine --remove-all-storage`` for the ephemeral case, but
-          # scoped so it can't delete pool-shared read-only media.
-          try: b.removeEphemeralOverlay(vm.name)
-          except CatchableError: discard
-          # Also remove this job's injected config-drive ISO + per-job
-          # OVMF nvram vars copy (M3). Both are per-job artifacts named
-          # after the domain; the golden + the OVMF template are untouched.
-          let cdIso = vm.extra.getOrDefault("configDriveIso", "")
-          if cdIso.len > 0 and fileExists(cdIso):
-            try: removeFile(cdIso)
-            except CatchableError: discard
-          # Also remove this job's NoCloud cloud-init seed ISO (GOSTI2 Linux
-          # path); a per-job artifact named after the domain, never the golden.
-          let seedIso = vm.extra.getOrDefault("noCloudSeedIso", "")
-          if seedIso.len > 0 and fileExists(seedIso):
-            try: removeFile(seedIso)
-            except CatchableError: discard
-          let nvram = vm.extra.getOrDefault("uefiNvram", "")
-          if nvram.len > 0 and fileExists(nvram):
-            try: removeFile(nvram)
-            except CatchableError: discard
-        elif not preserveBootDisk:
-          try: b.deleteDomainDisk(vm.name)
-          except CatchableError: discard
-    except CatchableError:
-      discard
+      b.cleanupAcquiredDomain(vm, deleteVm)
+    except CatchableError as error:
+      stderr.writeLine("libvirt cleanup refused: " & error.msg)
   else:
     discard
 
@@ -2674,6 +2783,11 @@ method bootFromMedia*(b: LibvirtBackend, spec: BootMediaSpec): VmHandle =
         "BootMediaSpec.mediaPath does not exist: " & spec.mediaPath)
     let domainName = if spec.name.len > 0: spec.name else: newBootDomainName()
     let durable = spec.instanceId.len > 0
+    let acquiredUuid = if durable: spec.instanceId else: newDomainUuid()
+    var acquired = VmHandle(backend: b, name: domainName,
+      baseline: "<boot-from-media>", extra: initTable[string, string]())
+    acquired.extra["libvirtUri"] = b.libvirtUri
+    acquired.extra["cleanupUuid"] = acquiredUuid
     if durable:
       if spec.kind != bmkQcow2 or domainName != "vmh-media-" & spec.instanceId:
         raise newException(ValueError, "invalid durable libvirt media specification")
@@ -2686,170 +2800,189 @@ method bootFromMedia*(b: LibvirtBackend, spec: BootMediaSpec): VmHandle =
       raise newException(ValueError,
         "BootMediaSpec.name must start with '" & BootDomainNamePrefix &
         "' for safety-sweep coverage (got '" & domainName & "')")
-    let mem = if spec.memoryMB > 0: spec.memoryMB else: 2048
-    let cpus = if spec.cpus > 0: spec.cpus else: 2
-    let serialLogPath = if spec.serialLogPath.len > 0:
-                          spec.serialLogPath
-                        else:
-                          getTempDir() / "repro-boot-harness" /
-                            (domainName & ".serial.log")
-    let serialLogDir = parentDir(serialLogPath)
-    if serialLogDir.len > 0:
-      createDir(serialLogDir)
-    if fileExists(serialLogPath):
-      if durable:
-        raise newException(VmHarnessError, "durable serial log already exists")
-      removeFile(serialLogPath)
-    writeFile(serialLogPath, "")
-    setFilePermissions(serialLogPath, {
-      fpUserRead, fpUserWrite,
-      fpGroupRead, fpGroupWrite,
-      fpOthersRead, fpOthersWrite})
-
-    let ovmf = resolveTransientOvmf(spec)
-    var attachedMediaPath = spec.mediaPath
-    if spec.kind == bmkQcow2:
-      # Decide the size before touching the pool: a refused request
-      # (``DiskSizeTooSmallError``) must not delete or create a disk.
-      let overlayBytes = planQcow2Clone(b.qemuImgCmd, spec.mediaPath,
+    if b.inspectDomain(domainName).present:
+      raise newException(VmHarnessError, "media domain already exists")
+    # Reject an invalid image-size request before allocating diagnostic files
+    # or writable VM artifacts. Replaying the request must retain its specific
+    # DiskSizeTooSmallError instead of encountering a leftover serial log.
+    let overlayBytes = if spec.kind == bmkQcow2:
+      planQcow2Clone(b.qemuImgCmd, spec.mediaPath,
         mediaOverlayRequestBytes(spec.diskGB, spec.diskGBDefaulted), false,
         $b.id, lpStartup)
-      createDir(b.imagePoolDir)
-      attachedMediaPath = b.domainDiskPath(domainName)
-      if fileExists(attachedMediaPath):
-        if durable:
-          raise newException(VmHarnessError, "durable disk already exists")
-        removeFile(attachedMediaPath)
-      var overlayArgs = @[
-        b.qemuImgCmd, "create", "-f", "qcow2",
-        "-b", absolutePath(spec.mediaPath), "-F", "qcow2",
-        attachedMediaPath]
-      if overlayBytes > 0:
-        overlayArgs.add($overlayBytes)
-        # ``startAndAwaitReady`` (boot with an in-guest command) then grows
-        # the guest volume and verifies it.
-        b.guestDiskBytes[domainName] = overlayBytes
-      let overlay = runProcessCapture(overlayArgs, timeoutSec = 120)
-      if overlay.exitCode != 0:
-        raise newVmHarnessError($b.id, lpStartup,
-          "LibvirtBackend.bootFromMedia: qemu-img overlay failed (exit " &
-          $overlay.exitCode & "): " & overlay.stdout)
-    elif spec.kind == bmkIso and spec.targetDiskPath.len > 0:
-      attachedMediaPath = absolutePath(spec.targetDiskPath)
-      if fileExists(attachedMediaPath) or dirExists(attachedMediaPath):
-        raise newException(ValueError,
-          "BootMediaSpec.targetDiskPath already exists: " & attachedMediaPath)
-      let targetDir = parentDir(attachedMediaPath)
-      if targetDir.len > 0:
-        createDir(targetDir)
-      let diskGB = if spec.diskGB > 0: spec.diskGB else: 8
-      let createDisk = runProcessCapture(@[
-        b.qemuImgCmd, "create", "-f", "qcow2",
-        attachedMediaPath, $diskGB & "G"], timeoutSec = 120)
-      if createDisk.exitCode != 0:
-        raise newVmHarnessError($b.id, lpStartup,
-          "LibvirtBackend.bootFromMedia: target disk creation failed (exit " &
-          $createDisk.exitCode & "): " & createDisk.stdout)
-      setFilePermissions(attachedMediaPath, {
+      else: 0'i64
+    let privateNvram = if not durable and (spec.generation <= 0 or spec.generation == 2):
+      b.imagePoolDir / (domainName & "-" & acquiredUuid & "_VARS.fd") else: ""
+    if privateNvram.len > 0 and (fileExists(privateNvram) or
+        symlinkExists(privateNvram) or dirExists(privateNvram)):
+      raise newException(IOError, "media NVRAM already exists")
+    if privateNvram.len > 0: validateCleanupParent(privateNvram)
+    let mem = if spec.memoryMB > 0: spec.memoryMB else: 2048
+    let cpus = if spec.cpus > 0: spec.cpus else: 2
+    try:
+      let serialLogPath = if spec.serialLogPath.len > 0:
+                            spec.serialLogPath
+                          else:
+                            getTempDir() / "repro-boot-harness" /
+                              (domainName & ".serial.log")
+      validateCleanupParent(serialLogPath)
+      let serialLogDir = parentDir(serialLogPath)
+      if serialLogDir.len > 0:
+        createDir(serialLogDir)
+      if fileExists(serialLogPath) or symlinkExists(serialLogPath) or dirExists(serialLogPath):
+        raise newException(VmHarnessError, "media serial log already exists")
+      writeFile(serialLogPath, "")
+      setFilePermissions(serialLogPath, {
         fpUserRead, fpUserWrite,
         fpGroupRead, fpGroupWrite,
         fpOthersRead, fpOthersWrite})
-
-    var argv: seq[string] = @[
-      b.virtInstallCmd,
-      "--connect", b.libvirtUri,
-      "--name", domainName,
-      "--memory", $mem,
-      "--vcpus", singleSocketVcpusArg(cpus),
-      "--machine", "q35"]
-    if durable: argv.add(@["--uuid", spec.instanceId])
-    argv.add(transientBootAccelerationArgs(spec))
-    argv.add(transientBootNetworkArgs(spec))
-    argv.add("--noautoconsole")
-    argv.add(transientBootFirmwareArgs(spec, ovmf.loader, ovmf.nvram))
-    argv.add(transientBootTpmArgs(spec))
-    argv.add(transientBootGraphicsArgs(spec))
-    argv.add(transientBootCompatibilityArgs())
-    if durable:
-      argv.add(@["--serial", "pty,log.file=" & serialLogPath & ",log.append=on"])
-    else:
-      argv.add(transientBootSerialArgs(serialLogPath))
-    case spec.kind
-    of bmkQcow2, bmkVhdx:
-      argv.add("--import")
-      argv.add("--disk")
-      argv.add("path=" & attachedMediaPath & ",format=qcow2,bus=virtio")
-    of bmkIso:
-      # Empty boot disk; we boot off the CD.
-      argv.add("--disk")
-      if spec.targetDiskPath.len > 0:
-        argv.add("path=" & attachedMediaPath & ",format=qcow2,bus=virtio")
-      else:
+  
+      let ovmf = resolveTransientOvmf(spec)
+      var attachedMediaPath = spec.mediaPath
+      if spec.kind == bmkQcow2:
+        # Decide the size before touching the pool: a refused request
+        # (``DiskSizeTooSmallError``) must not delete or create a disk.
+        validateCleanupParent(b.imagePoolDir / "new-overlay")
+        createDir(b.imagePoolDir)
+        attachedMediaPath = b.domainDiskPath(domainName)
+        if fileExists(attachedMediaPath) or symlinkExists(attachedMediaPath) or dirExists(attachedMediaPath):
+          raise newException(VmHarnessError, "media disk already exists")
+        var overlayArgs = @[
+          b.qemuImgCmd, "create", "-f", "qcow2",
+          "-b", absolutePath(spec.mediaPath), "-F", "qcow2",
+          attachedMediaPath]
+        if overlayBytes > 0:
+          overlayArgs.add($overlayBytes)
+          # ``startAndAwaitReady`` (boot with an in-guest command) then grows
+          # the guest volume and verifies it.
+          b.guestDiskBytes[domainName] = overlayBytes
+        let overlay = runProcessCapture(overlayArgs, timeoutSec = 120)
+        if fileExists(attachedMediaPath): acquired.retainCleanupArtifact(attachedMediaPath)
+        if overlay.exitCode != 0:
+          raise newVmHarnessError($b.id, lpStartup,
+            "LibvirtBackend.bootFromMedia: qemu-img overlay failed (exit " &
+            $overlay.exitCode & "): " & overlay.stdout)
+      elif spec.kind == bmkIso:
+        attachedMediaPath = if spec.targetDiskPath.len > 0:
+          absolutePath(spec.targetDiskPath)
+        else: b.imagePoolDir / (domainName & "-" & acquiredUuid & ".qcow2")
+        if fileExists(attachedMediaPath) or dirExists(attachedMediaPath) or symlinkExists(attachedMediaPath):
+          raise newException(ValueError,
+            "BootMediaSpec.targetDiskPath already exists: " & attachedMediaPath)
+        validateCleanupParent(attachedMediaPath)
+        let targetDir = parentDir(attachedMediaPath)
+        if targetDir.len > 0:
+          createDir(targetDir)
         let diskGB = if spec.diskGB > 0: spec.diskGB else: 8
-        argv.add("size=" & $diskGB & ",format=qcow2,bus=virtio")
-      argv.add("--cdrom")
-      argv.add(spec.mediaPath)
-    of bmkRootfsTar, bmkKernel:
-      doAssert false  # guarded above
-    if spec.secondaryIsoPath.len > 0:
-      argv.add("--disk")
-      argv.add("device=cdrom,path=" & spec.secondaryIsoPath & ",readonly=on")
-
-    let r = runProcessCapture(argv, timeoutSec = 120)
-    if r.exitCode != 0:
+        let createDisk = runProcessCapture(@[
+          b.qemuImgCmd, "create", "-f", "qcow2",
+          attachedMediaPath, $diskGB & "G"], timeoutSec = 120)
+        if spec.targetDiskPath.len == 0 and fileExists(attachedMediaPath):
+          acquired.retainCleanupArtifact(attachedMediaPath)
+        if createDisk.exitCode != 0:
+          raise newVmHarnessError($b.id, lpStartup,
+            "LibvirtBackend.bootFromMedia: target disk creation failed (exit " &
+            $createDisk.exitCode & "): " & createDisk.stdout)
+        setFilePermissions(attachedMediaPath, {
+          fpUserRead, fpUserWrite,
+          fpGroupRead, fpGroupWrite,
+          fpOthersRead, fpOthersWrite})
+  
+      var argv: seq[string] = @[
+        b.virtInstallCmd,
+        "--connect", b.libvirtUri,
+        "--name", domainName,
+        "--memory", $mem,
+        "--vcpus", singleSocketVcpusArg(cpus),
+        "--machine", "q35"]
+      argv.add(@["--uuid", acquiredUuid])
+      argv.add(transientBootAccelerationArgs(spec))
+      argv.add(transientBootNetworkArgs(spec))
+      argv.add("--noautoconsole")
+      var firmwareArgs = transientBootFirmwareArgs(spec, ovmf.loader, ovmf.nvram)
+      if privateNvram.len > 0:
+        firmwareArgs[1].add(",nvram=" & privateNvram)
+      argv.add(firmwareArgs)
+      argv.add(transientBootTpmArgs(spec))
+      argv.add(transientBootGraphicsArgs(spec))
+      argv.add(transientBootCompatibilityArgs())
       if durable:
-        raise newVmHarnessError($b.id, lpStartup,
-          "durable virt-install failed: " & r.stdout & r.stderr)
-      # Best-effort cleanup of any half-built domain.
-      try:
-        b.destroyDomain(domainName)
-        b.undefineDomain(domainName)
-        b.deleteDomainDisk(domainName)
-      except CatchableError: discard
-      raise newVmHarnessError($b.id, lpStartup,
-        "LibvirtBackend.bootFromMedia: virt-install failed (exit " &
-        $r.exitCode & "): " & r.stdout)
-
-    if spec.sshForwardPort > 0:
-      let forward = b.runVirsh(@["qemu-monitor-command",
-        (if durable: spec.instanceId else: domainName),
-        "--hmp", transientBootHostForwardHmp(spec)], timeoutSec = 30)
-      if forward.exitCode != 0 or forward.stdout.strip().len > 0:
+        argv.add(@["--serial", "pty,log.file=" & serialLogPath & ",log.append=on"])
+      else:
+        argv.add(transientBootSerialArgs(serialLogPath))
+      case spec.kind
+      of bmkQcow2, bmkVhdx:
+        argv.add("--import")
+        argv.add("--disk")
+        argv.add("path=" & attachedMediaPath & ",format=qcow2,bus=virtio")
+      of bmkIso:
+        # Empty boot disk; we boot off the CD.
+        argv.add("--disk")
+        argv.add("path=" & attachedMediaPath & ",format=qcow2,bus=virtio")
+        argv.add("--cdrom")
+        argv.add(spec.mediaPath)
+      of bmkRootfsTar, bmkKernel:
+        doAssert false  # guarded above
+      if spec.secondaryIsoPath.len > 0:
+        argv.add("--disk")
+        argv.add("device=cdrom,path=" & spec.secondaryIsoPath & ",readonly=on")
+  
+      let r = runProcessCapture(argv, timeoutSec = 120)
+      if r.exitCode != 0:
         if durable:
           raise newVmHarnessError($b.id, lpStartup,
-            "durable SSH forward failed: " & forward.stdout & forward.stderr)
-        try:
-          b.destroyDomain(domainName)
-          b.undefineDomain(domainName)
-          b.deleteDomainDisk(domainName)
-        except CatchableError: discard
+            "durable virt-install failed: " & r.stdout & r.stderr)
+        # Best-effort cleanup of any half-built domain.
         raise newVmHarnessError($b.id, lpStartup,
-          "LibvirtBackend.bootFromMedia: SSH port forward failed (exit " &
-          $forward.exitCode & "): " & forward.stdout)
-
-    var extra = initTable[string, string]()
-    extra["mediaPath"] = spec.mediaPath
-    if attachedMediaPath != spec.mediaPath:
-      extra["transientDiskPath"] = attachedMediaPath
-    if spec.targetDiskPath.len > 0:
-      extra["targetDiskPath"] = attachedMediaPath
-      extra["preserveBootDisk"] = "true"
-    extra["serialLogPath"] = serialLogPath
-    result = VmHandle(
-      backend: b,
-      name: domainName,
-      baseline: "<boot-from-media>",
-      ipAddress: (if spec.sshForwardPort > 0:
-                    some("127.0.0.1")
+          "LibvirtBackend.bootFromMedia: virt-install failed (exit " &
+          $r.exitCode & "): " & r.stdout)
+  
+      if spec.sshForwardPort > 0:
+        let forward = b.runVirsh(@["qemu-monitor-command",
+          acquiredUuid,
+          "--hmp", transientBootHostForwardHmp(spec)], timeoutSec = 30)
+        if forward.exitCode != 0 or forward.stdout.strip().len > 0:
+          if durable:
+            raise newVmHarnessError($b.id, lpStartup,
+              "durable SSH forward failed: " & forward.stdout & forward.stderr)
+          raise newVmHarnessError($b.id, lpStartup,
+            "LibvirtBackend.bootFromMedia: SSH port forward failed (exit " &
+            $forward.exitCode & "): " & forward.stdout)
+  
+      b.retainCreatedFirmware(acquired, privateNvram)
+      if privateNvram.len > 0: acquired.extra["uefiNvram"] = privateNvram
+      discard b.cleanupOwner(acquired)
+      var extra = acquired.extra
+      extra["mediaPath"] = spec.mediaPath
+      if attachedMediaPath != spec.mediaPath:
+        extra["transientDiskPath"] = attachedMediaPath
+      if spec.targetDiskPath.len > 0:
+        extra["targetDiskPath"] = attachedMediaPath
+        extra["preserveBootDisk"] = "true"
+      extra["serialLogPath"] = serialLogPath
+      result = VmHandle(
+        backend: b,
+        name: domainName,
+        baseline: "<boot-from-media>",
+        ipAddress: (if spec.sshForwardPort > 0:
+                      some("127.0.0.1")
+                    else:
+                      none(string)),
+        sshPort: spec.sshForwardPort,
+        sshUser: (if spec.sshForwardPort > 0: b.sshUser else: ""),
+        sshAuth: (if spec.sshForwardPort > 0:
+                    b.configuredSshAuth()
                   else:
-                    none(string)),
-      sshPort: spec.sshForwardPort,
-      sshUser: (if spec.sshForwardPort > 0: b.sshUser else: ""),
-      sshAuth: (if spec.sshForwardPort > 0:
-                  b.configuredSshAuth()
-                else:
-                  SshAuth(kind: saNone)),
-      extra: extra)
+                    SshAuth(kind: saNone)),
+        extra: extra)
+    except CatchableError:
+      if not durable:
+        try:
+          b.retainCreatedFirmware(acquired, privateNvram)
+          b.cleanupAcquiredDomain(acquired, true)
+        except CatchableError as cleanupError:
+          stderr.writeLine("libvirt failed-media cleanup refused: " & cleanupError.msg)
+      raise
+
   else:
     raise newException(BackendUnavailableError,
       "LibvirtBackend.bootFromMedia requires a Linux host")

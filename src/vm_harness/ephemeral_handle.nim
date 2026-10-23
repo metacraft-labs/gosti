@@ -5,11 +5,10 @@
 ##
 ## WHY THIS EXISTS. `run --ephemeral --keep` returns while the guest keeps
 ## running, and `ephemeral-destroy` reclaims it from a different process
-## minutes or hours later. For libvirt and incus that works without any state:
-## their per-job artifacts are a deterministic function of `--baseline`
-## (`<baseline>` is the domain/container name, the overlay is
-## `overlayPathFor(baseline)`, and so on), so `cmdEphemeralDestroy`
-## RECONSTRUCTS the handle from the name alone.
+## minutes or hours later. Libvirt retains its acquired UUID, connection URI
+## and file identities here: a name and deterministic storage paths do not
+## identify the original generation after a name is reused. Incus currently
+## reconstructs its handle from the selected name.
 ##
 ## The vm-harness-run backends are not like that, and the difference is why
 ## remote driving never worked for them. `revertToBaseline` mints the per-job

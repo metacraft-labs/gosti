@@ -76,7 +76,7 @@ export qemu_windows_arm
 export qemu_boot
 export boot_smoke
 export lima
-export libvirt
+export libvirt except cleanupAcquiredDomain
 export incus
 export protocol
 export http

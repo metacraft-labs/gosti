@@ -16,8 +16,20 @@
 ## presence decisions are pure functions over the exact CLI output shapes.
 
 import std/[json, options, os, osproc, strutils, tempfiles, unittest]
-import vm_harness/[types, crud_store]
+import vm_harness/[types, crud_store, process_capture]
 import vm_harness/backends/[incus, libvirt, tart, hyperv]
+
+# Child mode exercises the real lock and timeout against a real unwritable
+# private directory. No store/lock adapter or clock is replaced.
+if commandLineParams().len > 0:
+  if commandLineParams()[0] == "--stale-lock-owner": quit(0)
+  if commandLineParams()[0] == "--stale-unremovable-child":
+    try:
+      var lock = acquire(commandLineParams()[1], 1)
+      lock.release()
+      quit(2)
+    except CrudBusyError:
+      quit(0)
 
 proc withEnv(pairs: openArray[(string, string)], body: proc()) =
   var saved: seq[(string, string, bool)]
@@ -124,6 +136,29 @@ suite "crud store locks":
       var l = store.lockVm("mock", "vm1", 0)
       check readFile(lockDir / "owner").startsWith($getCurrentProcessId())
       release(l)
+
+when defined(posix):
+  suite "crud stale lock removal failure":
+    test "an unremovable dead-owner lock still expires without busy spinning":
+      let root = createTempDir("vmh-crud-stale-unremovable-", "")
+      let lockDir = root / "held.lock"
+      createDir(lockDir)
+      defer:
+        setFilePermissions(lockDir, {fpUserRead, fpUserWrite, fpUserExec})
+        removeDir(root)
+      let owner = startProcess(getAppFilename(), args=["--stale-lock-owner"])
+      let deadPid = owner.processID
+      check owner.waitForExit() == 0
+      owner.close()
+      writeFile(lockDir / "owner", $deadPid & " 0")
+      setFilePermissions(lockDir, {fpUserRead, fpUserExec})
+      let child = captureCommand(@[getAppFilename(), "--stale-unremovable-child", lockDir],
+        timeoutSec=3)
+      checkpoint child.stdout
+      checkpoint child.stderr
+      check child.exitCode == 0
+      check fileExists(lockDir / "owner")
+      check readFile(lockDir / "owner").startsWith($deadPid & " ")
 
 suite "instancePresence decisions (per backend)":
   test "incus: exact-name row, failure is unknown":

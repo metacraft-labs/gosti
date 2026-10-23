@@ -196,8 +196,13 @@ proc acquire*(lockDir: string, timeoutSec: int): CrudLock =
       return CrudLock(path: lockDir)
     if not ownerAlive(lockDir):
       # Stale: the holder died without releasing. Break it and retry at once.
-      try: removeDir(lockDir) except CatchableError: discard
-      continue
+      try:
+        removeDir(lockDir)
+        continue
+      except CatchableError:
+        # A stale lock which cannot be removed is still busy. Keep the
+        # caller's timeout and sleep instead of spinning past the deadline.
+        discard
     if epochTime() >= deadline:
       raise newException(CrudBusyError,
         "busy: another crud invocation holds " & lockDir)

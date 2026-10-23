@@ -35,6 +35,123 @@
 
 import std/[options, os, sequtils, strutils, tables, tempfiles, unittest]
 import vm_harness
+from vm_harness/backends/libvirt import cleanupAcquiredDomain
+import vm_harness/cli
+import vm_harness/process_capture
+import vm_harness/[ephemeral_handle, crud_store]
+import std/json
+
+# Internal ownership fixtures invoke the real backend through executable
+# stand-ins and private files, never a live hypervisor. Their image bytes test
+# selection and deletion authority, not qcow2/firmware or guest execution.
+if commandLineParams().len > 0 and commandLineParams()[0] == "--cleanup-cli-child":
+  quit(runCli(@["ephemeral-destroy", "--backend", "libvirt", "--baseline", commandLineParams()[1]]))
+
+if commandLineParams().len > 0 and commandLineParams()[0] == "--cleanup-cli-keep-child":
+  quit(runCli(@["run", "--backend", "libvirt", "--ephemeral", "--keep",
+    "--baseline", commandLineParams()[1], "--golden-image", commandLineParams()[2]]))
+
+type CleanupFixture = object
+  root, name, virsh, qemu, installer, log, disk: string
+
+proc cleanupFixture(): CleanupFixture =
+  result.root = createTempDir("vmh-cleanup-owned-", "")
+  result.name = BootDomainNamePrefix & result.root.extractFilename
+  result.virsh = result.root / "virsh"
+  result.qemu = result.root / "qemu-img"
+  result.installer = result.root / "virt-install"
+  result.log = result.root / "calls"
+  result.disk = result.root / "golden.qcow2"
+  writeFile(result.disk, "golden preserved")
+  writeFile(result.root / "mode", "")
+  let prefix = "#!/bin/sh\nset -eu\nroot='" & result.root & "'\n"
+  writeFile(result.virsh, prefix & """
+printf '%s\n' "$*" >> "$root/calls"
+cmd="$3"; shift 3
+mode=$(cat "$root/mode")
+case "$cmd" in
+list)
+  [ "$mode" != queryfail ] || exit 31
+  if [ -f "$root/name" ]; then
+    if [ "$2" = --uuid ]; then cat "$root/uuid"; else cat "$root/name"; fi
+  fi
+  if [ "$mode" = shared ] || [ "$mode" = sharedalias ]; then
+    if [ "$2" = --uuid ]; then printf '33333333-3333-4333-8333-333333333333\n'; else printf 'another-domain\n'; fi
+  fi ;;
+dominfo) [ -f "$root/name" ] ;;
+domuuid) cat "$root/uuid" ;;
+domstate) cat "$root/state" ;;
+domifaddr) [ "$mode" != noip ] || exit 0; printf 'vnet0 mac ipv4 192.0.2.1/24\n' ;;
+dumpxml)
+  if [ "$1" = 33333333-3333-4333-8333-333333333333 ] && [ -f "$root/foreign-xml" ]; then cat "$root/foreign-xml"; else cat "$root/xml"; fi ;;
+define)
+  cp "$1" "$root/xml"
+  sed -n 's/.*<uuid>\([^<]*\)<\/uuid>.*/\1/p' "$1" > "$root/uuid"
+  sed -n 's/.*<name>\([^<]*\)<\/name>.*/\1/p' "$1" > "$root/name"
+  printf 'shut off\n' > "$root/state" ;;
+start) [ "$mode" != startfail ] || exit 32; printf 'running\n' > "$root/state"
+  case "$mode" in savefail|saverecovery) chmod 500 "$root/kept-state/libvirt" ;; esac ;;
+shutdown|destroy)
+  if [ "$mode" = saverecovery ]; then chmod 700 "$root/kept-state/libvirt"; exit 33; fi
+  [ "$mode" != stopfail ] || exit 33; printf 'shut off\n' > "$root/state" ;;
+undefine) [ "$mode" != undefinefail ] || exit 34; rm "$root/name" "$root/uuid"
+  if [ "$mode" = forgetfail ]; then chmod 500 "$root/kept-state/libvirt"; fi ;;
+*) exit 35 ;;
+esac
+""")
+  writeFile(result.qemu, prefix & """
+case "$1" in
+info) printf '{"virtual-size":1048576}\n' ;;
+create) path=''; for arg do case "$arg" in *.qcow2) path="$arg" ;; esac; done; printf 'owned image\n' > "$path" ;;
+*) exit 36 ;;
+esac
+""")
+  writeFile(result.installer, prefix & """
+printf '%s\n' "$*" >> "$root/install-argv"
+uuid=''; name=''; nvram=''; disk=''
+while [ "$#" -gt 0 ]; do
+ case "$1" in
+ --uuid) uuid="$2"; shift 2 ;;
+ --name) name="$2"; shift 2 ;;
+ --disk) value="$2"; case "$value" in path=*) disk="${value#path=}"; disk="${disk%%,*}" ;; esac; shift 2 ;;
+ --boot) value="$2"; case "$value" in *,nvram=*) nvram="${value##*,nvram=}" ;; esac; shift 2 ;;
+ *) shift ;;
+ esac
+done
+printf '%s\n' "$uuid" > "$root/uuid"; printf '%s\n' "$name" > "$root/name"
+printf 'paused\n' > "$root/state"
+printf '<domain><uuid>%s</uuid><name>%s</name><os>' "$uuid" "$name" > "$root/xml"
+if [ -n "$nvram" ]; then
+ printf '<nvram>%s</nvram>' "$nvram" >> "$root/xml"
+ if [ "$(cat "$root/mode")" != missingnvram ]; then printf 'owned firmware\n' > "$nvram"; fi
+fi
+printf '</os><devices><disk><source file="%s"/></disk></devices></domain>' "$disk" >> "$root/xml"
+case "$(cat "$root/mode")" in missingnvram|installfail) exit 37 ;; esac
+""")
+  for path in [result.virsh, result.qemu, result.installer]:
+    setFilePermissions(path, {fpUserRead, fpUserWrite, fpUserExec})
+
+proc backend(f: CleanupFixture): LibvirtBackend =
+  newLibvirtBackend(virshCmd=f.virsh, qemuImgCmd=f.qemu,
+    virtInstallCmd=f.installer, libvirtUri="qemu:///private-fixture",
+    imagePoolDir=f.root / "pool", sshReadyTimeoutSec=1)
+
+proc baseline(f: CleanupFixture): VmHandle =
+  writeFile(f.root / "name", f.name & "\n")
+  writeFile(f.root / "uuid", "11111111-1111-4111-8111-111111111111\n")
+  writeFile(f.root / "state", "paused\n")
+  createDir(f.backend.imagePoolDir)
+  writeFile(f.backend.imagePoolDir / (f.name & ".qcow2"), "borrowed baseline")
+  writeFile(f.root / "xml", "<domain><os/><devices/></domain>")
+  f.backend.revertToBaseline(f.name)
+
+proc clone(f: CleanupFixture, iso = ""): VmHandle =
+  f.backend.provisionEphemeralClone(EphemeralCloneSpec(name: f.name,
+    goldenImage: f.disk, serialLogPath: f.root / "serial", configDriveIso: iso))
+
+proc logText(f: CleanupFixture): string =
+  if fileExists(f.log): readFile(f.log) else: ""
+
 
 const XorrisoFixtureName = when defined(windows): "xorriso.exe" else: "xorriso"
 
@@ -176,59 +293,31 @@ suite "LibvirtBackend smoke (no live virsh)":
 
   test "stopAndCleanup force-stops a paused transient domain":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-paused-cleanup", "")
-      defer: removeDir(root)
-      let fakeVirsh = root / "virsh"
-      let argvLog = root / "virsh.argv"
-      writeFile(fakeVirsh,
-        "#!/bin/sh\n" &
-        "printf '%s\\n' \"$3\" >> '" & argvLog & "'\n" &
-        "case \"$3\" in\n" &
-        "  dominfo) exit 0 ;;\n" &
-        "  domstate) printf 'paused\\n' ;;\n" &
-        "  destroy|undefine) exit 0 ;;\n" &
-        "  *) exit 2 ;;\n" &
-        "esac\n")
-      setFilePermissions(fakeVirsh, getFilePermissions(fakeVirsh) +
-        {fpUserExec})
-      let b = newLibvirtBackend(
-        virshCmd = fakeVirsh, libvirtUri = "qemu:///test")
-      let vm = VmHandle(
-        backend: b, name: BootDomainNamePrefix & "paused",
-        baseline: "<boot-from-media>", ipAddress: none(string),
-        sshPort: 0, sshUser: "", sshAuth: SshAuth(kind: saNone),
-        extra: initTable[string, string]())
+      let f = cleanupFixture()
+      defer: removeDir(f.root)
+      let b = f.backend
+      let vm = b.bootFromMedia(BootMediaSpec(name: f.name, kind: bmkQcow2,
+        mediaPath: f.disk, serialLogPath: f.root / "serial", generation: 1))
       b.stopAndCleanup(vm, deleteVm = true)
-      let commands = readFile(argvLog).splitLines()
+      let commands = f.logText.splitLines().filterIt(it.splitWhitespace().len >= 3).
+        mapIt(it.splitWhitespace()[2])
       check "destroy" in commands
       check "undefine" in commands
 
   test "stopAndCleanup force-stops a paused persistent domain":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-paused-persistent", "")
-      defer: removeDir(root)
-      let fakeVirsh = root / "virsh"
-      let argvLog = root / "virsh.argv"
-      writeFile(fakeVirsh,
-        "#!/bin/sh\n" &
-        "printf '%s\\n' \"$3\" >> '" & argvLog & "'\n" &
-        "case \"$3\" in\n" &
-        "  dominfo) exit 0 ;;\n" &
-        "  domstate) printf 'paused\\n' ;;\n" &
-        "  destroy|undefine) exit 0 ;;\n" &
-        "  *) exit 2 ;;\n" &
-        "esac\n")
-      setFilePermissions(fakeVirsh, getFilePermissions(fakeVirsh) +
-        {fpUserExec})
-      let b = newLibvirtBackend(
-        virshCmd = fakeVirsh, libvirtUri = "qemu:///test")
-      let vm = VmHandle(
-        backend: b, name: "persistent-paused", baseline: "baseline",
-        ipAddress: none(string), sshPort: 0, sshUser: "",
-        sshAuth: SshAuth(kind: saNone),
-        extra: initTable[string, string]())
+      let f = cleanupFixture()
+      defer: removeDir(f.root)
+      let b = f.backend
+      var vm = f.clone()
+      # An acquired persistent instance is distinct from a borrowed baseline:
+      # retain its ownership, but exercise generic paused/force cleanup.
+      vm.baseline = "baseline"
+      vm.extra["ephemeral"] = "false"
+      writeFile(f.root / "state", "paused\n")
       b.stopAndCleanup(vm, deleteVm = true)
-      let commands = readFile(argvLog).splitLines()
+      let commands = f.logText.splitLines().filterIt(it.splitWhitespace().len >= 3).
+        mapIt(it.splitWhitespace()[2])
       check "destroy" in commands
       check "undefine" in commands
 
@@ -667,31 +756,15 @@ suite "LibvirtBackend (continued)":
 
   test "ISO install preserves an explicit caller-owned target disk":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-install", "")
-      defer: removeDir(root)
-      let media = root / "installer.iso"
-      let target = root / "reproos-installed.qcow2"
-      let qemuImg = root / "qemu-img"
-      let virtInstall = root / "virt-install"
-      let argvLog = root / "virt-install.argv"
+      let f = cleanupFixture()
+      defer: removeDir(f.root)
+      let media = f.root / "installer.iso"
+      let target = f.root / "reproos-installed.qcow2"
+      let argvLog = f.root / "install-argv"
       writeFile(media, "installer")
-      writeFile(qemuImg,
-        "#!/bin/sh\n" &
-        "test \"$1\" = create || exit 2\n" &
-        ": > \"$4\"\n")
-      writeFile(virtInstall,
-        "#!/bin/sh\n" &
-        "printf '%s\\n' \"$@\" > '" & argvLog & "'\n")
-      setFilePermissions(qemuImg, getFilePermissions(qemuImg) + {fpUserExec})
-      setFilePermissions(virtInstall,
-        getFilePermissions(virtInstall) + {fpUserExec})
-      let b = newLibvirtBackend(
-        virshCmd = "/nonexistent/virsh-no-such",
-        virtInstallCmd = virtInstall,
-        qemuImgCmd = qemuImg,
-        imagePoolDir = root)
+      let b = f.backend
       let vm = b.bootFromMedia(BootMediaSpec(
-        name: BootDomainNamePrefix & "persistent-disk",
+        name: f.name,
         kind: bmkIso,
         mediaPath: media,
         targetDiskPath: target,
@@ -995,3 +1068,354 @@ suite "LibvirtBackend UEFI El Torito ISO validation":
     # PATH with no xorriso ⇒ findExe returns "" ⇒ warn + return (no raise).
     withPath(emptyDir):
       b.validateWindowsIsoBootable("/tmp/whatever.iso", xorrisoCmd = "xorriso")
+
+# Libvirt is a Linux host backend; the existing portable parser/surface
+# cases above remain enrolled on their original hosts.
+when defined(linux):
+  suite "Libvirt acquired cleanup authority (no live hypervisor)":
+    test "borrowed baseline is stopped by UUID and remains defined with its disk":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      let vm = f.baseline()
+      writeFile(f.root / "state", "paused\n")
+      writeFile(f.log, "")
+      f.backend.stopAndCleanup(vm, deleteVm=true)
+      check "destroy 11111111-1111-4111-8111-111111111111" in f.logText
+      check "undefine" notin f.logText
+      check fileExists(f.root / "name")
+      check readFile(f.backend.imagePoolDir / (f.name & ".qcow2")) == "borrowed baseline"
+  
+    test "owned paused clone uses UUID and removes only its retained overlay":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      let vm = f.clone()
+      writeFile(f.root / "state", "paused\n")
+      f.backend.cleanupAcquiredDomain(vm, true)
+      check "destroy " & vm.extra["cleanupUuid"] in f.logText
+      check "undefine " & vm.extra["cleanupUuid"] & " --keep-nvram" in f.logText
+      check not fileExists(vm.extra["overlayPath"])
+      check readFile(f.disk) == "golden preserved"
+      f.backend.cleanupAcquiredDomain(vm, true)
+  
+    test "same-name replacement and renamed acquired UUID both refuse mutation":
+      for replaced in [false, true]:
+        let f = cleanupFixture(); defer: removeDir(f.root)
+        let vm = f.clone()
+        if replaced:
+          writeFile(f.root / "uuid", "22222222-2222-4222-8222-222222222222\n")
+        else:
+          writeFile(f.root / "name", "renamed-owned-domain\n")
+        writeFile(f.log, "")
+        expect VmHarnessError: f.backend.cleanupAcquiredDomain(vm, true)
+        check "destroy " notin f.logText
+        check "undefine " notin f.logText
+        check fileExists(vm.extra["overlayPath"])
+  
+    test "query failure or another domain attachment refuses all deletion":
+      for mode in ["queryfail", "shared", "sharedalias"]:
+        let f = cleanupFixture(); defer: removeDir(f.root)
+        let vm = f.clone()
+        if mode == "sharedalias":
+          let alias = f.root / "foreign-disk-link"
+          createSymlink(vm.extra["overlayPath"], alias)
+          writeFile(f.root / "foreign-xml", "<domain><os/><devices><disk><source file=\"" & alias & "\"/></disk></devices></domain>")
+        writeFile(f.root / "mode", mode)
+        writeFile(f.log, "")
+        expect VmHarnessError: f.backend.cleanupAcquiredDomain(vm, true)
+        check "destroy " notin f.logText
+        check "undefine " notin f.logText
+        check fileExists(vm.extra["overlayPath"])
+  
+    test "replaced file, dangling link and changed parent refuse deletion":
+      for replacement in ["file", "symlink", "parent"]:
+        let f = cleanupFixture(); defer: removeDir(f.root)
+        let vm = f.clone()
+        let overlay = vm.extra["overlayPath"]
+        if replacement == "parent":
+          let pool = parentDir(overlay)
+          moveDir(pool, pool & ".retained")
+          createDir(pool)
+          moveFile(pool & ".retained" / overlay.extractFilename, overlay)
+        else:
+          moveFile(overlay, overlay & ".retained")
+          if replacement == "file": writeFile(overlay, "foreign replacement")
+          else: createSymlink(f.root / "missing", overlay)
+        writeFile(f.log, "")
+        expect IOError: f.backend.cleanupAcquiredDomain(vm, true)
+        check "undefine " notin f.logText
+        check fileExists(overlay) or symlinkExists(overlay)
+  
+    test "failed stop and failed undefine leave all retained storage":
+      for mode in ["stopfail", "undefinefail"]:
+        let f = cleanupFixture(); defer: removeDir(f.root)
+        let vm = f.clone()
+        writeFile(f.root / "state", "paused\n")
+        writeFile(f.root / "mode", mode)
+        writeFile(f.log, "")
+        expect VmHarnessError: f.backend.cleanupAcquiredDomain(vm, true)
+        check fileExists(vm.extra["overlayPath"])
+        if mode == "stopfail": check "undefine " notin f.logText
+  
+    test "missing firmware after failed media start does not block owned cleanup":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      writeFile(f.root / "mode", "missingnvram")
+      let b = f.backend
+      expect VmHarnessError:
+        discard b.bootFromMedia(BootMediaSpec(name: f.name, kind: bmkQcow2,
+          mediaPath: f.disk, serialLogPath: f.root / "serial", generation: 2))
+      check not fileExists(f.root / "name")
+      check not fileExists(b.imagePoolDir / (f.name & ".qcow2"))
+      check readFile(f.disk) == "golden preserved"
+      check "--uuid " in readFile(f.root / "install-argv")
+  
+    test "partial unlink can retry missing originals but still refuses replacements":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      let iso = f.root / "config.iso"
+      writeFile(iso, "owned config drive")
+      let vm = f.clone(iso)
+      let pool = parentDir(vm.extra["overlayPath"])
+      let permissions = getFilePermissions(pool)
+      defer: setFilePermissions(pool, permissions)
+      setFilePermissions(pool, {fpUserRead, fpUserExec})
+      expect OSError: f.backend.cleanupAcquiredDomain(vm, true)
+      check not fileExists(f.root / "name")
+      check not fileExists(iso)
+      check fileExists(vm.extra["overlayPath"])
+      setFilePermissions(pool, permissions)
+      f.backend.cleanupAcquiredDomain(vm, true)
+      check not fileExists(vm.extra["overlayPath"])
+      f.backend.cleanupAcquiredDomain(vm, true)
+  
+    test "failed baseline readiness stops only acquired UUID and preserves baseline":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      writeFile(f.root / "mode", "noip")
+      expect GuestBootFailureError: discard f.baseline()
+      check fileExists(f.root / "name")
+      check fileExists(f.backend.imagePoolDir / (f.name & ".qcow2"))
+      check "shutdown 11111111-1111-4111-8111-111111111111" in f.logText
+      check "undefine " notin f.logText
+  
+    test "failed clone start cleans its UUID-bound overlay without touching golden":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      writeFile(f.root / "mode", "startfail")
+      expect VmHarnessError: discard f.clone()
+      check not fileExists(f.root / "name")
+      check not fileExists(f.backend.overlayPathFor(f.name))
+      check readFile(f.disk) == "golden preserved"
+      check "start " & f.name notin f.logText
+      check "--keep-nvram" in f.logText
+  
+    test "dangling serial and disk destinations refuse before allocation":
+      for target in ["serial", "disk"]:
+        let f = cleanupFixture(); defer: removeDir(f.root)
+        let b = f.backend
+        createDir(b.imagePoolDir)
+        let path = if target == "serial": f.root / "serial"
+          else: b.domainDiskPath(f.name)
+        createSymlink(f.root / "absent-target", path)
+        expect CatchableError:
+          discard b.bootFromMedia(BootMediaSpec(name: f.name, kind: bmkQcow2,
+            mediaPath: f.disk, serialLogPath: f.root / "serial", generation: 1))
+        check symlinkExists(path)
+        check not fileExists(f.root / "install-argv")
+        check readFile(f.disk) == "golden preserved"
+  
+    test "explicit CLI refusal propagates and selected generated firmware is removed":
+      for fail in [false, true]:
+        let f = cleanupFixture(); defer: removeDir(f.root)
+        let vm = f.clone()
+        let firmware = f.root / (f.name & "-" & vm.extra["cleanupUuid"] & "_VARS.fd")
+        writeFile(firmware, "selected owned firmware")
+        let xml = readFile(f.root / "xml").replace("<os>", "<os><nvram>" & firmware & "</nvram>")
+        writeFile(f.root / "xml", xml)
+        if fail: writeFile(f.root / "mode", "undefinefail")
+        var environment = initTable[string, string]()
+        environment["PATH"] = f.root & PathSep & getEnv("PATH")
+        environment["LIBVIRT_DEFAULT_URI"] = "qemu:///private-fixture"
+        environment["GOSTI_LIBVIRT_IMAGE_POOL_DIR"] = f.root / "pool"
+        environment["GOSTI_EPHEMERAL_STATE_DIR"] = f.root / "kept-state"
+        let child = captureCommand(@[getAppFilename(), "--cleanup-cli-child", f.name],
+          env=environment, timeoutSec=30)
+        check (child.exitCode != 0) == fail
+        if fail:
+          check fileExists(firmware)
+          check fileExists(vm.extra["overlayPath"])
+        else:
+          check not fileExists(firmware)
+          check not fileExists(vm.extra["overlayPath"])
+
+when defined(linux):
+  proc keptRecord(f: CleanupFixture): string =
+    f.root / "kept-state" / "libvirt" / (sanitizeKey(f.name) & ".json")
+
+  proc keptChild(f: CleanupFixture, keep = false): ExecResult =
+    var environment = initTable[string, string]()
+    environment["PATH"] = f.root & PathSep & getEnv("PATH")
+    environment["LIBVIRT_DEFAULT_URI"] = "qemu:///private-fixture"
+    environment["GOSTI_LIBVIRT_IMAGE_POOL_DIR"] = f.root / "pool"
+    environment["GOSTI_EPHEMERAL_STATE_DIR"] = f.root / "kept-state"
+    let args = if keep:
+      @[getAppFilename(), "--cleanup-cli-keep-child", f.name, f.disk]
+    else:
+      @[getAppFilename(), "--cleanup-cli-child", f.name]
+    captureCommand(args, env=environment, timeoutSec=30)
+
+  proc saveKeptFixture(f: CleanupFixture, vm: VmHandle) =
+    let had = existsEnv("GOSTI_EPHEMERAL_STATE_DIR")
+    let old = getEnv("GOSTI_EPHEMERAL_STATE_DIR")
+    putEnv("GOSTI_EPHEMERAL_STATE_DIR", f.root / "kept-state")
+    try: saveEphemeralHandle("libvirt", f.name, vm)
+    finally:
+      if had: putEnv("GOSTI_EPHEMERAL_STATE_DIR", old)
+      else: delEnv("GOSTI_EPHEMERAL_STATE_DIR")
+
+  suite "kept libvirt generation authority":
+    test "keep persists original acquisition and destroy consumes only that record":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      let started = f.keptChild(true)
+      checkpoint started.stdout
+      check started.exitCode == 0
+      require fileExists(f.keptRecord)
+      let bytes = readFile(f.keptRecord)
+      let doc = parseJson(bytes)
+      check doc["schema"].getStr == "vm-harness/ephemeral-handle/1"
+      check doc["backend"].getStr == "libvirt"
+      check doc["baseline"].getStr == f.name
+      check doc["extra"]["cleanupUuid"].getStr == readFile(f.root / "uuid").strip
+      check doc["extra"]["libvirtUri"].getStr == "qemu:///private-fixture"
+      check doc["extra"]["cleanupFileCount"].getStr.parseInt > 0
+      check getFilePermissions(f.keptRecord) == {fpUserRead, fpUserWrite}
+      let duplicate = f.keptChild(true)
+      check duplicate.exitCode != 0
+      check readFile(f.keptRecord) == bytes
+      # The real constructor omits the borrowed flag. Its successful keep
+      # above covers that normal form; explicit false flags must also retain
+      # the same acquisition authority across the existing v1 serializer.
+      var explicitFalse = parseJson(bytes)
+      explicitFalse["extra"]["cleanupBorrowedBaseline"] = %"false"
+      explicitFalse["extra"]["cleanupExplicitSelection"] = %"false"
+      writeFile(f.keptRecord, $explicitFalse)
+      let stopped = f.keptChild()
+      checkpoint stopped.stdout
+      check stopped.exitCode == 0
+      check not fileExists(f.keptRecord)
+      check not fileExists(doc["extra"]["overlayPath"].getStr)
+      check readFile(f.disk) == "golden preserved"
+      check f.keptChild().exitCode == 0
+
+    test "saved UUID refuses a same-name replacement and retains recovery record":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      let acquired = f.clone()
+      f.saveKeptFixture(acquired)
+      let bytes = readFile(f.keptRecord)
+      let original = readFile(f.root / "uuid")
+      writeFile(f.root / "uuid", "22222222-2222-4222-8222-222222222222\n")
+      let before = f.logText
+      let refused = f.keptChild()
+      checkpoint refused.stdout
+      check refused.exitCode != 0
+      check readFile(f.keptRecord) == bytes
+      check readFile(f.root / "uuid").startsWith("22222222")
+      check " destroy " notin f.logText[before.len .. ^1]
+      check " undefine " notin f.logText[before.len .. ^1]
+      writeFile(f.root / "uuid", original)
+      check f.keptChild().exitCode == 0
+
+    test "present corrupt or mismatched authority never falls back to current name":
+      for variant in ["corrupt", "schema", "backend", "baseline", "uri", "artifacts", "explicit", "borrowed"]:
+        let f = cleanupFixture(); defer: removeDir(f.root)
+        require f.keptChild(true).exitCode == 0
+        let original = readFile(f.keptRecord)
+        var doc = parseJson(original)
+        case variant
+        of "schema": doc["schema"] = %"other"
+        of "backend": doc["backend"] = %"incus"
+        of "baseline": doc["baseline"] = %(f.name & "different")
+        of "uri": doc["extra"]["libvirtUri"] = %"qemu:///other"
+        of "artifacts": doc["extra"]["cleanupFileCount"] = %"0"
+        of "explicit": doc["extra"]["cleanupExplicitSelection"] = %"true"
+        of "borrowed": doc["extra"]["cleanupBorrowedBaseline"] = %"true"
+        else: discard
+        writeFile(f.keptRecord, if variant == "corrupt": "{bad" else: $doc)
+        let before = f.logText
+        check f.keptChild().exitCode != 0
+        check fileExists(f.root / "name")
+        check " destroy " notin f.logText[before.len .. ^1]
+        check " undefine " notin f.logText[before.len .. ^1]
+        writeFile(f.keptRecord, original)
+        check f.keptChild().exitCode == 0
+
+    test "failed checked cleanup keeps authority for a successful retry":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      require f.keptChild(true).exitCode == 0
+      let original = readFile(f.keptRecord)
+      writeFile(f.root / "mode", "undefinefail")
+      check f.keptChild().exitCode != 0
+      check readFile(f.keptRecord) == original
+      check fileExists(parseJson(original)["extra"]["overlayPath"].getStr)
+      writeFile(f.root / "mode", "")
+      check f.keptChild().exitCode == 0
+      check not fileExists(f.keptRecord)
+
+    test "unfinished record refuses fresh selection without deleting the selected domain":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      let vm = f.clone()
+      createDir(f.keptRecord.parentDir)
+      writeFile(f.keptRecord & ".tmp", "unfinished")
+      let before = f.logText
+      check f.keptChild().exitCode != 0
+      check fileExists(vm.extra["overlayPath"])
+      check readFile(f.keptRecord & ".tmp") == "unfinished"
+      check " destroy " notin f.logText[before.len .. ^1]
+      check " undefine " notin f.logText[before.len .. ^1]
+      removeFile(f.keptRecord & ".tmp")
+      check f.keptChild().exitCode == 0
+
+    test "same sanitized key lock prevents concurrent create and destroy":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      var lock = acquire(f.keptRecord & ".lock", timeoutSec=1)
+      defer: lock.release()
+      check f.keptChild(true).exitCode != 0
+      check not fileExists(f.root / "name")
+      check not fileExists(f.keptRecord)
+      check f.keptChild().exitCode != 0
+      lock.release()
+      check f.keptChild(true).exitCode == 0
+      check f.keptChild().exitCode == 0
+
+    test "failed record removal reports failure after domain cleanup and keeps the record":
+      let f = cleanupFixture(); defer: removeDir(f.root)
+      require f.keptChild(true).exitCode == 0
+      let original = readFile(f.keptRecord)
+      writeFile(f.root / "mode", "forgetfail")
+      let refused = f.keptChild()
+      check refused.exitCode != 0
+      check not fileExists(f.root / "name")
+      check readFile(f.keptRecord) == original
+      # Restore only this fixture's filesystem fault. The failed release can
+      # leave an empty operation lock; this is explicit fixture recovery, not
+      # a claim that an unremovable lock automatically recovers.
+      setFilePermissions(f.keptRecord.parentDir, {fpUserRead, fpUserWrite, fpUserExec})
+      if dirExists(f.keptRecord & ".lock"): removeDir(f.keptRecord & ".lock")
+      writeFile(f.root / "mode", "")
+      check f.keptChild().exitCode == 0
+      check not fileExists(f.keptRecord)
+
+    test "save failure cannot report kept success and preserves authority when cleanup refuses":
+      for recovery in [false, true]:
+        let f = cleanupFixture()
+        defer:
+          if dirExists(f.keptRecord.parentDir):
+            setFilePermissions(f.keptRecord.parentDir, {fpUserRead, fpUserWrite, fpUserExec})
+          removeDir(f.root)
+        writeFile(f.root / "mode", if recovery: "saverecovery" else: "savefail")
+        let refused = f.keptChild(true)
+        checkpoint refused.stdout
+        check refused.exitCode != 0
+        check "kept running" notin refused.stdout
+        check readFile(f.disk) == "golden preserved"
+        if recovery:
+          require fileExists(f.keptRecord)
+          check parseFile(f.keptRecord)["extra"]["cleanupUuid"].getStr == readFile(f.root / "uuid").strip
+          writeFile(f.root / "mode", "")
+          check f.keptChild().exitCode == 0
+        else:
+          check not fileExists(f.root / "name")

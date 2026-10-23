@@ -48,6 +48,8 @@ import ./layer_gc
 import ./instances
 import ./crud
 import ./crud_store
+when defined(posix):
+  import std/posix as keptPosix
 import ./serve/server
 import ./serve/client
 
@@ -1888,6 +1890,75 @@ proc cmdRunEphemeralVmRun(opts: CliOpts): int =
              {"name": vm.name})
   verdict
 
+proc libvirtKeptInfo(path: string): Option[FileInfo] =
+  try:
+    some(getFileInfo(path, followSymlink = false))
+  except OSError as error:
+    when defined(posix):
+      if error.errorCode == int32(keptPosix.ENOENT):
+        return none(FileInfo)
+    raise
+
+proc loadKeptLibvirt(b: LibvirtBackend, baseline, path: string): Option[VmHandle] =
+  # The existing serializer deliberately tolerates old bodies. Lifecycle
+  # authority needs a present record to be valid, never a reason to fall back
+  # to the current same-name generation. The existing v1 envelope is unchanged.
+  if handlePath($biLibvirt, baseline) != path:
+    raise newException(IOError, "kept-instance state root changed during operation")
+  let before = libvirtKeptInfo(path)
+  if before.isNone: return none(VmHandle)
+  let info = before.get
+  if info.kind != pcFile or info.linkCount != 1:
+    raise newException(IOError, "kept libvirt record is not a private regular file")
+  when defined(posix):
+    var nativeInfo: keptPosix.Stat
+    if keptPosix.lstat(path.cstring, nativeInfo) != 0:
+      raiseOSError(osLastError(), path)
+    if nativeInfo.st_uid != keptPosix.geteuid() or
+        (nativeInfo.st_mode and keptPosix.Mode(0o7777)) != keptPosix.Mode(0o600):
+      raise newException(IOError, "kept libvirt record must be owned by this user with mode 0600")
+  let loaded = loadEphemeralHandle($biLibvirt, baseline, b)
+  if loaded.isNone:
+    raise newException(IOError, "present kept libvirt record could not be read")
+  let doc = parseFile(path)
+  if doc.kind != JObject or doc{"schema"}.getStr("") != "vm-harness/ephemeral-handle/1" or
+      doc{"backend"}.getStr("") != $biLibvirt or doc{"baseline"}.getStr("") != baseline:
+    raise newException(IOError, "kept libvirt record envelope does not match its key")
+  let vm = loaded.get
+  if vm.name != baseline or vm.extra.getOrDefault("cleanupUuid").len == 0 or
+      vm.extra.getOrDefault("libvirtUri") != b.libvirtUri:
+    raise newException(IOError, "kept libvirt acquisition identity is missing or changed")
+  if vm.extra.getOrDefault("cleanupBorrowedBaseline") notin ["", "false"] or
+      vm.extra.getOrDefault("cleanupExplicitSelection") notin ["", "false"]:
+    raise newException(IOError, "kept libvirt record is not an acquired ephemeral clone")
+  let count = parseInt(vm.extra.getOrDefault("cleanupFileCount", "0"))
+  if count <= 0 or vm.extra.getOrDefault("ephemeral") != "true":
+    raise newException(IOError, "kept libvirt artifact evidence is missing")
+  var retainedPaths: seq[string]
+  for i in 0 ..< count:
+    let key = "cleanupFile" & $i
+    for suffix in ["Path", "Identity", "Parents"]:
+      if vm.extra.getOrDefault(key & suffix).len == 0:
+        raise newException(IOError, "kept libvirt artifact evidence is incomplete")
+    retainedPaths.add(vm.extra[key & "Path"])
+  for key in ["overlayPath", "configDriveIso", "noCloudSeedIso", "uefiNvram"]:
+    let ownedPath = vm.extra.getOrDefault(key)
+    if (key == "overlayPath" and ownedPath.len == 0) or
+        (ownedPath.len > 0 and absolutePath(ownedPath) notin retainedPaths):
+      raise newException(IOError, "kept libvirt artifact is not bound to acquisition")
+  let after = libvirtKeptInfo(path)
+  if after.isNone or after.get.id != info.id or
+      after.get.size != info.size or after.get.lastWriteTime != info.lastWriteTime:
+    raise newException(IOError, "kept libvirt record changed while reading")
+  some(vm)
+
+proc forgetKeptLibvirt(baseline, path: string) =
+  if handlePath($biLibvirt, baseline) != path:
+    raise newException(IOError, "kept-instance state root changed during operation")
+  forgetEphemeralHandle($biLibvirt, baseline)
+  if libvirtKeptInfo(path).isSome:
+    raise newException(IOError, "kept libvirt record remains after cleanup")
+
 proc cmdRunEphemeral(opts: CliOpts): int =
   ## M2 per-job ephemeral CoW clone: clone a fresh overlay from the
   ## golden, boot it on KVM, harvest the serial console (boot-marker
@@ -1930,6 +2001,15 @@ proc cmdRunEphemeral(opts: CliOpts): int =
   let golden = resolveEphemeralGolden(opts.goldenImage, opts.sourceImage,
                                       opts.baseImage, $id)
   let lb = LibvirtBackend(backend)
+  let keptPath = handlePath($biLibvirt, opts.baseline)
+  var keptLock: CrudLock
+  defer: keptLock.release()
+  if opts.keepEphemeral:
+    # Use the same existing sanitized record key for create/save and destroy.
+    # This is a cooperative operation lock, not a lifetime or adversarial lease.
+    keptLock = acquire(keptPath & ".lock", timeoutSec = 10)
+    if libvirtKeptInfo(keptPath).isSome or libvirtKeptInfo(keptPath & ".tmp").isSome:
+      raise newException(IOError, "kept libvirt record already exists or is unresolved; resolve it before creating another generation")
   # M3: build the config-drive ISO from --user-data so cloudbase-init runs
   # the injected bootstrap on first boot. Per-job artifacts (ISO + nvram)
   # live next to the overlay and are removed on teardown.
@@ -1944,6 +2024,8 @@ proc cmdRunEphemeral(opts: CliOpts): int =
     if not fileExists(opts.userDataFile):
       raise newException(ValueError,
         "run --ephemeral: --user-data file not found: " & opts.userDataFile)
+    if lb.inspectDomain(opts.baseline).present:
+      raise newException(VmHarnessError, "ephemeral domain already exists")
     let userData = readFile(opts.userDataFile)
     var metaData = ""
     if opts.metaDataFile.len > 0 and fileExists(opts.metaDataFile):
@@ -1954,9 +2036,13 @@ proc cmdRunEphemeral(opts: CliOpts): int =
           "local-hostname: " & opts.baseline & "\n"
       createDir(lb.imagePoolDir)
       noCloudSeedIso = lb.noCloudSeedIsoPathFor(opts.baseline)
+      if libvirtKeptInfo(noCloudSeedIso).isSome:
+        raise newException(IOError, "per-instance seed already exists")
       writeNoCloudIso(noCloudSeedIso, userData, metaData)
     else:
       configDriveIso = lb.configDriveIsoPathFor(opts.baseline)
+      if libvirtKeptInfo(configDriveIso).isSome:
+        raise newException(IOError, "per-instance config drive already exists")
       discard buildConfigDriveIso(configDriveIso, userData, metaData)
   # --ssh-forward-port: reach the guest at 127.0.0.1:<port> over a user-mode
   # NIC (qemu:///session has no NAT network), and probe with the command after
@@ -2039,6 +2125,44 @@ proc cmdRunEphemeral(opts: CliOpts): int =
   # golden that stays up (as opposed to the M2 tiny golden that
   # self-terminates and is probed via the serial marker below).
   if opts.keepEphemeral:
+    try:
+      if handlePath($biLibvirt, opts.baseline) != keptPath:
+        raise newException(IOError, "kept-instance state root changed during creation")
+      saveEphemeralHandle($biLibvirt, opts.baseline, vm)
+      let saved = lb.loadKeptLibvirt(opts.baseline, keptPath)
+      if saved.isNone or handleToJson(saved.get) != handleToJson(vm):
+        raise newException(IOError, "kept libvirt handle readback differs from acquisition")
+    except CatchableError as saveError:
+      var cleaned = false
+      try:
+        lb.cleanupAcquiredDomain(vm, true)
+        cleaned = true
+      except CatchableError as cleanupError:
+        # Keep any existing record. If the first save could not publish one,
+        # retry ONLY the same configured store while acquisition authority is
+        # still in memory. Never choose another writable root or claim success.
+        try:
+          if libvirtKeptInfo(keptPath).isNone:
+            saveEphemeralHandle($biLibvirt, opts.baseline, vm)
+          let recovered = lb.loadKeptLibvirt(opts.baseline, keptPath)
+          if recovered.isNone or handleToJson(recovered.get) != handleToJson(vm):
+            raise newException(IOError, "kept libvirt recovery record differs from acquisition")
+        except CatchableError:
+          var recovery = newJObject()
+          for key, value in vm.extra:
+            if key.startsWith("cleanup") or key in ["libvirtUri", "ephemeral", "overlayPath", "configDriveIso", "noCloudSeedIso", "uefiNvram"]:
+              recovery[key] = %value
+          logEvent(opts.logFormat, "error", "kept libvirt recovery record could not be saved",
+            {"name": vm.name, "uuid": vm.extra.getOrDefault("cleanupUuid"),
+             "uri": vm.extra.getOrDefault("libvirtUri"),
+             "recovery_extra": $recovery})
+        logEvent(opts.logFormat, "error", "kept libvirt cleanup after save failure refused",
+          {"name": vm.name, "reason": cleanupError.msg})
+      if cleaned:
+        try: forgetKeptLibvirt(opts.baseline, keptPath)
+        except CatchableError as forgetError:
+          logEvent(opts.logFormat, "error", "failed-create record remains", {"reason": forgetError.msg})
+      raise saveError
     logEvent(opts.logFormat, "info", "ephemeral clone: kept running",
              {"name": opts.baseline,
               "overlay": vm.extra.getOrDefault("overlayPath", ""),
@@ -2169,8 +2293,38 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
 
   let backend = newBackend(biLibvirt)
   let lb = LibvirtBackend(backend)
+  let keptPath = handlePath($biLibvirt, opts.baseline)
+  var keptLock = acquire(keptPath & ".lock", timeoutSec = 10)
+  defer: keptLock.release()
+  let retained = lb.loadKeptLibvirt(opts.baseline, keptPath)
+  if retained.isNone and libvirtKeptInfo(keptPath & ".tmp").isSome:
+    raise newException(IOError, "unfinished kept libvirt record requires recovery before name selection")
+  if retained.isSome:
+    # Do not replace retained authority with a fresh same-name lookup. Failure
+    # leaves the original record intact for a later checked cleanup retry.
+    lb.cleanupAcquiredDomain(retained.get, deleteVm = true)
+    if lb.inspectDomain(retained.get.name).present:
+      raise newVmHarnessError($biLibvirt, lpCleanup, "kept libvirt domain remains defined")
+    forgetKeptLibvirt(opts.baseline, keptPath)
+    forgetLabels(opts.backend, opts.baseline)
+    logEvent(opts.logFormat, "info", "kept libvirt instance: destroyed", {"name": retained.get.name})
+    return 0
   var extra = initTable[string, string]()
+  # This command explicitly selects the CURRENT named instance. It cannot
+  # authenticate an earlier --keep generation from the name alone. Retain the
+  # selected UUID before cleanup; subsequent mutations never retarget by name.
+  let selected = lb.inspectDomain(opts.baseline)
+  if not selected.present:
+    for path in [lb.overlayPathFor(opts.baseline),
+        lb.configDriveIsoPathFor(opts.baseline),
+        lb.imagePoolDir / (opts.baseline & "_VARS.fd")]:
+      if fileExists(path) or symlinkExists(path):
+        raise newVmHarnessError($biLibvirt, lpCleanup,
+          "domain absent; retained ownership required to remove residual storage")
+    return 0
   extra["libvirtUri"] = lb.libvirtUri
+  extra["cleanupUuid"] = selected.uuid
+  extra["cleanupExplicitSelection"] = "true"
   extra["domain"] = opts.baseline
   extra["ephemeral"] = "true"
   extra["overlayPath"] = lb.overlayPathFor(opts.baseline)
@@ -2178,6 +2332,7 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
   # after the domain; point stopAndCleanup at their deterministic paths so
   # they are removed only if present (a tiny-Linux clone has neither).
   extra["configDriveIso"] = lb.configDriveIsoPathFor(opts.baseline)
+  extra["noCloudSeedIso"] = lb.noCloudSeedIsoPathFor(opts.baseline)
   extra["uefiNvram"] = lb.imagePoolDir / (opts.baseline & "_VARS.fd")
   let vm = VmHandle(
     backend: lb,
@@ -2188,8 +2343,8 @@ proc cmdEphemeralDestroy(opts: CliOpts): int =
     sshUser: lb.sshUser,
     sshAuth: SshAuth(kind: saNone),
     extra: extra)
-  lb.stopAndCleanup(vm, deleteVm = true)
-  if lb.domainExists(opts.baseline):
+  lb.cleanupAcquiredDomain(vm, deleteVm = true)
+  if lb.inspectDomain(opts.baseline).present:
     raise newVmHarnessError($biLibvirt, lpCleanup,
       "ephemeral-destroy could not remove domain " & opts.baseline)
   forgetLabels(opts.backend, opts.baseline)

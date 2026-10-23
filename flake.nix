@@ -202,7 +202,8 @@
               runHook preBuild
               # Nix sandboxes HOME to /homeless-shelter. Keep Nim's cache in
               # the writable build directory.
-              nim c --hints:off --opt:speed \
+              # Respect Nix's per-build worker request instead of Nim's host CPU autodetection.
+              nim c --hints:off --opt:speed --parallelBuild:"$NIX_BUILD_CORES" \
                 --nimcache:$TMPDIR/nimcache \
                 -o:gosti src/vm_harness/cli.nim
               runHook postBuild
