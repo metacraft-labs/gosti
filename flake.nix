@@ -60,6 +60,8 @@
             else if pkgs.stdenv.isLinux then
               [
                 pkgs.libvirt
+                # virt-install is shipped separately from libvirt.
+                pkgs.virt-manager
                 pkgs.qemu
                 pkgs.lima
                 # The QemuBootBackend boots UEFI guests through
