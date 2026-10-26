@@ -151,6 +151,30 @@ extraction process used 14.
 `sc config`, even from an elevated administrator. The same offline hive edit
 that disables Defender is not subject to those ACLs.
 
+**Start=4 is not enough for the three Windows Update services; their service
+security descriptor is locked too.** On 2026-10-23, four fleet clones of the
+golden promoted on 2026-09-30 (`b58d5e01…`) had `WaaSMedicSvc` switched from
+disabled to demand start by SYSTEM during boot (System event 7040, about
+2.5 min after power-on, logged by `services.exe` seconds after the SCM came
+up; no scheduled task had run), then `wuauserv` to demand and `UsoSvc` to auto
+1-2 min later. The same image had stayed off for 8 min when it was fresh on
+2026-09-30, so the trigger is the age of its servicing state, which a gate
+run at build time cannot see. A 90 s gate passed. The payload therefore also
+writes `Services\<svc>\Security\Security` for `wuauserv`, `UsoSvc` and
+`WaaSMedicSvc`: a service DACL that denies Everyone, SYSTEM included,
+change-config, write-DAC, write-owner and delete, and still grants query,
+start and stop. The SCM loads it at boot and checks every
+`ChangeServiceConfig` against it, whoever calls. The SDDL is in
+[`../lib/ci-background-off.targets`](../lib/ci-background-off.targets). The
+registry key's own ACL is not changed: hivex cannot edit key security, and
+the start-type writers go through the SCM. Measured 2026-10-26 on a clone of
+`b58d5e01…` with the locked descriptor: 11 min after boot `wuauserv` and
+`UsoSvc` were still Disabled, no event 7040, and `sc config` was refused even
+elevated. `WaaSMedicSvc` still came up as demand start (registry `Start=3`,
+no event 7040), but it refused to start, so `PerformRemediation` returned
+`0x80070422` and nothing re-enabled the other two. The gate accepts Medic in
+that state only if a start attempt fails.
+
 **Scheduled tasks are not edited, but one of them forced `InstallService` into
 the payload.** The `UpdateOrchestrator` and `WindowsUpdate` tasks only start
 `usoclient` or `wuauserv`, so with those services disabled they fail
@@ -181,7 +205,12 @@ through. It fails if none of them can be started. It then requires the
 following. Every targeted service
 exists, is `Disabled` in the SCM with `Start=4` in the registry, and is
 `Stopped`. The policy value is set. `wuaucltcore`, `MoUsoCoreWorker` and
-`SearchIndexer` are not running.
+`SearchIndexer` are not running. Before checking it waits until the clone
+has been up `-SettleAfterBootSeconds` (default 480 s), past the boot-time
+re-enable above, and it also fails on any event 7040 since boot that moved a
+target off Disabled (even if reverted), on a `wuauserv` / `UsoSvc` /
+`WaaSMedicSvc` security descriptor without the deny entry, and on an elevated
+`sc config <svc> start= demand` that is not refused with access denied.
 
 Security posture: the image is patched at build time and each clone lives for
 one job. Patch currency comes from rebuilding the golden from a current

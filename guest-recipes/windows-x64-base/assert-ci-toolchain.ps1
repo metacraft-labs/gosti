@@ -29,12 +29,23 @@
 
 .PARAMETER ExpectBackgroundServicesOff
   First start every task in ci-background-off.trigger-tasks (the scheduled
-  tasks that can re-enable Windows Update) and wait 90 s. Then assert every
+  tasks that can re-enable Windows Update) and wait 90 s, then keep waiting
+  until the guest has been up SettleAfterBootSeconds. Then assert every
   service in ci-background-off.targets (Windows Update, its orchestrator and
   Medic, Delivery Optimization, Windows Search, the Store Install Service) is
   present, Disabled and Stopped, that the automatic-update policy is off, and that none
-  of their worker processes is running. Only meaningful after the offline
-  payload, i.e. on the clone.
+  of their worker processes is running. Also assert that no System event 7040
+  since boot moved any of them off Disabled, that wuauserv, UsoSvc and
+  WaaSMedicSvc carry the payload's locked service security descriptor, and
+  that an elevated `sc config` on each is refused. Only meaningful after the
+  offline payload, i.e. on the clone.
+
+.PARAMETER SettleAfterBootSeconds
+  With -ExpectBackgroundServicesOff: the minimum guest uptime before the
+  services are checked (default 480 = 8 min). On 2026-10-23, clones of a
+  golden whose payload only set Start=4 had WaaSMedicSvc switched to demand
+  start by SYSTEM during boot and wuauserv / UsoSvc about 1-2 min later, all
+  after a 90 s gate would have passed.
 #>
 [CmdletBinding()]
 param(
@@ -42,7 +53,8 @@ param(
     [ValidateSet('utc', 'keep')][string]$ClockMode = 'utc',
     [int]$ExpectLogicalProcessors = 0,
     [switch]$ExpectDefenderOff,
-    [switch]$ExpectBackgroundServicesOff
+    [switch]$ExpectBackgroundServicesOff,
+    [int]$SettleAfterBootSeconds = 480
 )
 
 $ErrorActionPreference = 'Stop'
@@ -211,6 +223,15 @@ if ($ExpectBackgroundServicesOff) {
     # InstallService\ScanForUpdates flipped wuauserv within 75 s when it was
     # not disabled (2026-09-30); wait longer than that.
     Start-Sleep -Seconds 90
+    # The boot-time re-enable (2026-10-23) needs no task: give it the time it
+    # took on the fleet clones, with margin, before reading anything back.
+    $bootTime = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+    $uptime = [int]((Get-Date) - $bootTime).TotalSeconds
+    if ($uptime -lt $SettleAfterBootSeconds) {
+        Write-Host "  info  uptime ${uptime}s; waiting until ${SettleAfterBootSeconds}s after boot"
+        Start-Sleep -Seconds ($SettleAfterBootSeconds - $uptime)
+    }
+    Write-Host ("  info  checking at {0}s after boot" -f [int]((Get-Date) - $bootTime).TotalSeconds)
     foreach ($t in $triggers) {
         $cut = $t.LastIndexOf('\')
         $i = Get-ScheduledTaskInfo -TaskPath $t.Substring(0, $cut + 1) -TaskName $t.Substring($cut + 1) -ErrorAction SilentlyContinue
@@ -224,7 +245,36 @@ if ($ExpectBackgroundServicesOff) {
         $s = Get-Service -Name $name -ErrorAction SilentlyContinue
         if (-not $s) { Bad "$name service not found (cannot prove it is off)" }
         elseif ($s.Status -eq 'Stopped' -and "$($s.StartType)" -eq 'Disabled' -and $start -eq 4) { Ok "$name Stopped/Disabled" }
+        elseif ($name -eq 'WaaSMedicSvc' -and $s.Status -eq 'Stopped') {
+            # Measured 2026-10-26 on a clone with the locked descriptor: Windows
+            # still restores Medic's start type to demand during boot (registry
+            # Start=3 before the SCM loads it, no event 7040), but it cannot run,
+            # so it cannot touch the services above. Accept that only if it
+            # really refuses to start.
+            $startErr = $null
+            try { Start-Service -Name $name -ErrorAction Stop } catch { $startErr = $_.Exception.Message.Trim() }
+            if ((Get-Service -Name $name).Status -eq 'Stopped' -and $startErr) { Ok "$name Stopped/$($s.StartType) (Start=$start) but refuses to start: $startErr" }
+            else { Bad "$name is $($s.StartType) (Start=$start) and could be started" }
+        }
         else { Bad "$name is $($s.Status)/$($s.StartType) (Start=$start)" }
+    }
+    # Any SCM start-type change since boot that took a target off Disabled,
+    # even one later reverted. param4 of event 7040 is the service key name.
+    $flips = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Id = 7040; StartTime = $bootTime } -ErrorAction SilentlyContinue |
+        Where-Object { $p = ([xml]$_.ToXml()).Event.EventData.Data; ($targets -contains $p[3].'#text') -and $p[1].'#text' -eq 'disabled' })
+    if ($flips.Count -eq 0) { Ok 'no event 7040 since boot moved a target off Disabled' }
+    foreach ($e in $flips) { Bad ("event 7040 at {0:u}: {1}" -f $e.TimeCreated.ToUniversalTime(), ($e.Message -replace '\s+', ' ')) }
+    # The locked service security descriptor (ci-background-off-system.reg):
+    # Everyone is denied change-config / write-DAC / write-owner / delete, so
+    # nothing, SYSTEM included, can switch the start type back through the
+    # SCM. Prove it is in force by trying, elevated, to do exactly that.
+    foreach ($name in 'wuauserv', 'UsoSvc', 'WaaSMedicSvc') {
+        $sd = "$(& sc.exe sdshow $name)".Trim()
+        if ($sd -match '\(D;;[A-Z]*DC[A-Z]*;;;WD\)') { Ok "$name security descriptor denies change-config to Everyone" }
+        else { Bad "$name security descriptor is not locked: $sd" }
+        $out = & sc.exe config $name start= demand 2>&1
+        if ($LASTEXITCODE -eq 5) { Ok "$name refuses sc config (access denied)" }
+        else { Bad "$name accepted or failed oddly on sc config (exit $LASTEXITCODE): $(($out | Out-String).Trim())" }
     }
     $au = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoUpdate -ErrorAction SilentlyContinue).NoAutoUpdate
     if ($au -eq 1) { Ok 'policy WindowsUpdate\AU NoAutoUpdate=1' } else { Bad "policy WindowsUpdate\AU NoAutoUpdate='$au'" }
