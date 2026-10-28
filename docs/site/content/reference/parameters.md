@@ -18,8 +18,7 @@ effect, and security/performance implications. Three surfaces matter most:
   per-job containers their capabilities.
 
 Every value below was verified against source; nothing here is invented. If you
-change a default, treat it as an API change — downstream repos (e.g. the
-`metacraft-labs/infra` runner fleet) build policy against these values.
+change a default, treat it as an API change — runner fleets downstream build policy against these values.
 
 
 ## 1. Runner-image recipe seams
