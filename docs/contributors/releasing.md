@@ -1,7 +1,6 @@
 # Releasing gosti
 
-The [tool release specification](https://github.com/metacraft-labs/metacraft-specs/blob/latest/infrastructure/gosti-io-mon-runquota-releases.md)
-sets the release scope. `.github/release.json` defines the exact asset matrix;
+`.github/release.json` defines the exact asset matrix;
 `.github/workflows/release.yml` calls an immutable shared workflow revision.
 Update both `uses` and `tooling-ref` together when changing shared tooling.
 
@@ -18,15 +17,15 @@ The archive includes `gosti`, its `vm-harness` compatibility command, guest scri
 Each target emits JSON evidence naming the source commit, pinned dependency
 revisions, smoke result, signing state and artifact hashes. The assembly step
 checks the exact asset set and hashes after upload and generates `SHA256SUMS`.
-The user approved unsigned initial payloads on 2026-09-28. The current 0.1.2
-preparation carries that exception in `unsignedReleaseVersion`. Signing evidence
-remains false. Later versions must update the policy explicitly or use OS
+Version 0.1.2 is released with unsigned payloads under an explicit exception
+recorded in `unsignedReleaseVersion`, so its signing evidence is false. Any
+other version must either update that exception explicitly or use OS
 signatures and a verified Sigstore checksum-manifest signature. The shared Linux
 package publisher retains its existing package and repository signatures.
 
-Linux ARM64 remains deferred for 0.1.2 under the release scope decision of
-2026-09-29. Add its native artifacts and repository verification in a later
-release. Existing Linux ARM64 development tests remain mandatory.
+Linux ARM64 is not a 0.1.2 release target: there are no native Linux ARM64
+release artifacts or repository verification. The Linux ARM64 development
+tests still run and remain mandatory.
 
 ## Release sequence
 
@@ -62,6 +61,5 @@ ARM runner as an outage; consult the fleet runbook before diagnosis.
 
 The shared publisher supports Linux repositories, Homebrew and Scoop; the
 maintained Nix channels publish through their own automation. These channels
-require verification for each new version. The shared installer service remains
-a proposal and is not deployed by this workflow. Additional package formats
-remain governed by the organization's distribution requirements.
+require verification for each new version. This workflow publishes no other
+package formats and deploys no installer service.

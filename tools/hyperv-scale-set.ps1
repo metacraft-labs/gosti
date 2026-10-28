@@ -48,7 +48,7 @@
   Measured on this host: restore + resume is 12-19 s, against a 36 s cold
   boot -- but only if it happens off the critical path. That figure is
   variable and has been seen far higher on a long-uptime host; see
-  docs/pool-algorithms.md before planning against a smaller one.
+  docs/contributors/pool-algorithms.md before planning against a smaller one.
 
 .PARAMETER Org
   GitHub org the runners register with.

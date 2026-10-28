@@ -177,8 +177,8 @@ Comprehensive user documentation is published at **<https://metacraft-labs.githu
 
 ### Contributor Documentation
 
-- Architecture and design references: [`docs/design.md`](docs/design.md)
-- Per-backend technical implementation notes: `docs/per-backend-notes/`
+- Architecture and design references: [`docs/contributors/architecture.md`](docs/contributors/architecture.md)
+- Per-backend technical implementation notes: `docs/contributors/per-backend-notes/`
 - Agent onboarding and workspace workflows: [`AGENTS.md`](AGENTS.md)
 
 ---

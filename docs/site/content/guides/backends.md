@@ -14,9 +14,9 @@ actually available on your host with `gosti probe`.
 
 For the deep per-backend transport details (SSH vs PowerShell Direct vs
 `incus exec`, file-transfer mechanism, snapshot strategy) read the
-[per-backend notes](https://github.com/metacraft-labs/gosti/blob/main/docs/per-backend-notes)
+[per-backend notes](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/per-backend-notes)
 and the
-[design reference](https://github.com/metacraft-labs/gosti/blob/main/docs/design.md).
+[design reference](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/architecture.md).
 
 ## Support matrix (shipped)
 
@@ -55,9 +55,9 @@ without any real hypervisor — the only mock allowed by the test methodology
   recipe that assembles an autounattend ISO; a controller SSH pubkey and a
   first-boot script can be baked into that ISO (`--controller-pubkey`,
   `--first-boot-script`, both require `--recipe`). See the
-  [M4 libvirt notes](https://github.com/metacraft-labs/gosti/blob/main/docs/m4-libvirt.md)
-  for the canonical command shapes and the Phase B/C scope (snapshot/restore,
-  GPU/SR-IOV/USB passthrough are outstanding).
+  [libvirt notes](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/libvirt.md)
+  for the canonical command shapes. GPU, SR-IOV and USB passthrough are not
+  supported.
 - Caveat: the golden qcow2 and every parent directory must be readable by
   the libvirt/QEMU user, or the clone fails to open its backing file.
 
@@ -88,7 +88,7 @@ without any real hypervisor — the only mock allowed by the test methodology
   not lease, a static per-job IP is injected via cloud-init and large files are
   streamed in via `cat | incus exec tar` rather than `incus file push` (which
   can corrupt large tarballs on some hosts). See the
-  [Incus backend notes](https://github.com/metacraft-labs/gosti/blob/main/docs/per-backend-notes/incus.md).
+  [Incus backend notes](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/per-backend-notes/incus.md).
 
 ## Lima (macOS or Linux host, Linux guest)
 
@@ -118,7 +118,7 @@ without any real hypervisor — the only mock allowed by the test methodology
 ## UTM (Apple-Silicon macOS host, Windows-on-ARM guest)
 
 - Host needs: UTM installed out-of-band (provides `utmctl`).
-- Guests: Windows on ARM (`utm-windows-arm`). Partial support (M3).
+- Guests: Windows on ARM (`utm-windows-arm`). Partial support.
 - Reset: `utmctl clone` from a local bundle (≤ 20 s).
 - Recipe: built from `guest-recipes/windows-arm-base` (autounattend ISO
   assembly, with an offline Win32-OpenSSH ARM64 fallback).

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 ## t_vmharness_serve_client_disconnect_no_spin — a client that disconnects
 ## mid-stream must cost the daemon NOTHING: no CPU spin, no stalled worker, no
-## zombie. docs/serve.md "Client disconnects: finish the worker, never spin".
+## zombie. docs/contributors/serve.md "Client disconnects: finish the worker, never spin".
 ##
 ## WHY THIS IS PINNED. The deployed daemon on high-mem-server burned ~10.5
 ## cores after GARM's provider processes were cancelled: seven handler threads

@@ -3,7 +3,7 @@
 ## t_crud_serve_parity — the generic-CRUD ``--json`` contract is identical
 ## over the local CLI and over ``vm-harness serve``'s ``POST /v1/exec``.
 ##
-## ``docs/design.md`` §8.1 promises that a consumer can drive the CRUD verbs
+## ``docs/contributors/architecture.md`` §8.1 promises that a consumer can drive the CRUD verbs
 ## either by spawning ``vm-harness crud <verb> …`` locally or by forwarding
 ## the SAME argv to a serve daemon, and gets the same envelope and the same
 ## exit code either way. ``t_crud_facade`` pins the envelope in-process; this

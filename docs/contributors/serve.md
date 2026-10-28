@@ -1,11 +1,10 @@
-# vm-harness serve — remoting daemon (RA1)
+# vm-harness serve — remoting daemon
 
 `vm-harness serve` is an authenticated network front-end that exposes this
 host's VM/container lifecycle operations to a remote controller. It is the
 **uniform network access point** for every backend (incus, libvirt, Hyper-V,
-tart, …) so any host's VMs can be driven from a central controller — the
-foundation the CI Runner Fleet campaign (central GARM, capability pools)
-builds on.
+tart, …) so any host's VMs can be driven from a central controller, such as a
+central GARM placing jobs on capability pools.
 
 It is a *thin front-end, not a reimplementation*: every operation is executed
 by the **same `vm-harness` binary** the CLI runs. The daemon adds only the
@@ -17,16 +16,13 @@ network endpoint, the auth check, and output streaming.
   HTTP/1.1 + JSON needs only `std/net` + `std/json`, already used across the
   CLI and backends. gRPC would add protobuf tooling + a Nim gRPC library to
   every build.
-- The Go `garm-provider-vmharness` (campaign milestone RB1) speaks HTTP/JSON
-  trivially with the Go stdlib.
+- A Go GARM provider speaks HTTP/JSON trivially with the Go stdlib.
 - Study of Agent Harbor's `ah-remote-exec` informed two choices we adopted:
   an **auth-method** abstraction (AH's key-file / password / agent) — we take
   the bearer-token shape — and **capability tags** on a host — we expose a
-  backend/capability list on `/v1/info` (the seed of the RA6 capability
-  manifest). AH drives hosts over **system SSH**; vm-harness deliberately
-  ships its own daemon so one protocol front-ends every backend uniformly
-  (the operator directive that supersedes the design doc's
-  "cloud-fleet management out of scope — use AH's orchestrator" line).
+  backend/capability list on `/v1/info`, and the full capability manifest on
+  `/v1/manifest`. AH drives hosts over **system SSH**; vm-harness deliberately
+  ships its own daemon so one protocol front-ends every backend uniformly.
 
 ## Protocol v1
 
@@ -39,16 +35,16 @@ rejected with **401 before any work runs** (constant-time token comparison).
 | Method + path       | Body                              | Response                          |
 | ------------------- | --------------------------------- | --------------------------------- |
 | `GET  /v1/info`     | —                                 | JSON: protocol, host, backends[]  |
-| `GET  /v1/manifest` | —                                 | signed identity + capability manifest (RA6) |
+| `GET  /v1/manifest` | —                                 | signed identity + capability manifest |
 | `POST /v1/exec`     | `{v, argv[], stdin?, timeoutSec?}`| chunked NDJSON event stream       |
 | `POST /v1/shutdown` | `{}`                              | `{ok:true}`                       |
 
-`GET /v1/manifest` (RA6) returns a **signed identity** wrapping a
+`GET /v1/manifest` returns a **signed identity** wrapping a
 machine-checkable **capability manifest** (os, arch, `x86-64-vN` level, gpu,
 nested-virt, docker/podman, rr-hw-counters, the hypervisor backends this daemon
-can drive). It is the source for the Phase-C runner labels. See
+can drive). It is the source a controller derives runner labels from. See
 [serve-enrollment.md](serve-enrollment.md) for the schema, the per-field
-detection rules, the enrollment/identity/revocation model, and the RC1
+detection rules, the enrollment/identity/revocation model, and the
 label-derivation contract.
 
 `argv` is a full vm-harness CLI invocation *without* the program name, e.g.
@@ -78,8 +74,8 @@ closed its pipes, so a client may send its next request as soon as it sees
 `exit` without racing the previous request's teardown (gosti#69).
 
 `{"type":"error","message":"…"}` is emitted if the daemon cannot start the
-worker. The worker's stdout and stderr are **merged** in RA1 (follow-up:
-framed stdout/stderr separation).
+worker. The worker's stdout and stderr are **merged**; the stream does not
+frame them separately.
 
 On Linux, the selected Nim process launcher creates all stdio and launch-error
 pipes with atomic close-on-exec flags. Concurrent workers must not inherit one
@@ -96,14 +92,14 @@ call paths.
 
 ## Auth & network posture
 
-- **Bearer token** (mTLS is the documented alternative; the spec asks for
-  "mTLS client-cert OR bearer token"). The token is provisioned via
+- **Bearer token.** mTLS client-certificate auth is not implemented. The
+  token is provisioned via
   `--auth-token-file` (agenix / systemd `LoadCredential` friendly),
   `--auth-token`, or `$VMH_SERVE_TOKEN`.
 - **Bind to a NetBird overlay IP only, never a public interface.** Over
   NetBird (WireGuard) the bearer token travels encrypted at the network
-  layer — the sanctioned deployment model (campaign non-negotiable pattern
-  (a): the control channel is authenticated and NEVER exposed publicly).
+  layer. The control channel is authenticated and must never be exposed
+  publicly.
 - **Optional TLS**: compile with `-d:ssl` and pass `--tls-cert` / `--tls-key`
   to wrap the socket for deployments without an overlay. Default builds omit
   TLS to keep the dependency surface minimal.
@@ -128,8 +124,7 @@ state, so coordinating *placement* across hosts remains the central GARM's job,
 not this daemon's. A `/v1/shutdown` clears an atomic flag that drains the pool.
 
 Why the acceptor is a SEPARATE thread rather than every handler calling
-`accept` (which is what this daemon shipped with, and what is deployed at the
-time of writing): a pool in which every member accepts bounds the damage of one
+`accept` (which is what this daemon originally shipped with): a pool in which every member accepts bounds the damage of one
 hung request to one slot, but once every slot is hung NOBODY is in `accept`,
 and the kernel goes on completing handshakes into the listen backlog until it
 fills. That happened twice in production — high-mem-server and gpu-server-001 —
@@ -167,7 +162,7 @@ its slot instead of holding it indefinitely.
 
 These three layers bound the damage but cannot bound the OUTAGE if the daemon
 wedges for an unanticipated reason. That is the deployment's job: the
-`services.vm-harness-serve` modules in `nixos-modules` ship a health watchdog
+`services.vm-harness-serve` modules in `metacraft-labs/devops-modules` ship a health watchdog
 (a systemd timer on Linux, a launchd `StartInterval` job on darwin) that probes
 the listener and restarts it after repeated failures.
 
@@ -228,8 +223,7 @@ vm-harness --remote 100.72.0.5:8873 run --ephemeral --backend incus \
   --incus-security-nesting --incus-nested-kvm -- true
 ```
 
-Library consumers (e.g. the future `garm-provider-vmharness` remote mode) use
-`ServeClient` directly:
+Library consumers use `ServeClient` directly:
 
 ```nim
 import vm_harness
@@ -246,7 +240,7 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
 
 - `tests/unit/t_serve_protocol.nim` — pure wire-contract checks (universal
   layer; in `just test` and the `repro test` catalog).
-- `tests/e2e/t_vmharness_serve_roundtrip.nim` — **the RA1 gate.** A remote
+- `tests/e2e/t_vmharness_serve_roundtrip.nim` — the end-to-end gate. A remote
   client drives provision → run(exec probe) → destroy against a real daemon
   over the authenticated endpoint using the sanctioned **noop** backend;
   asserts no residue, byte-equivalence to the local `run` path, and that an
@@ -257,12 +251,11 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   re-execs itself as daemon and as CLI worker). In `just test`.
 - `tests/e2e/t_vmharness_serve_concurrency.nim` — a slow `/v1/exec` must not
   serialize unrelated connections. In `just test`.
-- `tests/e2e/t_vmharness_serve_survives_a_hung_request.nim` — **the MA12
-  gate.** Three layers: one HUNG exec does not stop a concurrent request; a
+- `tests/e2e/t_vmharness_serve_survives_a_hung_request.nim` — three layers: one HUNG exec does not stop a concurrent request; a
   FULLY SATURATED pool answers 503 immediately instead of letting connections
   rot in the backlog; and the daemon recovers once the hangs drain. Falsifiable
   in both directions — `VMH_HUNG_TEST_THREADS=1` makes layer 1 fail
-  (serial-equivalent), and the pre-MA12 accept-in-every-handler daemon passes
+  (serial-equivalent), and the old accept-in-every-handler daemon passes
   layer 1 but fails layer 2. Hermetic (the worker is a self-exec hang/quick
   role). Before any timed probe, each hanging worker must acknowledge its
   first real streamed output within a bounded startup wait. A live client
@@ -287,42 +280,39 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   Host-gated (`just test-host`), self-skips without usable Incus/KVM; such a
   prerequisite skip is visible but is not claimed as real-host coverage.
 
-## Follow-ups (later milestones / deferred)
+- `tests/e2e/t_vmharness_serve_enrollment.nim` — the enrollment/identity
+  model and `GET /v1/manifest` (hermetic, `--backend noop`). See
+  [serve-enrollment.md](serve-enrollment.md).
 
-- Framed stdout/stderr separation in the exec stream (RA1 merges them).
-- ~~Per-op daemon-side timeout enforcement~~ — IMPLEMENTED as
-  `--exec-deadline-sec` (see "Concurrency, saturation, and the per-exec
-  deadline" above). The daemon now kills a worker that overruns its budget and
-  says so in the event stream. The per-request `timeoutSec` field on the wire
-  remains advisory and is still the CLI's own `--timeout-sec`; the deadline is
-  a daemon-side backstop for a worker that stops responding entirely, which no
-  client-supplied timeout can enforce.
-- The enrollment/identity model + the richer signed capability manifest
-  (campaign RA6) is IMPLEMENTED: `GET /v1/manifest`, per-host enrollment
-  secret + signed identity, controller-side verify/expiry/revocation, and the
-  capability-detection module. See [serve-enrollment.md](serve-enrollment.md).
-  Gate `t_vmharness_serve_enrollment` (hermetic, `--backend noop`). Remaining
-  follow-up: an asymmetric (Ed25519) signature upgrade (the wire format
-  reserves an `alg` field) and mTLS client-cert transport auth.
-- Per-OS deployment of the daemon (systemd / launchd / reprobuild-Windows) is
-  campaign RA2–RA5. The reprobuild-Windows/Hyper-V deployment (RA4) is
-  implemented: the reusable recipe is
-  [serve-windows-reprobuild.md](serve-windows-reprobuild.md), the concrete
-  profile is `infra/machines/server/_win-ci-bare-001/system_windows_runner.nim`,
-  and the per-job Hyper-V ephemeral clone the daemon drives is
-  `run --ephemeral --backend hyperv` (host-lifecycle: New-VHD/New-VM from a
+## Limitations
+
+- The exec stream merges stdout and stderr; there is no framed separation.
+- The per-request `timeoutSec` field on the wire is advisory: it is the CLI's
+  own `--timeout-sec`. `--exec-deadline-sec` (see "Concurrency, saturation,
+  and the per-exec deadline") is the daemon-side backstop for a worker that
+  stops responding entirely, which no client-supplied timeout can enforce.
+- The signed identity uses HMAC-SHA256 (`alg: "hmac-sha256"`); the wire format
+  reserves the `alg` field for an asymmetric scheme. mTLS client-certificate
+  transport auth is not implemented.
+
+## Deploying the daemon
+
+- **Windows / Hyper-V**: the reusable recipe is
+  [serve-windows-reprobuild.md](serve-windows-reprobuild.md). The per-job
+  Hyper-V ephemeral clone the daemon drives is
+  `run --ephemeral --backend hyperv` (host lifecycle: New-VHD/New-VM from a
   golden VHDX → boot → JIT-probe → Remove-VM, no residue). Gate
   `t_vmharness_serve_win_hyperv` (`just test-host`, Windows + Hyper-V + a
   golden VHDX); the clone logic is unit-tested by `t_hyperv_ephemeral_clone`.
-  The macOS/tart deployment (RA5) is implemented: a nix-darwin/launchd module
-  `services.vm-harness-serve`
-  (`nixos-modules/modules/vm-harness-serve/darwin.nix`) runs the daemon as a
-  root launchd job bound to the NetBird overlay only, and drops the per-job
-  tart WORKER to the console user via `--worker-exe` (a `launchctl asuser …
-  sudo -E -u #<uid>` wrapper — Tart links AppKit even under `--no-graphics`
-  and refuses uid 0). The concrete m3 profile is
-  `infra/services/vm-harness-serve-darwin.nix`. Gate
-  `t_vmharness_serve_macos_tart` (`just test-host`, macOS + tart + sshpass):
-  a remote client drives a per-job ephemeral tart clone
-  (`run --backend tart-{linux-arm,macos} --baseline <golden> --ephemeral-prefix
-  <p>` → boot → in-guest probe → destroy, no residue).
+- **macOS / tart**: the nix-darwin/launchd module `services.vm-harness-serve`
+  (`modules/vm-harness-serve/darwin.nix` in `metacraft-labs/devops-modules`)
+  runs the daemon as a root launchd job bound to the NetBird overlay only, and
+  drops the per-job tart WORKER to the console user via `--worker-exe` (a
+  `launchctl asuser … sudo -E -u #<uid>` wrapper — Tart links AppKit even under
+  `--no-graphics` and refuses uid 0). Gate `t_vmharness_serve_macos_tart`
+  (`just test-host`, macOS + tart + sshpass): a remote client drives a per-job
+  ephemeral tart clone (`run --backend tart-{linux-arm,macos} --baseline
+  <golden> --ephemeral-prefix <p>` → boot → in-guest probe → destroy, no
+  residue).
+- **Linux / systemd**: the `services.vm-harness-serve` module (`modules/vm-harness-serve/default.nix`) in the same
+  repository, which also ships the health watchdog described above.

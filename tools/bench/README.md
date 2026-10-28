@@ -6,7 +6,7 @@ re-run on different hardware so consumers can publish their own
 reference numbers without re-implementing the harness.
 
 The numbers measured here back the per-backend notes under
-`docs/per-backend-notes/`.
+`docs/contributors/per-backend-notes/`.
 
 ## Programs
 
@@ -21,7 +21,7 @@ Backends with a `snapshotRunning` implementation today: Hyper-V,
 incus, and **libvirt** (campaign WR0). The libvirt numbers have not
 been produced yet; the maintenance-window procedure that produces
 them, and the targets they are judged against, are in
-`docs/per-backend-notes/libvirt-snapshot-benchmarks.md`.
+`docs/contributors/per-backend-notes/libvirt-snapshot-benchmarks.md`.
 
 Build:
 
@@ -47,14 +47,14 @@ startAndAwaitReady wall-clock), `per_iteration_total_ms`, and
 `median_per_iteration_ms`.
 
 A reference run on the hardware documented in
-`docs/per-backend-notes/hyperv-snapshot-benchmarks.md` produces
+`docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md` produces
 median per-iteration totals around 5.4 s.
 
 ### Future programs
 
 - `portable_baseline_bench.nim` — round-trips `exportBaseline` /
   `importBaseline` and times the import + resume cycle on the
-  receiving host. See `docs/per-backend-notes/hyperv-snapshot-benchmarks.md`
+  receiving host. See `docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md`
   for the cold-boot artifact-caching model the bench measures.
 
 ### `clone_per_task_bench.nim`
@@ -67,7 +67,7 @@ median so the two are directly comparable.
 
 Running both against a backend is what decides which algorithm that backend
 should use. The rule, and the recorded per-backend selections, are in
-[`docs/pool-algorithms.md`](../../docs/pool-algorithms.md).
+[`docs/contributors/pool-algorithms.md`](../../docs/pool-algorithms.md).
 
 ```
 nim c -r tools/bench/clone_per_task_bench.nim \

@@ -2,95 +2,79 @@
 
 ## Overview
 
-`qemu-windows-arm` can *consume* a Windows ARM64 golden — a directory
-containing `windows.qcow2` — but nothing in this repository can *produce*
-one. `provisionBaseline` only validates that the directory exists and holds
-that file ([`qemu_windows_arm.nim:497`](../src/vm_harness/backends/qemu_windows_arm.nim)),
-and the recipe under
-[`guest-recipes/windows-arm-base/`](../guest-recipes/windows-arm-base/)
-builds a **UTM bundle** through a GUI step, not a qcow2. The golden that the
-`eph-win-arm64` CI lane ran on was therefore promoted by hand, exists in no
-build graph, and had no backup.
+`qemu-windows-arm` consumes a Windows ARM64 golden — a directory containing
+`windows.qcow2` and `golden-manifest.json` — and can also *produce* one:
+`buildWindowsArmGolden` (in
+[`qemu_windows_arm.nim`](../../src/vm_harness/backends/qemu_windows_arm.nim))
+drives the Windows ARM64 unattended install through QEMU with no GUI and no
+UTM, so a golden is reproducible from the ISO plus the checked-in answer files
+under [`guest-recipes/windows-arm-base/`](../../guest-recipes/windows-arm-base/).
+The build runs unattended on a macOS ARM host with no `utmctl` and no console
+session, so CI and a remote operator over SSH can both run it.
 
-That artifact was lost between 2026-07-20 and 2026-08-24. The lane has been
-down since, and cannot be restored by any automated path. This document
-specifies the missing one: drive the Windows ARM64 unattended install through
-QEMU with no GUI and no UTM, so the golden is reproducible from the ISO plus
-the checked-in answer files.
+This page describes how that build works, how a finished golden is consumed
+per job, and what the host runs found along the way.
 
-## Implementation Status
+`buildWindowsArmGolden` is a library entry point. It is driven by the gates
+below; there is no `vm-harness` CLI verb for it, and nothing in this
+repository promotes a built golden (see "Promotion is not implemented here,
+and that is on purpose").
 
-| Component | Status | Notes |
+## What is implemented
+
+| Component | Where | Notes |
 |---|---|---|
-| `provisionBaseline` (validate existing golden) | ✓ | Already shipped; unchanged by this work. |
-| Headless install boot — argument vector | ✓ | `buildQemuWindowsArmInstallArgs`. |
-| Headless install boot — orchestration | ✓ | `buildWindowsArmGolden`; UEFI staged by `stageGoldenFirmware`. |
-| Install-completion detection | ✓ | `waitForInstallSentinelWatched` over the `repro-install-done` sentinel, with the freeze watchdog around it. |
-| Frozen-guest recovery | ✓ | `GuestProgressWatch` + a power cycle of QEMU **and** swtpm. See "Closed: the guest freeze on a firmware boot". |
-| A golden actually built on m3 | ✓ | 2026-09-15, `win-arm-runner-20260915T154742Z`: 35.1 min wall clock, 13.81 GiB, passes `requireWindowsArmGolden`. NOT promoted. |
-| The golden boots and runs a command | ✓ | Verified in review 2026-09-15: SSH in 48–67 s, two independent overlays, DISTINCT machine SIDs — and since the reboot fix, through the per-job path itself (row below). |
-| A per-job instance created from the golden | ✓ | **FIXED 2026-09-15.** `buildQemuWindowsArmArgs` used to pass `-no-reboot`, so a generalized image's mandatory reboot ended QEMU ~38 s in and `revertToBaseline` always failed. It now starts the guest with `-action reboot=reset` plus a QMP socket, and `revertToBaseline` puts the one-shot semantics back with `set-action reboot=shutdown` the moment SSH is first reached. Measured end to end through `provisionBaseline` → `revertToBaseline`: SSH at **47 s and 53 s**, two firmware boots each, distinct machine SIDs, real commands answered. See "Closed: the per-job boot could not boot a generalized golden". |
-| A dead per-job guest is reported as one | ✓ | **FIXED 2026-09-16 (MA8).** The run path had no liveness check on the QEMU process, so a guest that exited at 38 s was polled to the 300 s SSH deadline and then blamed on sshd. `waitForFirstBootSshReady` now takes the pid; measured on the same reproducer, **34 s** and the message names the process and its exit status. See "Closed by MA8: the run path now knows when there is no guest". |
-| Rebuild safety guard (never build in place) | ✓ | `prepareGoldenBuildDir`. |
-| Overlay backing-path symlink resolution | ✓ | Prerequisite for a safe flip; landed early with the guard. |
-| Golden disk allocation | ✓ | `createGoldenDisk`. |
-| Free-space precondition | ✓ | `checkGoldenBuildSpace`; floor refuses, comfort band warns. |
-| Sysprep + generalize | ✓ | `runGuestSysprep` + `waitForGuestPowerOff` on the monitor socket. |
-| Golden finalize | ✓ | `finalizeGoldenDir`: drops build leftovers, refuses a golden whose per-job boot would still reference the install media, then `validateWindowsArmVmDir`. |
-| Golden promote (pointer flip) | ☐ | Phase 3; belongs with the nix-side wiring so the flip is a declared, not a hand, operation. |
-| Previous-golden retention + reclaim | ☐ | Phase 3. Gated on the per-instance advisory lock. |
-| Build manifest | ✓ | `writeGoldenManifest`: ISO SHA-256, recipe commit + dirty flag, answer-file digests, timestamp, vm-harness version. |
-| `vm-harness provision --backend qemu-windows-arm` entrypoint | ☐ | Phase 3. |
-| Nix-side golden provisioning on m3 | ☐ | Phase 3; `metacraft-labs/infra`. |
-| Retire the UTM recipe path | ☐ | Phase 4, once Phase 3 has produced a golden twice. |
+| Admit an existing golden | `requireWindowsArmGolden` | Requires `windows.qcow2` **and** `golden-manifest.json`; see "Two traps the runs left behind". |
+| Headless install boot — argument vector | `buildQemuWindowsArmInstallArgs` | |
+| Headless install boot — orchestration | `buildWindowsArmGolden` | UEFI staged by `stageGoldenFirmware`. |
+| Install-completion detection | `waitForInstallSentinelWatched` | Polls the `repro-install-done` sentinel, with the freeze watchdog around it. |
+| Frozen-guest recovery | `GuestProgressWatch` | A power cycle of QEMU **and** swtpm. See "Closed: the guest freeze on a firmware boot". |
+| Per-job instance from a generalized golden | `buildQemuWindowsArmArgs` + `revertToBaseline` | Starts with `-action reboot=reset` plus a QMP socket; `revertToBaseline` restores one-shot semantics with `set-action reboot=shutdown` once SSH is first reached. See "Closed: the per-job boot could not boot a generalized golden". |
+| A dead per-job guest is reported as one | `waitForFirstBootSshReady` | Takes the QEMU pid; see "The run path knows when there is no guest". |
+| Rebuild safety guard (never build in place) | `prepareGoldenBuildDir` | |
+| Overlay backing-path symlink resolution | instance creation | Overlays record the resolved versioned path. |
+| Golden disk allocation | `createGoldenDisk` | |
+| Free-space precondition | `checkGoldenBuildSpace` | Floor refuses, comfort band warns. |
+| Sysprep + generalize | `runGuestSysprep` + `waitForGuestPowerOff` | Power-off observed on the monitor socket. |
+| Golden finalize | `finalizeGoldenDir` | Drops build leftovers, refuses a golden whose per-job boot would still reference the install media, then `validateWindowsArmVmDir`. |
+| Build manifest | `writeGoldenManifest` | ISO SHA-256, recipe commit + dirty flag, answer-file digests, timestamp, vm-harness version. |
 
-## Why this is tractable now
+A golden built this way on m3 on 2026-09-15
+(`win-arm-runner-20260915T154742Z`) took 35.1 min wall clock, is 13.81 GiB,
+and passes `requireWindowsArmGolden`. Booted per job, it reached SSH in
+47–67 s with distinct machine SIDs on independent overlays.
 
-The per-job run path is *already* fully headless. `qemuBaseArgs`
-([`qemu_windows_arm.nim:336`](../src/vm_harness/backends/qemu_windows_arm.nim))
-launches with `-accel hvf`, `-display none`, UEFI pflash firmware, an
-`swtpm` TPM 2.0 device, `-serial file:`, a QMP/monitor socket, and user-mode
-networking with `hostfwd` for SSH. Every primitive the install needs is in
-place and proven — the golden build reuses that argument vector with three
+## How the install boot differs from the per-job boot
+
+The per-job run path is fully headless. `qwaMachineArgs` launches with
+`-accel hvf`, `-display none`, UEFI pflash firmware, an `swtpm` TPM 2.0
+device, `-serial file:`, a monitor socket, and user-mode networking with
+`hostfwd` for SSH. The golden build reuses that machine shape with these
 changes:
 
-1. a freshly created empty `windows.qcow2` instead of a CoW copy;
+1. a freshly created empty `windows.qcow2` instead of a CoW overlay;
 2. the Windows ISO and the autounattend ISO attached as CD-ROMs — on
    *different* controllers, for measured reasons: see "Where the install
    media lives, and why";
-3. `-no-reboot` dropped, because a Windows install reboots several times.
+3. the guest stays rebootable throughout, because a Windows install reboots
+   several times;
+4. a `usb-kbd` plus a bounded keypress injected on the monitor, because the
+   install media's boot loader waits for a key (see "Implementation notes").
 
-The recipe inputs are likewise already checked in and independent of UTM:
-`autounattend.xml`, `repro-sysprep.xml`, `provision-openssh.ps1`, and the
+The recipe inputs are checked in and independent of UTM: `autounattend.xml`,
+`repro-sysprep.xml`, `provision-openssh.ps1`, and the
 `build-autounattend-iso.sh` that packages them together with the staged
-OpenSSH and VirtIO NetKVM payloads. Only the *driver* is missing.
+OpenSSH and VirtIO NetKVM payloads.
 
-There is also a working precedent in this repo. The Linux libvirt backend
-performs the equivalent install headlessly through `virt-install` (see
-[`m4-libvirt.md`](m4-libvirt.md), Phase A). This work is that same shape for
-the macOS/ARM host, minus libvirt, which does not exist on Darwin.
+The Linux libvirt backend performs the equivalent install headlessly through
+`virt-install` (see [`libvirt.md`](libvirt.md)). This build is that same
+shape for the macOS/ARM host, minus libvirt, which does not exist on Darwin.
 
-## Goals
-
-- A golden is reproducible from three inputs: the Windows ARM64 ISO, the
-  checked-in answer files, and a pinned VirtIO/OpenSSH payload set.
-- The build runs unattended on a macOS ARM host with no GUI, no `utmctl`,
-  and no console session — so CI and a remote operator over SSH can both
-  run it.
-- Failure is loud and diagnosable: every phase has a bounded timeout and
-  leaves the serial log and QEMU log behind.
-- The produced golden is byte-identical in *shape* to what
-  `validateWindowsArmVmDir` already expects, so the consuming path needs no
-  change.
-
-## Non-goals
-
-- Building the Windows ISO itself. It stays an operator-supplied input;
-  Microsoft's download is manual and unversioned in any usable way.
-- Reproducible-to-the-bit output. A Windows install is not deterministic.
-  The goal is *reproducible procedure*, not a fixed hash.
-- Replacing the x64 libvirt path on `high-mem-server`, which already works.
-- UTM parity. The UTM recipe is retired by Phase 4, not preserved.
+What the build does **not** do: build the Windows ISO itself (it stays an
+operator-supplied input, pinned by hash in the manifest, because Microsoft's
+download is manual and unversioned), or produce bit-identical output (a
+Windows install is not deterministic; the procedure is reproducible, not the
+hash).
 
 ## Golden lifecycle: a read-only base under live overlays
 
@@ -102,7 +86,7 @@ every concurrent instance, and only the overlay records guest writes. Clone
 mode — a full per-instance copy — is a fallback behind
 `VMH_QEMU_WINDOWS_ARM_DISK_MODE=clone`.
 
-That makes one thing a hard constraint on this work:
+That makes one thing a hard constraint:
 
 > **A golden must never be rebuilt in place.** qcow2 does not validate that a
 > backing file still holds the content an overlay was created against. Writing
@@ -110,102 +94,46 @@ That makes one thing a hard constraint on this work:
 > — the guest silently reads a different disk underneath its own writes.
 > Every live instance, and every orphaned instance directory, is exposed.
 
-So a rebuild is an *addition*, not a replacement:
+So a rebuild is an *addition*, not a replacement. The build writes into a
+**new versioned directory**, `golden/win-arm-runner-<build-id>/`, which is
+inert until anything points at it, and `prepareGoldenBuildDir` refuses to
+write into an existing golden directory at all. Selecting which build
+subsequent instances get is a pointer (`golden/win-arm-runner`, a symlink),
+and it must not disturb existing overlays. The per-instance advisory lock
+(`qwaInstanceLockPath`, which `prune` uses to distinguish a live instance from
+an orphan) is the signal for when an older golden no longer backs anything.
 
-1. Build into a **new versioned directory**, `golden/win-arm-runner-<build-id>/`,
-   which is inert until anything points at it.
-2. Flip `golden/win-arm-runner` — a symlink — to the new build. This selects
-   what *subsequent* instances get; it must not disturb existing overlays.
-3. Retain the previous golden until no overlay references it. The existing
-   per-instance advisory lock (`qwaInstanceLockPath`, which `prune` already
-   uses to distinguish a live instance from an orphan) is the signal for
-   when that is true.
+**Overlays must record the resolved versioned path, not the symlink.**
+`validateWindowsArmVmDir` returns `absolutePath(dir)`, which does not resolve
+symlinks, so an overlay created through the pointer would record the pointer —
+and flipping it would corrupt exactly the instances this scheme exists to
+protect. Instance creation resolves the symlink before handing a backing path
+to `qemu-img create`.
 
-Two consequences worth stating plainly:
-
-- **Overlays must record the resolved versioned path, not the symlink.**
-  `validateWindowsArmVmDir` returns `absolutePath(dir)`, which does not
-  resolve symlinks, so an overlay created through the pointer would record
-  the pointer — and flipping it would corrupt exactly the instances this
-  scheme exists to protect. Instance creation has to resolve the symlink
-  before handing a backing path to `qemu-img create`.
-- **This supplies the rollback the "no fallback" risk asked for.** Retaining
-  the previous golden for the lifetime of its overlays means the
-  last-known-good build is already on disk. Reverting a bad recipe change is
-  a symlink flip, not a rebuild.
-
-Periodic refreshes — Windows updates, a newer runner toolchain — are the
-normal case for this path, not an exceptional one.
-
-## Design
-
-A new `buildBaseline` capability on the `qemu-windows-arm` backend, driven by
-a new `vm-harness provision --backend qemu-windows-arm` subcommand.
-
-### Phase 1 — headless install
-
-```
-vm-harness provision --backend qemu-windows-arm \
-  --baseline win-arm-runner \
-  --output-dir <golden-dir> \
-  --windows-iso <path> \
-  --autounattend-iso <path>
-```
+## The build sequence
 
 1. `qemu-img create -f qcow2 <golden-dir>/windows.qcow2 <size>`, where
-   `<golden-dir>` is a fresh versioned directory — never an existing golden
-   (see the lifecycle constraint above).
-2. Stage UEFI vars from the firmware template, as `revertToBaseline`
-   already does.
-3. Start `swtpm`, then QEMU with `qemuBaseArgs` plus both ISOs as
-   `-drive if=none,media=cdrom` + `-device usb-storage`/`scsi-cd`, with
-   `bootindex` ordering the install ISO ahead of the NVMe disk, and
-   without `-no-reboot`. *(Incomplete as written — a fourth change is
-   needed: a `usb-kbd`, plus a bounded keypress injected on the monitor.
-   See "As implemented", departure six. And `scsi-cd` on `virtio-scsi` is
-   not an option for the install ISO at all: see "Where the install media
-   lives, and why".)*
-4. Poll for install completion by SSHing to the forwarded port and testing
-   for `C:\Windows\Temp\repro-install-done` — the sentinel
-   `autounattend.xml` already writes from `FirstLogonCommands` after
-   OpenSSH and NetKVM are confirmed up. ~~This reuses `waitForSshReady`.~~
-   *(Superseded — see "As implemented" below. It deliberately does not:
-   OpenSSH comes up partway through the chain, so a guest that answers SSH
-   may still be installing Git, PowerShell 7 and NetKVM.)*
-5. Bounded by a single overall deadline (default 90 min; the README budgets
-   15–30 min for install plus 1–3 for OpenSSH, so this is generous).
-
-The install boot is where the answer file does all the real work, so Phase 1
-carries almost no new Windows-side logic.
-
-### Phase 2 — sysprep and finalize
-
-6. ~~Copy `repro-sysprep.xml` to `C:\`~~ *(superseded — `autounattend.xml`
-   already copies it there from the answer-file ISO; see "As implemented")*
-   and invoke
-   `sysprep /generalize /oobe /shutdown /unattend:C:\repro-sysprep.xml`
-   over SSH.
-7. Wait for the guest to power off, observed through the QMP socket rather
+   `<golden-dir>` is a fresh versioned directory — never an existing golden.
+2. Stage a UEFI code/vars pair into it (`stageGoldenFirmware`).
+3. Start `swtpm`, then QEMU with the install argument vector: both ISOs
+   attached, `bootindex` ordering the install ISO ahead of the NVMe disk, the
+   keyboard attached and the key prompt answered.
+4. Wait for install completion: the `C:\Windows\Temp\repro-install-done`
+   sentinel that `autounattend.xml` writes from its last `FirstLogonCommand`,
+   once `sshd` is confirmed running, with the freeze watchdog around the wait.
+5. Invoke
+   `sysprep /generalize /oobe /shutdown /mode:vm /unattend:C:\repro-sysprep.xml`
+   over SSH, detached from the session (`buildSysprepRemoteCommand`).
+6. Wait for the guest to power off, observed on the monitor socket rather
    than SSH, since SSH dies with the guest.
-8. Kill `swtpm`, drop the CD-ROM drives, and leave `windows.qcow2` plus the
-   firmware vars in `<golden-dir>`.
-9. Validate the result through the existing `validateWindowsArmVmDir` so the
-   build cannot produce something the consuming path rejects.
+7. Kill `swtpm`, drop the CD-ROM drives, and finalize: `finalizeGoldenDir`,
+   then `writeGoldenManifest` last, so the manifest is a completion marker.
+
+The overall deadline defaults to 90 minutes. The answer file does all the
+real Windows-side work.
 
 Sysprep `/generalize` is load-bearing and must not be skipped: without it
-every ephemeral clone shares one machine SID. That is the same property the
-x64 lane gates on in `metacraft-labs/infra`'s
-`checks/t_windows_sysprep_golden.sh`, and the ARM lane should gain the
-equivalent check.
-
-### Phase 3 — make it callable
-
-- Expose the subcommand in `cli.nim` alongside the existing `provision`.
-- In `metacraft-labs/infra`, add a golden-provisioning path so
-  `/private/var/lib/vm-harness/qemu-windows-arm/golden/win-arm-runner` is
-  populated by a documented command rather than by hand. The activation
-  script currently `install -d`s that directory and nothing fills it
-  ([`services/ephemeral-runner-host/darwin.nix:699`](https://github.com/metacraft-labs/infra)).
+every ephemeral clone shares one machine SID.
 
 ## Verification
 
@@ -222,13 +150,13 @@ equivalent check.
 | Two clones of the golden have distinct machine SIDs | host e2e, opt-in | macOS ARM host with a golden |
 | **The per-job path boots a real golden, reaches SSH and runs a command** (`t_qemu_windows_arm_per_job_boot`) | host e2e | macOS ARM host with a golden; ~2 min |
 | A per-job boot whose QEMU exits is reported as a dead **process**, with its exit status, in seconds rather than at the SSH deadline (`t_qemu_windows_arm_dead_guest_is_named`) | unit (fake QEMU with a death clock) | anywhere |
-| **The same, on the real reproducer**: the pre-MA4 vector against a real golden fails in ~34 s of a 300 s deadline (`t_qemu_windows_arm_dead_guest_is_named`, host) | host e2e | macOS ARM host with a golden; ~2 min |
+| **The same, on the real reproducer**: the old `-no-reboot` vector against a real golden fails in ~34 s of a 300 s deadline (`t_qemu_windows_arm_dead_guest_is_named`, host) | host e2e | macOS ARM host with a golden; ~2 min |
 
 The unit layer must not claim coverage of the e2e layer. Following this
 repo's existing convention, a missing ISO or a non-macOS host **skips with an
 explicit message** rather than passing quietly.
 
-### As implemented
+### Implementation notes
 
 Both tiers carry the same greppable gate name, `t_qemu_windows_arm_golden_build`:
 
@@ -257,15 +185,13 @@ The host tier requires `VMH_WINDOWS_ARM_GOLDEN_HOST_TEST=1`,
 `VMH_WINDOWS_ARM_ISO` and `VMH_WINDOWS_ARM_AUTOUNATTEND_ISO`, and names each
 missing one in the skip message.
 
-Six points where the implementation departs from the text above, all
-deliberate:
+Points worth knowing before changing the build, each deliberate:
 
-- **It is the monitor socket, not QMP.** `qwaMachineArgs` publishes
-  `-monitor unix:…` (the human monitor), not `-qmp`. Power-off is therefore
-  read from an `info status` reply rather than a QMP event. Adding a QMP
-  socket would change the per-job argument vector that is already deployed,
-  for no gain: the property that matters — *observed off-band from SSH,
-  because SSH dies with the guest* — is the same either way. The fallback arm
+- **The build watches the monitor socket, not QMP.** `qwaMachineArgs`
+  publishes `-monitor unix:…` (the human monitor), and the install argv
+  carries no `-qmp`. Power-off is therefore read from an `info status` reply
+  rather than a QMP event. The property that matters — *observed off-band
+  from SSH, because SSH dies with the guest* — is the same either way. The fallback arm
   is also part of the contract: QEMU's default action on a guest power-off is
   to **exit**, so a vanished socket plus a gone process is the same event seen
   from outside, and `guestPoweredOff` treats it as such.
@@ -286,16 +212,15 @@ deliberate:
   writable variable store, since Windows Setup writes its boot entry there.
   `VMH_QEMU_FIRMWARE_DIR` *replaces* the well-known search list rather than
   being prepended to it.
-- **Step 4 does not reuse `waitForSshReady`.** OpenSSH comes up *partway
+- **The install wait does not reuse `waitForSshReady`.** OpenSSH comes up *partway
   through* the `FirstLogonCommands` chain, so a guest that answers SSH may
   still be installing Git, PowerShell 7 and the NetKVM driver. Waiting on SSH
   would therefore declare an unfinished install finished, and sysprep would
   generalize a half-provisioned disk. `waitForInstallSentinel` waits for the
   sentinel the *last* FirstLogonCommand writes, and only once `sshd` is
   confirmed running — the one signal that means "finished".
-- **The install boot needs a keyboard, and a keypress.** Found by MA4's
-  first real host run on m3, 2026-09-15, and the reason this document's
-  "three changes" was wrong. `\EFI\BOOT\BOOTAA64.EFI` on a Windows install
+- **The install boot needs a keyboard, and a keypress.** Found by the
+  first real host run on m3, 2026-09-15. `\EFI\BOOT\BOOTAA64.EFI` on a Windows install
   ISO is `cdboot.efi`, which prints *"Press any key to boot from CD or
   DVD"*, waits about five seconds and returns `EFI_TIMEOUT` if no key
   arrives. The machine shape here has **no input device at all** —
@@ -330,7 +255,7 @@ deliberate:
   deployed on m3, it boots an installed disk with no prompt to answer, and
   the unit gate asserts it gains neither the keyboard nor the xHCI.
 
-- **Step 4 gained a freeze watchdog.** The plain
+- **The install wait has a freeze watchdog.** The plain
   `waitForInstallSentinel` cannot tell a long Windows Setup phase from a
   guest that has stopped executing, and on m3 it spent the whole 90-minute
   deadline twice on installs that were already dead in the firmware.
@@ -342,7 +267,7 @@ deliberate:
   freeze on a firmware boot" for why a power cycle and not a
   `system_reset`, and why swtpm has to come back with it.
 
-- **Step 6 does not copy `repro-sysprep.xml` to `C:\`.** `autounattend.xml`
+- **The harness does not copy `repro-sysprep.xml` to `C:\`.** `autounattend.xml`
   already does it from the answer-file ISO (`FirstLogonCommands`, Order 6),
   so the harness copying it again would be a second source of truth for a
   path that must match `/unattend:`. The gate asserts instead that the two
@@ -355,11 +280,11 @@ deliberate:
 directory**. It never writes `golden/win-arm-runner`, and there is no
 "promote" verb in this repository.
 
-That is the shape Phase 3 needs. Promotion is a pointer flip plus a retention
-decision about the previous golden, and both are configuration, not a host
-action: the build takes `--output-dir` (today `GoldenBuildSpec.buildDir`,
-which the host gate reads from `VMH_WINDOWS_ARM_GOLDEN_OUT`), so a nix module
-can point it at
+Promotion is a pointer flip plus a retention decision about the previous
+golden, and both are configuration of the host that consumes the golden, not
+something the build does. The build directory is `GoldenBuildSpec.buildDir`
+(the host gate reads it from `VMH_WINDOWS_ARM_GOLDEN_OUT`), so whatever
+provisions the host can point it at
 `/private/var/lib/vm-harness/qemu-windows-arm/golden/win-arm-runner-<build-id>`
 and own the symlink declaratively. Nothing in the build path requires an
 operator to copy, rename or `install -d` anything.
@@ -370,15 +295,15 @@ download is manual and unversioned.
 
 ## What the first real host run found (m3, 2026-09-15)
 
-Three defects, none of which any unit tier could have caught, and a fourth
-correction to this document. Recorded here because every one of them reads
+Three defects, none of which any unit tier could have caught, and one missing
+diagnostic. Recorded here because every one of them reads
 from the outside exactly like "the answer file is wrong", and each cost a
 deadline to diagnose the first time. They surfaced strictly in sequence —
 each one had to be fixed before the next became visible — which is the honest
 shape of a first host run and worth expecting on the next platform.
 
 1. **`cdboot.efi` waits for a keypress, and the machine had no keyboard.**
-   Covered in full under "As implemented", departure six. Symptom:
+   Covered in full under "Implementation notes". Symptom:
    `failed to start Boot0001 …: Time out` and an EFI shell prompt, with
    Windows Setup never running at all.
 
@@ -432,7 +357,7 @@ shape of a first host run and worth expecting on the next platform.
    powered off, so this failure costs ten seconds and names itself instead of
    consuming the whole deadline in silence.
 
-4. **The framebuffer was not actually captured.** The Risks section below
+4. **The framebuffer was not actually captured.** Earlier notes
    claimed it was. It could not have been: `-display none` renders nowhere,
    and nothing dumped it. A Windows guest writes nothing to the serial port
    once the firmware hands over, so on both failures above the serial log
@@ -444,7 +369,7 @@ shape of a first host run and worth expecting on the next platform.
 
 ### Closed: the guest freeze on a firmware boot, and what it actually was
 
-This was MA4's blocker. Two of five runs stopped dead on a firmware boot
+This blocked the first host builds. Two of five runs stopped dead on a firmware boot
 after Windows Setup's first reboot, on inputs identical to the runs that
 sailed past it; serial log still for 23 minutes, target qcow2 for 30, and
 the build sat out its 90-minute deadline. **It reproduced a third time**, on
@@ -465,7 +390,7 @@ window. Two measurements retire that:
   One USB mass-storage device instead of two, one `UsbBootExecCmd` line per
   boot instead of two — and the guest still froze.
 
-**What it is, from the framebuffer.** `captureGuestScreen` — added in MA4 for
+**What it is, from the framebuffer.** `captureGuestScreen` — added for
 exactly this — shows the TianoCore splash with the caption
 **`Start boot option`** and a progress bar at **0%**. That caption belongs to
 `PlatformBootManagerWaitCallback`, and `BdsDxe`'s `BdsWait` calls it once per
@@ -556,11 +481,10 @@ and its recovery.
 through the path a CI job uses. It was not a defect in the golden, and it was
 not new — `-no-reboot` was in `buildQemuWindowsArmArgs` at HEAD and in the
 vector deployed on m3. It was a LATENT incompatibility, not a regression:
-the fleet's Windows goldens were historically not sysprepped (see
-`infra/checks/t_windows_sysprep_golden.sh`, whose own header records that the
-non-sysprepped golden's clones shared the base SID), and a non-generalized
-image boots straight through with no specialize pass and no reboot. MA4's
-golden is properly generalized — which is correct and strictly better — and
+the fleet's Windows goldens were historically not sysprepped (their clones
+shared the base SID), and a non-generalized image boots straight through with
+no specialize pass and no reboot. The headless build's golden is properly
+generalized — which is correct and strictly better — and
 that is what exposed it.**
 
 `buildQemuWindowsArmArgs` added `-no-reboot`, which turns a guest-initiated
@@ -639,14 +563,14 @@ it was protecting had never booted a generalized golden. Two things changed:
 - A host gate exists that actually boots one:
   `tests/e2e/t_qemu_windows_arm_per_job_boot_host.nim`, wired into
   `scripts/run-host-tests.sh`. It consumes a golden that already exists, so
-  it costs about two minutes rather than MA3's ~60-minute install, and it
+  it costs about two minutes rather than the ~60-minute install, and it
   skips loudly — naming the golden path it looked at and the environment
   variable that overrides it — when there is no golden or the host is wrong.
   It is the gate that should have caught this, and the one to run after any
   change to `buildQemuWindowsArmArgs`, `waitForFirstBootSshReady` or
   `revertToBaseline`.
 
-### Closed by MA8: the run path now knows when there is no guest
+### The run path knows when there is no guest
 
 The run path used to have **no liveness check on the QEMU process at all**.
 `waitForFirstBootSshReady` polled SSH and counted firmware banners and never
@@ -657,8 +581,8 @@ out. Measured twice on m3, both times against a real golden:
 | When | What happened | What the harness said, and after how long |
 |---|---|---|
 | 2026-09-15 | `-no-reboot` on the per-job argv; QEMU exits rc=0 at **38 s** | `SSH did not become ready … within 300s`, at **301 s** |
-| 2026-09-16 | the same reproducer, restored by MA4's review to falsify its host gate | the gate failed correctly, but took **5 m 38 s** and still *led* with SSH |
-| 2026-09-16, after MA8 | the same reproducer, `t_qemu_windows_arm_dead_guest_is_named` host tier | `fbQemuExited` after **34 s**, `exit status 0`, 1 firmware boot |
+| 2026-09-16 | the same reproducer, restored in review to falsify its host gate | the gate failed correctly, but took **5 m 38 s** and still *led* with SSH |
+| 2026-09-16, after the fix | the same reproducer, `t_qemu_windows_arm_dead_guest_is_named` host tier | `fbQemuExited` after **34 s**, `exit status 0`, 1 firmware boot |
 
 The asymmetry was the tell. The *install* path grew exactly this capability
 (`qemuProcessGone`, consulted by `answerInstallMediaKeyPrompt` and the freeze
@@ -688,38 +612,35 @@ it said — so the failure reads *"the guest's QEMU process (pid N) EXITED after
 **The diagnostics it names now exist.** The old message pointed at
 `<vmDir>/serial.log`, a path `stopAndCleanup` had just deleted. A failed
 per-job boot cannot keep its whole directory the way a failed *build* does —
-that directory holds a qcow2 overlay, and MA4 measured ~3.5 create→fail→reap
+that directory holds a qcow2 overlay, and ~3.5 create→fail→reap
 cycles an hour against the broken argv — so `serial.log`, `qemu.log` and the
 `screendump` are copied to `<state dir>/failed-boots/<instance>/` before the
 instance is reaped, newest `QwaRetainedFailedBoots` kept. `captureGuestScreen`,
-MA4's single highest-value diagnostic, is fired on the per-job failure path
+the single highest-value diagnostic, is fired on the per-job failure path
 too; a guest whose QEMU has *already* gone has no framebuffer to dump, and
 that is not a second failure.
 
 Gates: `tests/unit/t_qemu_windows_arm_dead_guest_is_named.nim` (unit, shares
-MA3/MA4's fake QEMU via `tests/unit/qwa_fake_qemu.nim`) and
+the golden build's fake QEMU via `tests/unit/qwa_fake_qemu.nim`) and
 `tests/e2e/t_qemu_windows_arm_dead_guest_is_named_host.nim` (host, rebuilds
-the pre-MA4 vector *from the shipped one* so the reproducer stays honest and
+the old `-no-reboot` vector *from the shipped one* so the reproducer stays honest and
 production code stays untouched).
 
-**Still open elsewhere.** The `tart` backends have the same shape:
-`revertToBaseline` records the `tart run` child's pid in `ephemeralPids` and
-then calls `waitForSshReady(ip, sshReadyTimeoutSec)`, which never looks at it.
-It is not fixed here because the fix is not the same size — `tart run` is
-deliberately never reaped, so it needs its own exit-status plumbing, and that
-is the live macOS lane.
-
+**The `tart` backends do not have this check.** `revertToBaseline` records
+the `tart run` child's pid in `ephemeralPids` and then calls
+`waitForSshReady(ip, sshReadyTimeoutSec)`, which never looks at it, so a
+`tart run` that exits is reported at the SSH deadline. The same fix does not
+transfer directly: `tart run` is deliberately never reaped, so it needs its
+own exit-status plumbing.
 
 ### Two traps the runs left behind, and what now stops them
 
 Neither is a defect in the run; both are ways the *next* build could produce
-an artifact that lies about itself. They are the same class as the artifact
-this whole campaign exists to replace, so they are closed here rather than
-left for the promotion work.
+an artifact that lies about itself.
 
-- **A failed build looks exactly like a golden.** MA3's contract
-  deliberately retains a failed build's directory and logs for diagnosis, and
-  MA4's five runs duly left **six** of them under
+- **A failed build looks exactly like a golden.** The build deliberately
+  retains a failed build's directory and logs for diagnosis, and five runs on
+  m3 left **six** of them under
   `/private/var/lib/vm-harness/qemu-windows-arm/golden/`, 12–15 GB each
   (~68 GB total). Every one holds a `windows.qcow2`, because the build
   creates that empty as its *first* act — and `validateWindowsArmVmDir`, the
@@ -734,11 +655,8 @@ left for the promotion work.
   purely structural "is there a disk here" question the overlay and clone
   paths ask of a directory something else already admitted.
 
-  The six directories are **left in place** — they are not urgent, the host
-  has ample space, and they are the diagnostic record for the open DXE spin.
-
 - **A stale answer-file ISO would have poisoned the manifest.** Found before
-  MA4's first run: `guest-recipes/windows-arm-base/build/autounattend.iso`
+  the first host run: `guest-recipes/windows-arm-base/build/autounattend.iso`
   was 7.6 MiB dated 2026-07-06, while `autounattend.xml`, `repro-sysprep.xml`
   and `provision-openssh.ps1` were from 2026-09-08 — it predated the
   Git-for-Windows, PowerShell-7 and credential-expiry changes entirely.
@@ -753,63 +671,39 @@ left for the promotion work.
   It is a staleness *heuristic* — it compares modification times and cannot
   prove that an ISO rebuilt after an edit actually carries it. Proving that
   means reading the ISO's contents, which needs ISO tooling this path does
-  not otherwise want; the durable fix is for the promotion work to build the
-  ISO as a declared step of the build rather than leave it in `build/`.
+  not otherwise want.
 
-## Risks
+## Failure modes to keep in mind
 
 - **Windows setup is opaque when it fails.** A wrong answer file leaves a
-  guest sitting at an OOBE prompt with no SSH and no console. Mitigation:
-  the serial log is captured, the `ramfb` framebuffer is dumped through the
-  monitor on failure (see `captureGuestScreen` — this was claimed here
-  before it existed), and the overall deadline bounds the failure.
-- **The install may need more reboots than HVF+UEFI tolerates.** Untested on
-  this exact firmware/machine combination; Phase 1 is where that is found
-  out.
-- **~8 GB ISO plus a 40–60 GB qcow2** on a host already at 88% disk, shared
-  with a live fleet. Addressed by the free-space precondition above, but the
-  50 GB install-peak figure it rests on is an estimate until a build
-  measures it.
-- **A bad recipe change is caught by retention, not by a published copy.**
-  Nothing is published, but the previous golden stays on disk until its
-  overlays drain, so rollback is a symlink flip. That only holds if
-  retention is actually implemented; without it a regressed build is a lane
-  outage until the recipe is fixed. The host e2e gate remains the thing that
-  should catch it first.
+  guest sitting at an OOBE prompt with no SSH and no console. The serial log
+  is captured, the `ramfb` framebuffer is dumped through the monitor on
+  failure (`captureGuestScreen`), and the overall deadline bounds the
+  failure.
 - **Silent corruption if the versioning is got wrong.** Rebuilding over a
   golden that still backs an overlay does not error — it produces guests
   reading a disk that no longer matches their writes. This is the highest
-  severity failure mode in this work and the reason the build refuses to
+  severity failure mode of this path and the reason the build refuses to
   write into an existing golden directory at all.
-- **Long feedback loop.** A full cycle is 30–60 minutes, so Phase 1 should
-  land the argument construction behind unit tests before any host run.
+- **Long feedback loop.** A full host cycle is 30–60 minutes, so changes to
+  the argument construction belong behind the unit tier before any host run.
 
-## Decisions
+## Goldens are rebuilt, never published
 
-**The recipe is the artifact.** ✓ Decided 2026-09-09. A golden is rebuilt by
-applying the recipe to a base ISO; the built golden is never published or
-pulled. There is no cached copy to fall back on, so the build path is the
-*only* path and has to be dependable enough to be run on demand.
-
-Two consequences follow, and they are requirements rather than preferences:
-
-- The build must be **re-runnable**, which the versioned-directory scheme
-  gives for free: each run writes a fresh directory and a failed run simply
-  leaves one that nothing ever points at. A partially built golden is never
-  adopted, because adoption only happens by an explicit pointer flip after
-  validation.
-- Each golden carries a **manifest** — ISO SHA-256, recipe commit, answer
-  file digests, build timestamp, vm-harness version. Not for reproducibility,
-  which the recipe provides, but so that a golden of unknown provenance is
-  identifiable as one. The artifact that was lost had no way to say what it
-  was built from.
-
+A golden is rebuilt by applying the recipe to a base ISO; the built golden is
+never published or pulled. The build path is therefore the *only* path, which
+is why it is re-runnable — each run writes a fresh versioned directory, and a
+failed run leaves one that nothing points at — and why each golden carries a
+**manifest** (ISO SHA-256, recipe commit, answer-file digests, build
+timestamp, vm-harness version): not for reproducibility, which the recipe
+provides, but so that a golden of unknown provenance is identifiable as one.
 The ISO itself remains the one operator-supplied input, pinned by hash.
 
-**The build gates on free space, with two thresholds.** ✓ Decided
-2026-09-09. A single threshold would have to choose between blocking builds
-that would have succeeded and permitting ones that cannot, so the check
-separates the two questions:
+## The free-space precondition
+
+`checkGoldenBuildSpace` separates two questions, because a single threshold
+would have to choose between blocking builds that would have succeeded and
+permitting ones that cannot:
 
 | Threshold | Default | Behaviour |
 |---|---|---|
@@ -820,8 +714,7 @@ Derivation, biased pessimistic throughout:
 
 - **50 GB install peak.** A Windows 11 ARM64 install lands around 25 GB, plus
   the component store before `/ResetBase`, a pagefile sized to guest RAM, the
-  staged toolchain, and sysprep's working set. This was an *estimate* — the
-  golden it would have been measured against was lost.
+  staged toolchain, and sysprep's working set. This was an *estimate*.
 
   **MEASURED on m3, 2026-09-15: 16.4 GiB**, sampled every 20 s over a full
   install through to the sentinel (`du -sk` of the whole build directory, so
@@ -849,12 +742,8 @@ hour later with five instances running, which lands in the warn band. Free
 space on that host moves by roughly the fleet peak over a day, which is the
 reason the second threshold exists at all.
 
-## Assumptions
+## Prerequisites
 
-- The Windows ARM64 ISO remains operator-supplied and is validated by hash,
-  not re-downloaded by the harness.
-- `swtpm`, `qemu-system-aarch64`, and `sshpass` stay available through the
-  Nix-provided environment, as they are today on m3.
-- The existing `autounattend.xml` is correct — it produced a working golden
-  before. If Phase 1 disproves that, the answer file becomes part of this
-  work rather than an input to it.
+`swtpm`, `qemu-system-aarch64`, and `sshpass` come from the Nix-provided
+environment. The Windows ARM64 ISO is operator-supplied and validated by
+hash, never downloaded by the harness.

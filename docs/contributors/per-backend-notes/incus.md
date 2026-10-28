@@ -10,11 +10,10 @@ attach `/dev/kvm` when a job class needs nested virtualisation.
 Source: `src/vm_harness/backends/incus.nim`.
 Gate: `tests/e2e/t_vmharness_incus_ephemeral_run.nim`.
 
-## Host prerequisites (IM0) — reproducible daemon init
+## Host prerequisites — reproducible daemon init
 
 The Incus daemon is initialized **declaratively** on the host via NixOS
-(`virtualisation.incus`). On `solunska-server` this lives in
-`~/dotfiles/nixos-configuration.nix`:
+(`virtualisation.incus`), in the host's NixOS configuration:
 
 ```nix
 virtualisation.incus = {
@@ -73,12 +72,12 @@ incus image copy images:debian/12 local: --alias vmh-base
 ```
 
 Debian 12 is used (not a minimal NixOS lxc image) because it ships a normal
-FHS + `cloud-init`, so `incus exec -- true` and the IM2 cloud-init injection
+FHS + `cloud-init`, so `incus exec -- true` and the cloud-init injection
 seam both work out of the box. The alias defaults to `vmh-base`
 (overridable via `VMH_INCUS_BASE` in the gate, or `--base-image` on the
 CLI / `spec.baseImage` in code).
 
-### IM0 round-trip gate (`t_incus_host_ready`)
+### Host round-trip gate (`t_incus_host_ready`)
 
 ```sh
 incus launch vmh-base t-im0 && incus exec t-im0 -- true && incus delete -f t-im0
@@ -119,7 +118,7 @@ The base image is never touched, so consecutive runs are independent (a
 marker file written into run 1's guest is absent in run 2's fresh
 container).
 
-### cloud-init injection seam (for IM2 JIT)
+### cloud-init injection seam (for GARM JIT)
 
 `EphemeralIncusSpec.userData` (or the CLI `--user-data <file>`) is injected
 via `incus config set <name> cloud-init.user-data <...>` before the
@@ -154,9 +153,9 @@ or user-data template. The flags do not accept a host path, device type, mode,
 or arbitrary Incus key. `user-data` remains guest content and cannot select
 host privileges.
 
-## IM2 — Linux runner image + cloud-init JIT injection
+## Linux runner image + cloud-init JIT injection
 
-The Linux/container analog of the Windows M3 golden. Deliverables:
+The Linux/container analog of the Windows golden. It consists of:
 
 - **Runner image `vmh-linux-runner`** — built by
   `guest-recipes/linux-x64-runner/build-runner-image.sh`. A Debian *cloud*
@@ -180,7 +179,7 @@ The Linux/container analog of the Windows M3 golden. Deliverables:
 - **Cloud-init JIT injection** — the gate injects a GARM-derived Linux
   bootstrap (`tests/e2e/linux-jit/user_data.sh.tmpl`, derived from
   garm-provider-common's `CloudConfigTemplate` UseJITConfig path) as
-  `cloud-init.user-data` through the IM1 seam above. On first boot
+  `cloud-init.user-data` through the seam above. On first boot
   cloud-init runs it autonomously: it pulls the JIT config from the mock
   GARM metadata endpoint (JWT-authorized; no-JWT → 401) and launches the
   runner via `run.sh --jitconfig <blob>`.
@@ -213,7 +212,7 @@ On `solunska-server` the host firewall (`nixos-fw`, default-drop input)
 does **not** trust `incusbr0`, and Docker's `FORWARD` policy is DROP. So a
 container has **no external egress** and **cannot reach a service bound on
 the host** (and DHCPv4 does not lease — only IPv6 SLAAC comes up). Two
-consequences the IM2 tooling works around:
+consequences the runner-image tooling works around:
 
 - **Image build** downloads the runner tarball on the host and pushes it in
   (no in-guest `curl`/`apt`).

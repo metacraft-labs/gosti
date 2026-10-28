@@ -126,8 +126,8 @@ runs no workload measures the floor rather than the operating point.
 | backend | clone/task | recycle/task | selected | basis |
 | ------- | ---------- | ------------ | -------- | ----- |
 | **Hyper-V** | ~50 s (`Export-VM` + `Import-VM`, real copy) | **12-19 s** (restore + resume, carries RAM; see the variance section before quoting a lower number) | **`recycle-from-pool-per-task`** | measured 2026-08-21, win-ci-bare-001 |
-| **libvirt** | **O(1)** (`qemu-img create -b <golden>` CoW overlay) + full guest boot | *not implemented* (`snapshot`/`restoreSnapshot` raise; M4 Phase B) | **`clone-per-task`** (forced) | read from `libvirt.nim:652`, `1561-1602` |
-| **incus** | `incus copy` / launch from image | implemented, but cost = f(storage driver) | **undecided** | needs measurement on `dir` vs ZFS |
+| **libvirt** | **O(1)** (`qemu-img create -b <golden>` CoW overlay) + full guest boot: p50 59.0–73.7 s to SSH-ready | p50 35.9–46.9 s (`snapshot-revert --running` + resume) | **`clone-per-task`** | measured 2026-09-05, high-mem-server, 16 GiB Windows golden |
+| **incus** | `incus copy` / launch from image | implemented, but cost = f(storage driver) | **`clone-per-task`** (default, undecided) | not measured on `dir` vs ZFS |
 
 ### Hyper-V — `recycle`, and the margin is large
 
@@ -136,31 +136,37 @@ clone-per-task 35.9 s — no better than the 36 s cold boot it was supposed
 to avoid. Recycling restores a checkpoint carrying RAM, so a member resumes
 in ~5 s. Selection is not marginal.
 
-### libvirt — `clone`, but only because `recycle` does not exist
+### libvirt — `clone`, because recycling is not faster *enough*
 
-Here the premise inverts: cloning is already O(1), a qcow2 CoW overlay over
-the golden with no bytes copied. But `snapshot`, `snapshotRunning`,
-`restoreSnapshot`, `listSnapshots` and `removeSnapshot` are unimplemented
-stubs that raise, so `recycle` cannot be selected at all.
+Cloning is already O(1), a qcow2 CoW overlay over the golden with no bytes
+copied, and the guest then pays a full boot. Recycling is implemented
+(external `virsh snapshot-create-as --live` + `snapshot-revert --running`)
+and was measured against the production Windows golden shape: it is
+modestly **faster** than the boot it replaces — 1.57x against an interleaved
+cold boot, 1.26x against a clean boot — but the bar was p50 ≤ 10 s AND ≥ 4x,
+and both fail by 3-4x. A 1.26-1.57x saving does not pay for the isolation
+risk of a member that carries state across jobs, so `clone-per-task` stays:
+it cannot be wrong about isolation.
 
-This makes the selection **forced rather than reasoned**, and the
-consequence is specific: a libvirt guest always pays a full boot. For Linux
-guests that is minor. For the **Windows** guest on `eph-win-x64` it is the
-same image Hyper-V takes from 36 s to 5 s, so the unclaimed win is large.
-Implementing M4 Phase B (`virsh snapshot-create-as --live`, or
-`virsh save`/`restore`) would make libvirt a genuine choice rather than a
-default, and it should be re-measured then.
+The cost decomposes as `snapshot-revert --running` 34.4 s (96% of the cycle)
+and resume → SSH-ready 1.7 s. The guest is not the problem; the whole cost is
+re-reading the 2.61 GiB memory image at ~81 MB/s, against ~668 MB/s for
+Hyper-V's comparable image. Getting that reload under ~10 s would invert the
+arithmetic, because the resume half already clears the budget. The rationale
+is recorded at the selection in `src/vm_harness/pool.nim`; full numbers are in
+[`per-backend-notes/libvirt-snapshot-benchmarks.md`](per-backend-notes/libvirt-snapshot-benchmarks.md).
 
 ### incus — undecided, and blocked on storage
 
-The primitives exist (`incus.nim:598-665`). Two things stop a selection:
+The primitives exist (`src/vm_harness/backends/incus.nim`). Two things stop
+a selection, so the code defaults to `clone-per-task`:
 
 1. **A container has no boot to skip.** It starts in about a second, so
    there is no 36 s -> 5 s prize; recycling buys *isolation*, not speed.
    `snapshotRunning` already takes a filesystem rather than a CRIU stateful
    snapshot for exactly this reason.
 2. **The default pool is `driver = "dir"`**
-   (`per-backend-notes/incus.md:36`), where an instance is a plain
+   (see [`per-backend-notes/incus.md`](per-backend-notes/incus.md)), where an instance is a plain
    directory tree — so `incus snapshot create` and `restore` are full
    recursive copies whose cost scales with rootfs size. On ZFS the same
    commands are metadata-only (snapshot / rollback), and `incus copy`
@@ -170,17 +176,14 @@ So incus is the one backend where the answer genuinely flips with
 configuration. The comparison to beat there is **delete-and-relaunch**, not
 cold boot — on `dir`, restoring a rootfs can plausibly cost more than
 launching a fresh container from the image, which would make `recycle` a
-pessimisation.
-
-Re-measure when the ZFS storage driver lands, on both drivers, and record
-the result here.
+pessimisation. A selection needs measurements on both drivers.
 
 ## Proven end to end on Hyper-V, 2026-08-21
 
-`recycle-from-pool-per-task` now serves real GitHub Actions jobs on
+`recycle-from-pool-per-task` serves real GitHub Actions jobs on
 `win-ci-bare-001`, via `tools/hyperv-pool.ps1` (capacity) and
-`tools/hyperv-scale-set.ps1` (jobs). The proving workflow is
-`infra/.github/workflows/pm6-hyperv-pool-selftest.yml`.
+`tools/hyperv-scale-set.ps1` (jobs), proven by a self-test workflow that
+dispatches a job and checks it ran on a pool guest.
 
 One full cycle, measured:
 
@@ -243,11 +246,9 @@ because it is the first variable that tracks the outliers after contention,
 delta size and memory-image size were each checked and ruled out, and it
 suggests where to look: host-side state that accumulates with uptime
 (free-memory fragmentation, the VMMS working set, or Hyper-V's own page
-file), rather than anything about the member being restored. The test that
-would settle it is cheap — recycle on a freshly booted host, then again
-after a day of pool churn, same member, same delta.
+file), rather than anything about the member being restored.
 
-Until that is done, plan against the **upper** end. Even 19s beats the 36s
+Plan against the **upper** end. Even 19s beats the 36s
 cold boot, and it beats it off the critical path, so the selection stands
 either way; what is not yet safe is quoting a single-digit figure.
 
@@ -260,7 +261,7 @@ Two properties had to be forced into the image before the pool behaved:
   at "You're 1% there" for over an hour) and would otherwise apply them
   mid-job. Disabling it took a member's settle time from 280s to 33s and
   its checkpoint from 92.78s to 7.9s.
-* **The declared tool surface actually present.** The first PM6 run failed
+* **The declared tool surface actually present.** The first pool run failed
   with `pwsh: command not found` -- the golden had Windows PowerShell 5.1
   only. `guest-recipes/lib/provision-pwsh.ps1` pins 7.4.6, matching the
   persistent Windows runner, so both halves of the fleet stay on one

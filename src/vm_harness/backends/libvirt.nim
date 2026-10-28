@@ -2228,7 +2228,7 @@ method uninstallArgvTraceShim*(b: LibvirtBackend, vm: VmHandle,
 #     <- member overlay              (frozen: the snapshot's disk state)
 #       <- scratch overlay           (rewritten by every restore)
 # and the golden is never written. See
-# ``docs/per-backend-notes/libvirt-snapshot-benchmarks.md``.
+# ``docs/contributors/per-backend-notes/libvirt-snapshot-benchmarks.md``.
 
 const
   LibvirtMemoryStateSuffix* = ".memstate"
@@ -2414,7 +2414,7 @@ method snapshotRunning*(b: LibvirtBackend, vmName,
   ##    guest's machine name and DHCP lease with it — two Hyper-V guests
   ##    restored from ONE warm checkpoint came up as ``WIN-EDC8DG9PTDT`` at
   ##    ``172.27.94.244`` *both* (see
-  ##    ``docs/per-backend-notes/hyperv-snapshot-benchmarks.md``). A warm
+  ##    ``docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md``). A warm
   ##    pool must therefore be N distinct warm states, never N readers of
   ##    one. Sharing a disk file (or a memstate path) between domains is
   ##    how that would happen here, so it is refused at the point of

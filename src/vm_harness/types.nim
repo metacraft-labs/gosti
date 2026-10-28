@@ -14,7 +14,7 @@
 ## - The host/guest OS enums and the ``selectBackendId`` table that drives
 ##   ``--backend auto`` dispatch.
 ##
-## See ``docs/design.md`` for the canonical contract; this module is the
+## See ``docs/contributors/architecture.md`` for the canonical contract; this module is the
 ## machine-readable mirror of design doc §3.2 + §3.6. Per-backend
 ## implementations live under ``src/vm_harness/backends/``.
 
@@ -515,12 +515,12 @@ method snapshotRunning*(b: VmBackend, vmName, snapshotName: string): string {.ba
   ## to such a snapshot resumes the guest from the saved memory image
   ## rather than performing a fresh boot, which on Hyper-V cuts per-revert
   ## wall-clock from 28-46 s down to ~5 s — see
-  ## ``docs/per-backend-notes/hyperv-snapshot-benchmarks.md``.
+  ## ``docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md``.
   ##
   ## Backends that lack a memory-state snapshot primitive (the M30
   ## clone-based Tart/UTM implementations, today) raise
   ## ``BackendUnavailableError``. Tart's ``tart suspend`` + ``tart run``
-  ## is the planned implementation path (see ``docs/design.md`` running-
+  ## is the planned implementation path (see ``docs/contributors/architecture.md`` running-
   ## state snapshots note); Hyper-V uses ``Checkpoint-VM`` with the VM
   ## in the ``Running`` state and ``CheckpointType = Standard``.
   ##

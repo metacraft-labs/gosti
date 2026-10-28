@@ -107,7 +107,7 @@ suite "NoopBackend lifecycle":
     let b = newNoopBackend()
     check b.listSnapshots("never-seen").len == 0
 
-  # M31 candidate surface (cf. docs/per-backend-notes/hyperv-snapshot-benchmarks.md):
+  # M31 candidate surface (cf. docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md):
   # hot snapshots (`snapshotRunning`) and portable export/import (`exportBaseline`
   # / `importBaseline`). The NoopBackend round-trips via a one-line manifest so
   # tests can verify orchestrator dispatch + return-value contract without a

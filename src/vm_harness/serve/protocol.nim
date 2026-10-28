@@ -11,7 +11,7 @@
 ## lives in ``http.nim``, the server in ``server.nim``, the client in
 ## ``client.nim``.
 ##
-## Design decision (documented in ``docs/serve.md``): the transport is
+## Design decision (documented in ``docs/contributors/serve.md``): the transport is
 ## **HTTP/1.1 + JSON**, not gRPC. Rationale:
 ##
 ##   * vm-harness is a dependency-light Nim project (``vm_harness.nimble``
@@ -48,7 +48,7 @@
 ## missing or wrong token is rejected with ``401`` BEFORE any work is done.
 ## Over a NetBird (WireGuard) overlay the bearer token travels encrypted at
 ## the network layer; an optional TLS wrap is a compile-time (``-d:ssl``)
-## follow-up hook (see ``docs/serve.md``).
+## follow-up hook (see ``docs/contributors/serve.md``).
 
 import std/[json, strutils]
 

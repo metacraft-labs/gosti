@@ -124,7 +124,7 @@ type
     waitForShutdown*: bool
     running*: bool               ## `--running` flag for `snapshot create`.
     # M4 libvirt-slice canonical-command flags. See
-    # docs/m4-libvirt.md → "Operator command examples" for the
+    # docs/contributors/libvirt.md → "Operator command examples" for the
     # invocation these wire up.
     recipe*: string              ## ``--recipe <id>`` — selects a recipe
                                  ## directory under ``guest-recipes/<id>/``.
@@ -389,7 +389,7 @@ Subcommands:
                           $VMH_CRUD_STATE_DIR, $STATE_DIRECTORY/crud, or the
                           user state dir). --backend mock is a deterministic
                           file-backed fixture for hermetic consumers
-                          (docs/design.md §8.6).
+                          (docs/contributors/architecture.md §8.6).
 
 Common flags:
   --backend <auto|noop|hyperv|wsl|tart-macos|tart-linux-arm|
@@ -397,7 +397,7 @@ Common flags:
   --guest <linux|windows|macos>   Required when --backend auto.
   --baseline <name>               Logical baseline tag (== libvirt domain name).
   --name <vm>                     Alias for --baseline (canonical libvirt M4
-                                  command shape; see docs/m4-libvirt.md).
+                                  command shape; see docs/contributors/libvirt.md).
                                   With boot --keep --state-dir, durable name.
   --state-dir <root>             Durable boot/instance receipts and owned disks.
   --instance-id <uuid>           Expected actual libvirt UUID (optional ownership
@@ -554,7 +554,7 @@ serve daemon (RA1 remoting — the authenticated network access point):
     rather than letting connections pile up unanswered. --exec-deadline-sec
     bounds ONE exec (default 46800 = 13h, sized above the 12h runner lifetime
     the GARM provider forwards) so a hung guest op cannot hold a slot forever.
-    See docs/serve.md.
+    See docs/contributors/serve.md.
 
   RA6 enrollment / signed capability manifest (GET /v1/manifest):
   --enroll-secret-file <path>     Per-host enrollment secret (prefer over
@@ -563,7 +563,7 @@ serve daemon (RA1 remoting — the authenticated network access point):
                                   secret is self-bootstrapped under --state-dir.
                                   The daemon prints its keyId at startup — enroll
                                   that keyId on the controller. See
-                                  docs/serve-enrollment.md.
+                                  docs/contributors/serve-enrollment.md.
   --enroll-secret <s>             The secret inline (avoid — visible in argv).
   --identity-ttl-sec <n>          Signed-identity lifetime (default 3600).
   --host-id <name>                Identity host label (default: OS hostname).
@@ -757,7 +757,7 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       # the historical vm-harness spelling. Both produce the same
       # internal field. We deliberately accept either without a
       # deprecation warning because both spellings show up in active
-      # docs (design.md uses --cpus; m4-libvirt.md uses --vcpu).
+      # docs (architecture.md uses --cpus; libvirt.md uses --vcpu).
       inc i; result.cpus = parseInt(args[i]); inc i
     of "--memory-mb":
       inc i; result.memoryMB = parseInt(args[i]); inc i
@@ -3078,7 +3078,7 @@ proc cmdCrud(opts: CliOpts): int =
   try:
     let (_, resolved) = resolveBackend(opts)
     backend = resolved
-    # Cross-invocation state (docs/design.md §8.6): every CLI crud call runs
+    # Cross-invocation state (docs/contributors/architecture.md §8.6): every CLI crud call runs
     # against the persisted crud store.
     let store = newCrudStore(crudStateRoot(opts.stateDir))
     if backend of MockBackend:

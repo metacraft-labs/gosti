@@ -15,7 +15,7 @@
 # serve daemon's worker re-exec (which uses the resolved executable) are
 # identical under either name. Consumers that still invoke `vm-harness` —
 # `vm-harness serve` units, garm-provider-vmharness's default binary path,
-# scripts — keep working unchanged. See docs/design.md "Command names".
+# scripts — keep working unchanged. See docs/contributors/architecture.md "Command names".
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then

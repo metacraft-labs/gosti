@@ -6,7 +6,7 @@
 ## snapshot back to a guest-ready state" across N iterations. The same
 ## program drives every backend that implements ``snapshotRunning``
 ## (today: Hyper-V; planned: Tart via ``tart suspend`` — see
-## ``docs/design.md`` running-state snapshots note).
+## ``docs/contributors/architecture.md`` running-state snapshots note).
 ##
 ## Phases (timing decomposition output as JSON):
 ##

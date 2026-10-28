@@ -218,7 +218,7 @@
               # `gosti` plus the `vm-harness` compatibility symlink — the
               # shared layout script, so `just build` produces the same names.
               bash scripts/install-binaries.sh gosti $out/bin
-              # Hermetic-consumer fixture (docs/design.md §8.6): the real CLI
+              # Hermetic-consumer fixture (docs/contributors/architecture.md §8.6): the real CLI
               # against the file-backed mock backend.
               install -m755 scripts/vm-harness-fixture.sh \
                 $out/bin/vm-harness-fixture

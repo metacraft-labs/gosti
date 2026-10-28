@@ -16,10 +16,7 @@ It exists as the network-layer companion to
 [serve-windows-reprobuild.md](serve-windows-reprobuild.md): that recipe runs
 `vm-harness serve` **NetBird-only** (single-address bind + overlay-scoped
 firewall), which is only reachable once the host is a NetBird peer. This recipe
-is how a reprobuild-managed Windows host becomes one. The concrete Metacraft
-instantiation is
-`infra/machines/server/_win-ci-bare-001/system_windows_runner.nim` (§18), which
-restores that box's overlay-only posture after an interim LAN step.
+is how a reprobuild-managed Windows host becomes one.
 
 ## What the recipe does
 
@@ -106,8 +103,10 @@ source of truth for a service the CLI already manages.
 
 ## Verifying it
 
-Off-host, the emitted PowerShell is what a unit test asserts on (the fetch
-guard, the flat-root extract, the install/start/up/record sequence). On-host,
+This repository carries no test for the recipe itself: it is instantiated in a
+host profile, and off-host the emitted PowerShell is what that profile's unit
+test should assert on (the fetch guard, the flat-root extract, the
+install/start/up/record sequence). On-host,
 after an apply: `netbird status` reports `Connected`, `Get-Service NetBird`
 is `Running`, and the overlay-IP marker file holds a `100.x` address. A service
 bound to that overlay IP (e.g. `vm-harness serve`, per

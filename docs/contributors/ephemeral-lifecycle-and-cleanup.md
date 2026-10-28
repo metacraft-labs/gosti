@@ -186,14 +186,11 @@ a budget (`--timeout-sec`, default 240s), after which the verb exits non-zero
 so the caller keeps the instance on its retry list. An absent container is
 success; an incus that cannot be asked is a failure, not "already gone".
 
-## 6. Follow-ups
+## 6. Limitations
 
-- The transient SSH-password and socket files still live in the global system
-  temp dir rather than under the project state dir. Relocating them under the
-  per-instance directory (so they are removed with it and are project-scoped by
-  construction) would let `--sweep-tmp` be retired. Tracked as a follow-up
-  because it touches several call sites and the tart backend has no state-dir
-  concept today.
+- The transient SSH-password and socket files live in the global system temp
+  dir rather than under the project state dir, which is why `--sweep-tmp`
+  exists. The tart backend has no state-dir concept.
 - Boot verification of overlay mode against a real Windows-on-ARM golden is
-  covered by the host-level gates in `metacraft-labs/infra`, not the
-  deterministic unit catalog.
+  host-level coverage (`t_qemu_windows_arm_per_job_boot`, under
+  `just test-host`), not part of the deterministic unit catalog.

@@ -3,7 +3,7 @@
 ## CLI flag-plumbing test for the libvirt M4 canonical command.
 ##
 ## The libvirt M4 slice ships with a "canonical" operator command
-## documented in both docs/m4-libvirt.md and the windows-runner-001
+## documented in both docs/contributors/libvirt.md and the windows-runner-001
 ## prototype README:
 ##
 ##   vm-harness provision \
@@ -173,7 +173,7 @@ suite "CLI libvirt M4 canonical-command flag plumbing":
       discard resolveRecipeDir("definitely-not-a-recipe-xyzzy")
 
   test "canonical libvirt M4 command parses into the documented CliOpts shape":
-    # Mirror the exact invocation from docs/m4-libvirt.md and the
+    # Mirror the exact invocation from docs/contributors/libvirt.md and the
     # windows-runner-001 prototype README. ``--first-boot-script``
     # validates at parse time, so we point it at a file that
     # definitely exists on every host (the running test binary itself).
