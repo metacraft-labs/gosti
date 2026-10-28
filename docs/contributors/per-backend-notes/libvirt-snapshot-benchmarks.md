@@ -12,15 +12,15 @@ backends' numbers are comparable rather than merely adjacent.
 > ≥ 4×. **Both thresholds fail, and not narrowly.**
 > `defaultAlgorithmFor(biLibvirt)` therefore stays `paClonePerTask`.
 > Full numbers and conditions: [Measured on high-mem-server, 2026-09-05 —
-> the WR0 headline](#the-wr0-headline).
+> the headline](#the-headline).
 >
 > The *diagnosis* is more useful than the verdict, and points somewhere
 > specific: the resume is not the problem. Once the domain is running again
 > the guest answers SSH in **1.7 s** — better than Hyper-V's 5.08 s. The
 > entire cost is `virsh snapshot-revert --running` itself (**34.4 s**),
 > which re-reads a 2.61 GiB memory image at roughly **81 MB/s**. Hyper-V
-> moves a comparable 3,395 MB image in ~5 s (~670 MB/s). Whatever WR1 does
-> next, this one number is the thing to attack.
+> moves a comparable 3,395 MB image in ~5 s (~670 MB/s). Any further work on
+> libvirt recycling has to start from this one number.
 >
 > Hyper-V's 36 s → 7.2 s remains the **analogy that motivated** this work, on
 > a different hypervisor and a different disk format. It is not a measurement
@@ -29,7 +29,7 @@ backends' numbers are comparable rather than merely adjacent.
 
 ## What the primitives are
 
-Implemented in `src/vm_harness/backends/libvirt.nim` (campaign WR0):
+Implemented in `src/vm_harness/backends/libvirt.nim`:
 
 | method | `virsh` invocation |
 | --- | --- |
@@ -39,7 +39,7 @@ Implemented in `src/vm_harness/backends/libvirt.nim` (campaign WR0):
 | `listSnapshots` | `snapshot-list --domain D --name` |
 | `removeSnapshot` | `snapshot-delete --domain D --snapshotname S`, then the RAM image |
 
-`exportBaseline` / `importBaseline` remain unimplemented; they are WR3's.
+`exportBaseline` / `importBaseline` are not implemented.
 
 ## External, not internal — and why
 
@@ -67,7 +67,7 @@ plain `virsh` error rather than silently degrading to a cold boot.
 
 ### Where the snapshot state file lives
 
-This was WR0's one open design point (campaign, *Outstanding Tasks*). The
+Where the snapshot state lives was an open design point. The
 answer, measured rather than assumed:
 
 The snapshot stacks **on top of** whatever the domain's active disk already
@@ -82,7 +82,7 @@ golden.qcow2            shared, read-only, never written
 
 plus a separate `<domain>.<snapshot>.memstate` holding the RAM. The golden is
 never touched, which is what keeps this compatible with the per-job CoW path
-the GARM provider uses today (`virsh.go` teardown is untouched by WR0).
+the GARM provider uses (its `virsh.go` teardown does not involve snapshots).
 
 The artifacts default to the image pool dir and are relocatable with
 `newLibvirtBackend(snapshotStateDir = …)`, because a warm Windows member's
@@ -102,7 +102,7 @@ Reproduced by `tests/e2e/t_libvirt_snapshot_surface_conformance.nim`.
 | Can libvirt 11.7 revert *to* an external snapshot? | **Yes** | `snapshot-revert` returned "Domain snapshot … reverted"; the qemu driver exports `qemuSnapshotRevertExternal*` and carries no "not supported" string for it |
 | **Does a restore rewrite the saved state?** | **No.** | Three consecutive reverts to a **hot** (memstate-carrying) snapshot left both the frozen disk file *and* the memory image byte-identical, with mtimes unchanged to the nanosecond. Each revert *deleted* the previous scratch overlay and created a new empty one (`disk.<epoch>`, backed by the frozen file). Asserted by the conformance gate. |
 | What does one restore write? | one fresh, empty qcow2 overlay — `qemu-img info` allocated size **4.5 KiB** | `qemu-img info --backing-chain` after a revert |
-| What does one restore cost, on an OS-less 64 MiB domain? | **≈1.3–1.5 s** wall for `snapshot-revert --running` | three timed reverts; a floor for the primitive on an EMPTY memory image, *not* the WR0 headline — at the real 2.61 GiB memstate the same call costs **34.4 s**, so this primitive's cost is almost entirely memstate size (see [the WR0 headline](#the-wr0-headline)) |
+| What does one restore cost, on an OS-less 64 MiB domain? | **≈1.3–1.5 s** wall for `snapshot-revert --running` | three timed reverts; a floor for the primitive on an EMPTY memory image, *not* the headline — at the real 2.61 GiB memstate the same call costs **34.4 s**, so this primitive's cost is almost entirely memstate size (see [the headline](#the-headline)) |
 | Does `snapshot-delete` leave residue? | **No.** The active disk returned to the pre-snapshot file, the scratch overlay was removed, and `removeSnapshot` swept the `.memstate`. | `domblklist` + `ls` before/after |
 | Are shared install ISOs at risk? | **No** — cdroms are passed `--diskspec <t>,snapshot=no` explicitly. | argv, pinned by `tests/unit/t_libvirt_snapshot_args.nim` |
 
@@ -115,9 +115,9 @@ This is a stronger result than Hyper-V's, where recycle cost *does* scale
 with how much the job wrote (6.67 s clean vs 13.59 s after a job wrote to
 disk, because the restore discards a bigger `.avhdx` delta).
 
-<a id="the-wr0-headline"></a>
+<a id="the-headline"></a>
 
-## Measured on high-mem-server, 2026-09-05 — the WR0 headline
+## Measured on high-mem-server, 2026-09-05 — the headline
 
 The rows this note previously listed as "not measured" now have numbers.
 Every one of them needed a booted guest with an OS; one was booted.
@@ -157,8 +157,8 @@ it verbatim reproduces exactly this failure.
 
 `high-mem-server`: 32 threads (2 sockets × 8 cores × 2), 377 GiB RAM, ZFS,
 `libvirt 11.7.0` / `qemu 10.1.5`. The host was **contended throughout and
-increasingly so** — this is the CI host whose contention the campaign exists
-to fix, and no maintenance window was taken. `load1` at the start of each
+increasingly so** — this is a production CI host, and no maintenance window
+was taken. `load1` at the start of each
 measurement is given per row. The concurrent tenants were `win-ci-vm-001`
 plus 2–6 `garm-*` ephemeral runners; none was touched.
 
@@ -202,7 +202,7 @@ a hard `virsh destroy` the next boot is crash-consistent recovery, and took
 
 The memstate is far smaller than the guest's RAM because qemu's
 migration-to-file skips zero pages, and a freshly-booted Windows guest is
-mostly zeroes. **This is good news for WR1's pool sizing** and it is the
+mostly zeroes. **This is good news for pool sizing** and it is the
 number to size on: a warm member at rest costs ~2.6 GiB of disk, not 16 GiB.
 It will grow as a member does real work.
 
@@ -244,7 +244,7 @@ not held. The 34 s is structural.
 
 ### Where the 34 s sits, and why that is the useful finding
 
-The decomposition is the part WR1 should act on:
+The decomposition is the actionable part:
 
 ```
 warm cycle = snapshot-revert --running   34.4 s   ← 96% of it
@@ -287,7 +287,7 @@ cold) sampled every 5 s for the snapshot's whole lifetime (286 samples):
 **The consequence for pool sizing:** recycle cost does not scale with guest
 memory on the *write* side. A warm member at rest is ~2.6 GiB of immutable
 disk plus ~120 MB of disposable per-cycle overlay, and zero host RAM and zero
-cores. That part of the campaign's cost argument survives this measurement
+cores. That part of the cost argument for recycling survives this measurement
 intact. What does not survive is the *latency* claim.
 
 ### Resume-not-boot: proven
@@ -313,8 +313,7 @@ The gate's *other* corroboration — the post-snapshot sentinel process, which
 must be gone again after a restore — carries none of the weight here, because
 the run that produced these lines was also the run that discovered the
 sentinel check was self-matching (next section), and **the sentinel arm has
-not been re-run to green since that fix**. Re-running it is cheap and should
-be folded into the next session on this host; until then the claim rests on
+not been re-run to green since that fix**, so the claim rests on
 the witness pair alone, which is sufficient but is not the belt-and-braces the
 gate was written to provide.
 
@@ -351,8 +350,8 @@ earned, and both are fixed in
 `tools/bench/clone_per_task_bench.nim` could not produce libvirt's clone arm.
 Its loop is `revertToBaseline` → `startAndAwaitReady` →
 `stopAndCleanup(deleteVm = true)`, and on libvirt `revertToBaseline` does not
-clone: it starts the one long-lived domain it was given (`libvirt.nim`, "the
-M4 Phase A slice does NOT implement a per-gate-revert clone model"). So
+clone: it confirms the one long-lived domain it was given exists and starts
+it (see its doc comment in `libvirt.nim`). So
 iteration 1 `undefine`s that domain and iteration 2 fails with "is not
 defined".
 
@@ -362,8 +361,8 @@ calls `undefineDomain` and then `deleteDomainDisk`, so the first iteration
 destroys the domain definition, and its disk too if that disk happens to sit
 at the conventional `<imagePoolDir>/<name>.qcow2` path.
 
-`--assert-creates-instance` is a weaker guard here than it looks, and this
-should be fixed alongside the bench. The check runs *after* the loop, on the
+`--assert-creates-instance` is a weaker guard here than it looks.
+The check runs *after* the loop, on the
 collected handle names, so at the ≥ 2 iterations any real run uses it is never
 reached — the "is not defined" crash comes first. At `--iterations 1` it is
 reached and *passes* (one handle, one iteration), emitting JSON labelled
@@ -372,7 +371,7 @@ reached and *passes* (one handle, one iteration), emitting JSON labelled
 straightforwardly wrong is the bench's *header*, where it claims libvirt
 "creates a fresh per-job qcow2 CoW overlay… This IS clone-per-task" — that
 describes `provisionEphemeralClone`, which this bench does not call. Producing
-the arm means pointing it there, which is not WR0's.
+the arm means pointing it there.
 
 This did not block the verdict: the gate's interleaved cold arm is the
 apples-to-apples denominator the ratio needs, and the standalone cold-boot
@@ -390,7 +389,7 @@ than a clean boot (73.7 s against the 59.0 s clean p50), which makes the
 ## The measurement procedure
 
 **This procedure was executed on 2026-09-05; its results are
-[above](#the-wr0-headline).** It is kept here so the numbers can be
+[above](#the-headline).** It is kept here so the numbers can be
 reproduced or re-taken on a quieter host. Three corrections learned by
 running it are folded in below and flagged **[2026-09-05]**.
 
@@ -467,7 +466,7 @@ decomposition above came from — run it, it is the more informative of the two.
 `stopAndCleanup(deleteVm = true)`, which undefines the long-lived domain that
 libvirt's `revertToBaseline` was given, so iteration 2 fails. See "What is
 still not measured" above. Use the standalone cold-boot table as the clone-arm
-substitute until the bench is pointed at `provisionEphemeralClone`.
+substitute; the bench does not call `provisionEphemeralClone`.
 
 **4. Tear down.** `virsh destroy` / `virsh undefine --nvram` the throwaway,
 delete its overlay, and confirm `virsh list --all` shows only the fleet.
@@ -476,7 +475,7 @@ delete its overlay, and confirm `virsh list --all` shows only the fleet.
 
 | quantity | target | derivation |
 | --- | --- | --- |
-| `restoreSnapshot` + resume → ready, p50 | **≤ 10 s** | the pre-existing per-backend budget for libvirt in `docs/contributors/architecture.md` §3.4, and the threshold `Multi-OS-VM-Automation-Campaign` M4 already named |
+| `restoreSnapshot` + resume → ready, p50 | **≤ 10 s** | the pre-existing per-backend budget for libvirt in `docs/contributors/architecture.md` §3.4 |
 | ratio vs cold boot → ready, same run | **≥ 4×** | Hyper-V measured 36 s / 7.2 s = 5.0× on the same guest OS, discounted to 4× to absorb qcow2-vs-VHDX and host differences without letting a null result pass |
 
 Report the absolutes **separately** from the ratio. The ratio is the claim; an
@@ -488,7 +487,7 @@ against ≥ 4×. Keeping the ≥ 4× discount honest paid off exactly as intende
 had the bar been set at Hyper-V's raw 5.0× the verdict would be the same, and
 had it been relaxed to "any improvement at all" a 1.57× result would have
 passed and put the whole Windows lane on a path that is barely faster than the
-boot it replaces. See [the headline](#the-wr0-headline).
+boot it replaces. See [the headline](#the-headline).
 
 ## Identity, and why a pool is N warm states rather than N copies of one
 
@@ -505,8 +504,8 @@ one warm state to two domains. The route that *would* is file sharing, so
 
 Both refusals name the colliding domain or file. The other route is
 export/import of a baseline — which is exactly why `exportBaseline` /
-`importBaseline` are left unimplemented for WR3 rather than bolted on here:
-whoever writes them owes this problem an answer.
+`importBaseline` are not implemented: an implementation owes this problem an
+answer first.
 
 ## Selection: libvirt still uses `clone-per-task`
 
@@ -540,7 +539,7 @@ the boot it replaces.
 
 **What would justify revisiting the flip:** not a re-run of the same
 benchmark, but a change to the 81 MB/s memory-image reload identified in
-[the headline section](#the-wr0-headline). Get
+[the headline section](#the-headline). Get
 `snapshot-revert --running` under ~10 s for a 2.6 GiB memstate and the
 arithmetic changes completely, because the other half of the cycle — the
 guest's 1.7 s return to SSH-ready — already clears the budget with room to

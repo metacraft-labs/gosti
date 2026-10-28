@@ -36,8 +36,8 @@ identity, recycled after each job.
 The Hyper-V conclusion does not transfer, and assuming it would be a
 mistake.
 
-**Cloning is already cheap here.** `provisionEphemeralClone`
-(`libvirt.nim:736`) creates the per-job disk with
+**Cloning is already cheap here.** `provisionEphemeralClone` (in
+`src/vm_harness/backends/libvirt.nim`) creates the per-job disk with
 
 ```
 qemu-img create -f qcow2 -b <golden> -F qcow2 <overlay>
@@ -46,49 +46,45 @@ qemu-img create -f qcow2 -b <golden> -F qcow2 <overlay>
 a copy-on-write overlay over the golden — O(1), no bytes copied. There is
 no `Import-VM` equivalent to dominate the cost. So the thing that made
 clone-per-job unattractive on Hyper-V simply does not exist here, and the
-current libvirt ephemeral path (a fresh CoW overlay per job) is already the
-right shape for capacity.
+libvirt ephemeral path (a fresh CoW overlay per job) is already the right
+shape for capacity.
 
-**Recycling now exists, and is unmeasured.** As of campaign WR0,
-`snapshot`, `snapshotRunning`, `restoreSnapshot`, `listSnapshots` and
-`removeSnapshot` are implemented as EXTERNAL `virsh` snapshots
-(`libvirt.nim:1852-2035`); `exportBaseline` / `importBaseline` remain stubs
-and belong to WR3. `snapshotRunning` wraps
-`virsh snapshot-create-as --live` with an external memspec, which is what
-captures RAM — and `--live` is *only* legal for external snapshots, so an
-internal one would have quietly given up the resume.
+**Recycling exists.** `snapshot`, `snapshotRunning`, `restoreSnapshot`,
+`listSnapshots` and `removeSnapshot` are implemented as EXTERNAL `virsh`
+snapshots; `exportBaseline` / `importBaseline` are not implemented.
+`snapshotRunning` wraps `virsh snapshot-create-as --live` with an external
+memspec, which is what captures RAM — and `--live` is *only* legal for
+external snapshots, so an internal one would have quietly given up the
+resume.
 
 Two storage properties were measured on `high-mem-server` against real
 libvirt 11.7 and both favour recycling:
 
-- **A restore does not rewrite the saved state.** Two consecutive restores
-  left the frozen disk byte-identical, mtime unchanged. So "prepare the warm
-  state once, restore it many times" is the cheap direction.
-- **One restore writes one empty overlay** (kilobytes), then reads the
-  memory image. Unlike Hyper-V, where recycle cost scales with how much the
-  job wrote (6.67 s clean vs 13.59 s after a write-heavy job), the write
-  side here does not scale with the guest.
+- **A restore does not rewrite the saved state.** Consecutive restores left
+  the frozen disk and the memory image byte-identical, mtime unchanged. So
+  "prepare the warm state once, restore it many times" is the cheap
+  direction.
+- **One restore writes one disposable overlay**, then reads the memory
+  image. Unlike Hyper-V, where recycle cost scales with how much the job
+  wrote (6.67 s clean vs 13.59 s after a write-heavy job), the write side
+  here does not scale with the guest.
 
-What is still missing is the **number**: nobody has yet timed
-restore-to-ready against boot-to-ready on a libvirt guest, because that means
-booting the 16 GiB Windows golden on a host that is already heavily
-CPU-contended during CI hours. Hyper-V's 36 s → ~5 s is the analogy that
-motivated the work, not a measurement of this backend.
+**But it is not fast.** Measured 2026-09-05 against the 16 GiB Windows
+golden: restore + resume → SSH-ready p50 35.9–46.9 s, against a cold boot of
+p50 59.0–73.7 s — 1.26–1.57x, where the bar was p50 ≤ 10 s AND ≥ 4x. 96% of
+the cycle is `snapshot-revert --running` re-reading the 2.61 GiB memory
+image at ~81 MB/s; resume → SSH-ready is 1.7 s.
 
-**Verdict: the capability is claimed; the measurement is not.** Run the
-maintenance-window procedure in
+**Verdict: clone.** `defaultAlgorithmFor(biLibvirt)` is `clone-per-task`:
+recycling is modestly faster but not by enough to pay for a member that
+carries state across jobs. Numbers, host conditions and method are in
 [`per-backend-notes/libvirt-snapshot-benchmarks.md`](per-backend-notes/libvirt-snapshot-benchmarks.md).
-`defaultAlgorithmFor(biLibvirt)` stays `clone-per-task` until it produces
-restore-to-ready p50 ≤ 10 s and ≥ 4× faster than a cold boot in the same run;
-flipping on an analogy would put every libvirt pool — Linux guests included,
-where a boot costs a second or two and recycling buys nothing — onto a path
-that has never run against a live guest.
 
 ## incus — the answer depends entirely on the storage driver
 
-Unlike libvirt, incus **has** the primitives: `snapshot`,
+Like libvirt, incus **has** the primitives: `snapshot`,
 `snapshotRunning`, `restoreSnapshot`, `listSnapshots` and `removeSnapshot`
-are all implemented (`incus.nim:598-665`), wrapping
+are all implemented (`src/vm_harness/backends/incus.nim`), wrapping
 `incus snapshot create` / `incus snapshot restore`.
 
 Two things qualify that, and the second is the important one.
@@ -100,14 +96,14 @@ a container has no boot to skip. A container starts in about a second, so
 there is no 36 s -> 5 s prize here. **For containers, recycling buys
 isolation, not speed.**
 
-**2. The default storage pool is `dir`.** `per-backend-notes/incus.md:36`
+**2. The default storage pool is `dir`.** [`per-backend-notes/incus.md`](per-backend-notes/incus.md)
 declares `driver = "dir"`, i.e. `incus admin init --minimal`'s default. On
 the `dir` driver an instance is a plain directory tree, so
 `incus snapshot create` and `incus snapshot restore` are **full recursive
 copies**, not metadata operations. Cost scales with the size of the
 instance's filesystem.
 
-That is the crux, and it points straight at work already in flight:
+That is the crux:
 
 > **On `dir`, restore-to-baseline may be a pessimisation** — copying a
 > whole rootfs back can cost more than deleting the instance and launching
@@ -118,25 +114,26 @@ That is the crux, and it points straight at work already in flight:
 > independent of instance size. `incus copy` also becomes a `zfs clone`,
 > making capacity changes near-free as well.
 
-So enabling a ZFS storage driver for incus is not a tuning detail; it is
-the thing that decides whether the recycle model is worth using there at
-all. vm-harness currently has **no ZFS awareness for incus anywhere** — the
-existing ZFS mentions are all libvirt image-path advice ("put the qcow2 on
-a ZFS pool"), which is a different thing entirely.
+So the storage driver is not a tuning detail for incus; it decides whether
+the recycle model is worth using there at all. The incus backend takes a
+named storage pool (`IncusBackend.storagePool`, default `default`) but does
+not choose or detect its driver, and the pool algorithm does not consult it.
 
-**Verdict: blocked on storage.** Revisit once the ZFS driver lands, and
-measure `incus snapshot restore` on both drivers before choosing — the
-comparison to beat is "delete and relaunch", not "cold boot".
+**Verdict: undecided, defaulted to clone.** `defaultAlgorithmFor(biIncus)` is
+`clone-per-task`. A selection needs `incus snapshot restore` measured on both
+drivers — and the comparison to beat is "delete and relaunch", not "cold
+boot".
 
 ## Summary
 
-| backend | clone (capacity) | recycle (per job) | what to do |
-| ------- | ---------------- | ----------------- | ---------- |
+| backend | clone (capacity) | recycle (per job) | selected |
+| ------- | ---------------- | ----------------- | -------- |
 | Hyper-V | ~50 s, real copy | **7-14 s, carries RAM** | warm pool + recycle (measured) |
-| libvirt | **O(1) CoW overlay** | implemented (WR0), **not yet timed** | measure restore-vs-boot on the Windows golden, then decide; saved state is immutable across restores, which favours recycling |
-| incus | `incus copy` | implemented, cost = f(driver) | **`dir` makes it a full copy; ZFS makes it O(1)** — re-measure when ZFS lands |
+| libvirt | **O(1) CoW overlay** + boot, p50 59–74 s | implemented, p50 36–47 s | clone-per-task (measured: recycling is 1.26–1.57x faster, short of the 4x bar) |
+| incus | `incus copy` | implemented, cost = f(driver) | clone-per-task (default; **`dir` makes restore a full copy, ZFS makes it O(1)**) |
 
 The general rule, stated once: **recycle when restoring is cheaper than
-creating, clone when it is not.** Hyper-V and incus-on-ZFS sit on one side
-of that line, incus-on-`dir` on the other, and libvirt now has a restore to
-price but has not yet been priced.
+creating, clone when it is not** — by enough to pay for the state a recycled
+member carries. Hyper-V sits clearly on one side of that line; libvirt has a
+restore that is cheaper but not cheap enough; incus depends on its storage
+driver.

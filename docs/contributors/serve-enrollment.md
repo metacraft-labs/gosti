@@ -1,12 +1,12 @@
-# vm-harness serve — enrollment, signed identity, capability manifest (RA6)
+# vm-harness serve — enrollment, signed identity, capability manifest
 
-RA6 turns the `/v1/info` backend seed into a **signed capability manifest** plus
-a lightweight **enrollment/identity model**. Each serve host presents (a) a
-signed identity and (b) a machine-checkable manifest describing its real
-hardware; a controller reads it over `GET /v1/manifest`, verifies the signature
-against its trust store, and **rejects an unenrolled, expired, or revoked
-identity**. This manifest is the **source** for the Phase-C runner labels —
-labels are DERIVED from proven hardware, not hand-maintained in a class name.
+On top of the `/v1/info` backend list, serve exposes a **signed capability
+manifest** plus a lightweight **enrollment/identity model**. Each serve host
+presents (a) a signed identity and (b) a machine-checkable manifest describing
+its real hardware; a controller reads it over `GET /v1/manifest`, verifies the
+signature against its trust store, and **rejects an unenrolled, expired, or
+revoked identity**. This manifest is the **source** for runner labels — labels
+are DERIVED from proven hardware, not hand-maintained in a class name.
 
 Gate: `t_vmharness_serve_enrollment` (hermetic on Linux, `--backend noop`).
 
@@ -44,11 +44,11 @@ Gate: `t_vmharness_serve_enrollment` (hermetic on Linux, `--backend noop`).
 }
 ```
 
-`GET /v1/info` is unchanged (RA1 back-compat): protocol version + the backend
+`GET /v1/info` is unchanged: protocol version + the backend
 seed. `/v1/manifest` is the new, versioned, signed surface.
 
 `vm-harness manifest` prints THIS host's **unsigned** manifest locally (no
-daemon, no secret) — handy for debugging and for the RC1 label-derivation
+daemon, no secret) — handy for debugging and as the label-derivation
 source. `vm-harness --remote <addr> manifest` fetches the remote **signed**
 identity over `/v1/manifest`.
 
@@ -75,10 +75,9 @@ no hardware present (`tests/unit/t_serve_enrollment.nim`). The impure
 absent `/sys/module/kvm_*`, or unreadable `perf_event_paranoid` yields the safe
 default `false` ("not proven present") — never a guess. This is the correct
 default for label derivation: a host advertises only what its manifest proves.
-Off-Linux, the `/proc`-based fields are best-effort; the Phase-A fleet only
-enrolls Linux/macOS/Windows serve hosts and the controller keys on `os`/`arch`
-there. Extending Windows/macOS-native detection (CIM/`system_profiler`) is a
-documented follow-up.
+Off-Linux, the `/proc`-based fields are best-effort, so a controller should
+key on `os`/`arch` there; Windows/macOS-native detection
+(CIM/`system_profiler`) is not implemented.
 
 ## Enrollment / identity / revocation model
 
@@ -108,31 +107,28 @@ and checks expiry **last** (only a signature-valid identity's clock is
 trustworthy): `unenrolled` / `revoked` → `bad-payload` (alg/version) →
 `bad-signature` → `expired` → `ok`.
 
+
 ### Why symmetric (HMAC), deliberately
 
 The serve endpoint is **already** authenticated + confidential: a bearer token
-over a NetBird (WireGuard) overlay, never exposed publicly (campaign
-non-negotiable pattern (a)). This identity signature is therefore **not** a
-second transport-auth — it is capability/identity **advertisement**: its job is
-tamper-evidence, host-identity binding, expiry, and revocation on top of a
-transport that already provides confidentiality and endpoint auth.
+over a NetBird (WireGuard) overlay, never exposed publicly. This identity
+signature is therefore **not** a second transport-auth — it is
+capability/identity **advertisement**: its job is tamper-evidence,
+host-identity binding, expiry, and revocation on top of a transport that
+already provides confidentiality and endpoint auth.
 
 vm-harness is deliberately dependency-light (`vm_harness.nimble` requires only
 `nim`); Nim's stdlib ships no asymmetric primitive, and linking OpenSSL /
 vendoring a curve for a capability-advertisement signature is disproportionate.
 So the signature is a vendored, fully test-vectored pure-Nim HMAC-SHA256
 (`src/vm_harness/serve/hmac.nim`, checked against NIST SHA-256 + RFC 4231
-vectors). The wire format carries an `alg` field so an upgrade to **Ed25519**
-(asymmetric — the controller then holds only public keys, and a compromised
-controller store cannot forge) is a versioned, non-breaking change when an
-asymmetric primitive is acceptable in the dependency budget. That upgrade is the
-recorded follow-up.
+vectors). The wire format carries an `alg` field so an asymmetric scheme such
+as **Ed25519** (the controller then holds only public keys, and a compromised
+controller store cannot forge) can be added as a versioned, non-breaking change.
 
-## Phase-C consumption — the label-derivation contract (RC1)
+## The label-derivation contract
 
-RC1 (metacraft-dev-guidelines `ci-workflow-standards.md`) defines the taxonomy;
-the **mechanism** lives in nixos-modules (per the campaign repo-layering). Both
-consume THIS manifest. The canonical derivation:
+A controller consumes THIS manifest. The canonical derivation:
 
 | Manifest field                    | Derived runner label(s) |
 |-----------------------------------|-------------------------|
@@ -146,29 +142,20 @@ consume THIS manifest. The canonical derivation:
 | `rrHwCounters == true`            | `rr-hw-counters` |
 | `hypervisors[].id` where available| `incus` / `libvirt` / `hyperv` / `tart` |
 
-**Contract for the RC1 linter:** every label a host advertises MUST be a subset
+
+**Contract for a label linter:** every label a host advertises MUST be a subset
 of what its (signed, verified) manifest proves — `advertised ⊆ derived`. The
 controller fetches `/v1/manifest`, `verify()`s it, and only then trusts the
 manifest to derive labels; an unverifiable manifest yields no labels. Because the
 manifest is `manifestVersion`-pinned and signed, the derivation is stable and
 tamper-evident.
 
-## Operator / infra follow-up (NOT wired in this milestone)
+## Deploying it
 
-Deploying the manifest to the controller is Phase-C work. RA6 ships only the
-vm-harness mechanism. When the per-host serve deployments (RA2–RA5) and the
-central controller (Phase B/C) consume this:
-
-1. **Provision a per-host enrollment secret** alongside the existing serve
-   bearer token — an agenix secret, delivered via systemd `LoadCredential`
-   (Linux), launchd (macOS), or the reprobuild service profile (win-ci-bare-001)
-   — passed as `--enroll-secret-file`. (Mirror `just mint-serve-tokens`; add a
-   `just mint-enroll-secrets` sibling that also records each host's keyId.)
-2. **Enroll each host's keyId** in the controller's trust store (the keyId is
-   printed at daemon startup and is safe to record in infra). Revocation =
-   removing/​revoking that keyId.
-3. **The controller** (nixos-modules capability-manifest→label mechanism) fetches
-   `/v1/manifest`, verifies it, and derives the RC1 labels per the table above.
-
-Until then, `vm-harness manifest` / `--remote <addr> manifest` already expose the
-manifest for inspection and for prototyping the derivation.
+A deployment provisions a per-host enrollment secret alongside the serve
+bearer token (agenix, delivered via systemd `LoadCredential` on Linux, launchd
+on macOS, or the Windows service profile) and passes it as
+`--enroll-secret-file`, then records each host's keyId in the controller's
+trust store. Revocation is revoking that keyId. `vm-harness manifest` and
+`vm-harness --remote <addr> manifest` expose the manifest for inspection and
+for prototyping the derivation.
