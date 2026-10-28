@@ -1,8 +1,10 @@
-# VM-Harness Design
+# Gosti architecture
 
-**Status**: Design draft — implementation-ready for sub-agent execution.
-**Created**: 2026-06-01.
-**Audience**: implementation agents building vm-harness. This document is the canonical design spec; per-deliverable progress is tracked separately, outside this repository.
+**Audience**: contributors working on gosti (formerly vm-harness). This
+document describes the library and CLI as they are built in this tree. It is
+kept true by the code and tests it names. A change that alters what a section
+describes updates that section in the same pull request. How to *use* gosti is
+in the [user guide](https://metacraft-labs.github.io/vm-harness/).
 
 ## 1. Overview
 
@@ -16,7 +18,7 @@ The library lives in a standalone repository, `metacraft-labs/vm-harness`, delib
 
 ## 2. Why this exists (prior-art summary)
 
-A separate web research survey ([report findings 2026-06-01]) confirmed the niche is unfilled. The closest matches each fail structurally:
+No existing project fills this niche. The closest matches each fail structurally:
 
 | Project | Why it doesn't replace vm-harness |
 |---|---|
@@ -32,7 +34,7 @@ A separate web research survey ([report findings 2026-06-01]) confirmed the nich
 - *libvirt domain API* — the battle-tested lifecycle contract; informs which primitives the trait needs (start/stop/snapshot/revert/clone).
 - *Cuckoo Sandbox "Machinery" interface* — clean abstract-base-class shape for multi-backend VM management (used for malware analysis). Worth reading their abstraction layer for API design.
 - *KubeVirt v1.8 HAL plugin model* — recent thinking on multi-hypervisor abstraction; clean separation of generic lifecycle from per-backend transport.
-- *microsandbox API* — the cross-platform Rust+SDK delivery model that informs how vm-harness ships (Nim library + CLI + nearly-identical Rust port).
+- *microsandbox API* — the cross-platform SDK delivery model that informs how vm-harness ships: one Nim library and CLI, with other languages binding to the CLI (§8).
 - *cirruslabs/packer-plugin-tart* and *cirruslabs/packer-plugin-utm* — Go reference implementations for driving Tart and UTM. We won't depend on them but can study the patterns.
 - *vagrant_utm* (Ruby+AppleScript) — proves UTM CLI automation is feasible; reference for `utmctl` invocation patterns.
 
@@ -172,7 +174,10 @@ Budgets are *targets*, not hard SLAs. Backends that miss budget by >50% must eit
 1. Reduce overhead (e.g., keep base-clean VM pre-warmed instead of cold-cloning each time).
 2. Implement *gate-grouping* — a consumer-side optimization where pure-logic gates (no host mutations) run back-to-back in one clone, and only destructive gates trigger a fresh revert.
 
-The performance contract is verified by a regression test (`e2e_vm_harness_per_gate_revert_meets_m0_budget`) that records median wall-clock per backend and flags violations.
+No single regression test enforces this table across every backend. The
+libvirt budget is checked by `tests/e2e/t_libvirt_live_snapshot_restore.nim`,
+and the measured numbers behind the Hyper-V and libvirt rows are in
+[`per-backend-notes/`](per-backend-notes/).
 
 ### 3.5 Output envelope
 
@@ -238,35 +243,14 @@ Cleanup *never raises* — `stopAndCleanup` swallows errors and logs them. Every
 - **File transfer**: `scp` over SSH for small payloads; `tart --dir <name>=<host-path>:<guest-path>` for larger shared folders.
 - **Provisioning**: `tart pull <golden-image-ref>` (cirruslabs golden or our own AH-branded golden). Stored in `~/.tart/cache/OCIs/`.
 - **Revert**: `tart stop <ephemeral> && tart delete <ephemeral> && tart clone <golden-image-ref> <ephemeral> && tart run --no-graphics <ephemeral> &` + SSH-ready poll. Tart's clone is CoW APFS — fast but not snapshot-fast.
-- **Auth**: cirruslabs golden defaults to admin/admin password SSH. AH-branded goldens (M15-M17) may flip to key-only.
+- **Auth**: cirruslabs golden defaults to admin/admin password SSH.
 - **Cleanup**: `tart stop <ephemeral> && tart delete <ephemeral>` in `finally`. Stale-ephemeral cleanup at session start: `tart list` and delete any `repro-vm-*` left from prior aborted runs.
 
-#### 4.3.1 Running-state snapshots (planned, future milestone)
+#### 4.3.1 Running-state snapshots
 
-`tart suspend <vm>` writes the running VM's RAM + CPU state to disk
-and exits. A subsequent `tart run <vm>` resumes from that state in
-<1s instead of paying the 30–60s cold-boot cost. For test harnesses
-that re-clone many ephemeral VMs per session, this is a major
-latency win.
-
-The harness should expose this through:
-
-- `provisionRunning(VmName) -> RunningSnapshot` — pull/clone a golden,
-  boot it, wait for SSH-ready, then `tart suspend`. Output is a
-  named snapshot that clones in <1s.
-- `revertToRunning(Ephemeral, RunningSnapshot)` — clone from the
-  running snapshot + `tart run`. The ephemeral comes up SSH-ready
-  with no boot wait.
-
-This pairs with the four-layer image taxonomy the image templates publish:
-every layer is published in two flavors (`<name>` and
-`<name>-running`); vm-harness consumes whichever the caller asks for.
-
-The same shape applies to Tart's Linux-ARM golden and the M15 Rust
-port. UTM, libvirt/QEMU support equivalent operations via different
-primitives; the trait-level method names should be backend-agnostic.
-
-Tracked as a future vm-harness milestone (not yet numbered).
+The Tart backend does not implement `snapshotRunning`, so every Tart revert is
+a clone plus a cold boot. The backends that do implement it are Hyper-V,
+libvirt and Incus (and the `noop` and `mock` fixtures).
 
 ### 4.4 UTM (HostPlatform: hpMacosArm; Guests: goWindows ARM64)
 
@@ -283,8 +267,8 @@ The direct QEMU Windows ARM backend starts swtpm before launching the guest.
 Wait for its control socket for up to 30 seconds, using a monotonic deadline;
 report an early child exit immediately. This allows a live helper to start
 while the macOS host serves other fleet jobs. The former three-second bound
-repeatedly expired under load, as recorded in Runner-Fleet-M3-ARM-Wave MA8
-and reproduced in Gosti CI at `33aa89dc` on 2026-09-29.
+repeatedly expired under load; Gosti CI reproduced that at `33aa89dc` on
+2026-09-29.
 
 If startup fails, terminate and reap the helper and remove its socket before
 returning the error. The caller receives a PID only after successful startup,
@@ -461,25 +445,23 @@ the corresponding production installer on each OS, then checks help output
 and a real daemon started through the compatibility name.
 Behaviour does not depend on the invoked name: argv, exit codes, output, and
 the serve daemon's worker re-exec (it runs the RESOLVED executable) are
-identical. Deliberately NOT renamed by this step (step 3, below, has since
-added `GOSTI_*` names and `gosti/` state dirs with fallback), because each is a
-compatibility surface whose consumers have to move first (see the GOSTI1
-consumer migration plan in reprobuild-specs): the `VMH_*` environment
-variables, the on-disk state directories (`…/vm-harness/crud`,
-`…/vm-harness/ephemeral-labels`, `/var/lib/vm-harness-serve`), the
-`share/vm-harness/` payload path, and the `vm_harness` Nim package/module
-name. Gated by `t_gosti_command_names`.
+identical. Gated by `t_gosti_command_names`.
 
-GOSTI1b step 6 has since renamed the message prefixes: diagnostics are
-`gosti: …` and the serve daemon logs `[gosti serve] …`. No consumer keys on the
+Some surfaces keep the old name because their consumers have to move first.
+The environment variables and state directories accept both names (§6.0.1).
+The `share/vm-harness/` payload path and the `vm_harness` Nim package and
+module name are unchanged.
+
+Diagnostics are prefixed `gosti: …` and the serve daemon logs
+`[gosti serve] …`. No consumer keys on the
 prefix: the GARM provider identifies an old daemon by the substrings
 `Unknown flag: '--label'` / `unknown subcommand '<verb>'`, and the enrollment
 harvest greps `identity keyId`, so both prefixes are accepted wherever text is
 matched. The `vm-harness` command name stays as a symlink indefinitely.
 
-#### 6.0.1 Environment variables and state directories (GOSTI1b step 3)
+#### 6.0.1 Environment variables and state directories
 
-Every setting the binary reads from the environment now has a canonical
+Every setting the binary reads from the environment has a canonical
 `GOSTI_<X>` name. The legacy name keeps working: `VMH_<X>` for most settings,
 `VM_HARNESS_<X>` for the per-backend state dirs (`VM_HARNESS_TART_STATE_DIR`
 → `GOSTI_TART_STATE_DIR`). The canonical name is read first; if it is SET it
@@ -495,10 +477,9 @@ an EXISTING `…/vm-harness/…`; nothing is ever moved, because a running daemo
 may hold the old one. A fresh host with neither gets `gosti/`. Independent
 processes resolve the same way, so they still agree without probing.
 
-Unchanged by step 3: the guest-recipe shell seams (`VMH_RUNNER_*`,
-`VMH_BUILD_DIR`; libvirt now passes `GOSTI_BUILD_DIR` alongside), the
-PowerShell output markers (`VMH_GONE`, `VMH_DISK_GROWN=`, …) and the help/error
-texts, which still name `$VMH_*` (step 6).
+Still spelled the old way: the guest-recipe shell seams (`VMH_RUNNER_*`,
+`VMH_BUILD_DIR`; libvirt passes `GOSTI_BUILD_DIR` alongside) and the
+PowerShell output markers (`VMH_GONE`, `VMH_DISK_GROWN=`, …).
 
 The examples below use `vm-harness`; `gosti` is interchangeable.
 
@@ -599,26 +580,16 @@ vm-harness shell --backend tart --baseline base-clean
 vm-harness run --backend tart --baseline base-clean ... -- <cmd>
 ```
 
-## 8. Rust binding (ah-vm: thin subprocess adapter)
+## 8. Language bindings (thin subprocess adapters)
 
-> [!IMPORTANT]
-> **Superseded.** Earlier revisions of this section specified a *nearly
-> mechanical Rust port* — a parallel `ah-vm-harness` crate that re-implemented
-> `VmBackend` and every backend (`hyperv.rs`/`wsl.rs`/`tart.rs`/`utm.rs`/
-> `libvirt.rs`) and was held to a byte-identical-artifact `diff -r` gate. That
-> approach is **retired** by the campaign decision in
-> `reprobuild-specs/Sovereign-CI-Fleet-And-GOSTI-Substrate.milestones.org`
-> (milestone **GOSTI2**): there is exactly ONE implementation of the backends —
-> this Nim library (`gosti`) — and NO parallel Rust backend code. The paragraphs
-> below describe the binding that replaces the port.
-
-The Rust side is a **thin subprocess binding**, not a port. `ah-vm` already
-defines a `VmOrchestrator` trait for its own use; GOSTI2 adds a
-`GostiOrchestrator` that *implements that existing trait* by driving `gosti`:
+There is exactly one implementation of the backends: this Nim library. A
+binding in another language carries no backend code. The Rust binding in
+agent-harbor's `ah-vm` crate is the reference case: its `GostiOrchestrator`
+implements `ah-vm`'s existing `VmOrchestrator` trait by driving `gosti`:
 
 - **local** — invoke the `vm-harness` CLI's generic-CRUD subcommands
   (`vm-harness crud <verb> … `, §6), or
-- **remote** — `POST /v1/exec` against a `vm-harness serve` daemon (§14 / the
+- **remote** — `POST /v1/exec` against a `vm-harness serve` daemon ([`serve.md`](serve.md), the
   serve protocol),
 
 and in both cases **parse the CRUD `--json` envelope** documented below. The
@@ -630,7 +601,7 @@ started, execed, snapshotted, and destroyed.
 ### 8.1 The CRUD wire contract (canonical)
 
 This is the contract the binding parses; it is established by the gosti
-`crud` façade (`src/vm_harness/crud.nim`, GOSTI2 PR-1) and is the frozen
+`crud` façade (`src/vm_harness/crud.nim`) and is the frozen
 consumer-facing spec. Do not change a key name or an exit code without
 versioning it here.
 
@@ -727,28 +698,19 @@ instance. The façade adapts accordingly:
 See `crud.nim`'s module header for the full table. §8.6 covers how the
 instance registry persists across invocations.
 
-### 8.3 Crate layout
+### 8.3 What a binding depends on
 
-```
-agent-harbor/…/crates/ah-vm/
-└── src/
-    └── gosti.rs      # GostiOrchestrator: impl VmOrchestrator by shelling out to
-                      #   `vm-harness crud …` (local) or POST /v1/exec (remote),
-                      #   parsing the §8.1 envelope. No backend code.
-```
-
-There is no `ah-vm-harness` crate and no `third-party/vm-harness` submodule of
-backend sources: the binding depends on the `vm-harness` *binary* (built from
-this repo) at runtime, discovered on `PATH` or by an explicit path/endpoint.
+A binding depends on the `gosti` *binary* (built from this repo) at runtime,
+discovered on `PATH` or by an explicit path or endpoint. It vendors no backend
+sources and no guest scripts.
 
 ### 8.4 Correctness gate
 
-The binding's acceptance test is *contract conformance*, not artifact diffing:
-drive every `VmOrchestrator` method through `GostiOrchestrator` against a gosti
-CLI configured with the `noop` backend and assert the parsed `VmInfo` /
-`SshEndpoint` / error mapping — the Rust mirror of gosti's own
-`tests/unit/t_crud_facade.nim`. Because there is one backend implementation, the
-old byte-identical `diff -r` gate is moot and is removed.
+A binding's acceptance test is *contract conformance*: drive every method
+through the binding against a gosti CLI configured with the `noop` or `mock`
+backend, and assert the parsed `VmInfo` / `SshEndpoint` / error mapping. On
+this side the contract is pinned by `tests/unit/t_crud_facade.nim`,
+`tests/e2e/t_crud_store_roundtrip.nim` and `tests/e2e/t_crud_serve_parity.nim`.
 
 ### 8.5 Consumed by
 
@@ -850,7 +812,7 @@ expect this and retry; the ah-vm binding serializes calls per VM. `list_vms` tak
 lock; it reads the atomically-replaced records.
 
 **The file-backed mock, and the fixture for consumers.** The `mock` backend
-(`--backend mock`) is the deterministic `MockBackend` (§9, PR-2). When a
+(`--backend mock`) is the deterministic `MockBackend` (§9). When a
 crud-store call drives it, its whole fleet (templates, instances, in-memory
 guest filesystems, snapshots) is loaded from and saved to
 `<store>/mock/.fleet.json`, under a backend-wide lock. So a multi-invocation
@@ -893,8 +855,6 @@ reverse, with byte-identical envelopes.
 
 ## 9. Test methodology
 
-This is the most important section for sub-agents executing the implementation campaign.
-
 ### 9.1 Mock policy: almost nothing
 
 **Default position: test against real backends.** vm-harness exists to coordinate real VMs; testing it against mocked VMs would just verify that the mocks are wired up correctly, not that the backends work.
@@ -902,7 +862,7 @@ This is the most important section for sub-agents executing the implementation c
 What's allowed to be mocked:
 
 - *Pure-logic helpers* that take a string and return a struct (e.g., parsing `virsh list --all` output into a domain list). Unit tests here are fine; record real output once, replay it.
-- *Time*, in performance-budget regression tests. Deterministic-clock injection for testing the `e2e_vm_harness_per_gate_revert_meets_m0_budget` regression assertions.
+- *Time*, in performance-budget regression tests, through deterministic-clock injection.
 
 What is NOT allowed to be mocked:
 
@@ -911,221 +871,109 @@ What is NOT allowed to be mocked:
 - File I/O. The output envelope is verified by *reading the actual files vm-harness wrote*, not by mocking the writer.
 - SSH/PSDirect transports. Tests run actual `ssh` against actual `sshd` in the guest, or actual `Invoke-Command -VMName` against actual Hyper-V.
 
-The one exception to "no backend mocks" is `NoopBackend` (M0 deliverable), which is a *deliberate test fixture* that implements the trait but does nothing. It exists for testing the dispatcher, output envelope, and lifecycle orchestration in isolation from any real backend. Tests that use `NoopBackend` must be named and described to make clear they're testing the harness scaffolding, not backend behavior (e.g., `e2e_vm_harness_finally_cleanup_on_panic`).
+The exceptions to "no backend mocks" are two *deliberate test fixtures*. `NoopBackend` implements the trait but does nothing; it exists for testing the dispatcher, output envelope, and lifecycle orchestration in isolation from any real backend. `MockBackend` is the deterministic, file-backed fixture behind the crud store (§8.6). Tests that use either must be named and described to make clear they're testing the harness scaffolding or the contract, not backend behavior (e.g., `tests/e2e/t_vm_harness_finally_cleanup_on_panic.nim`).
 
 ### 9.2 Test types
 
-| Prefix | Type | What it tests | Where it runs |
-|---|---|---|---|
-| `unit_` | Unit test | Pure-logic helpers (parsers, struct builders, path math). | Any host, any CI. |
-| `integration_` | Backend integration | Single backend + single primitive. E.g., "TartBackend::clone produces a clonable VM." | Host with that backend's tool installed. |
-| `e2e_` | End-to-end | Full session lifecycle through one backend with at least one gate invocation. | Host with backend tool installed; may require real network for image pulls. |
-| `cross_` | Cross-backend | Same gate run against multiple backends; asserts behavioral parity. | Host with all relevant backends; only Mac+Windows hosts have full coverage. |
-| `verify_` | Verification script | Property-based golden-image verification. | Wherever the golden runs. |
-| `just <target>` | Justfile target | Aggregates other tests into a runnable bundle. | Recorded as test name in milestone verifications when the Justfile target is the primary entry point. |
+Tests live in three directories, and every file in them is a `t_*.nim`
+program:
+
+| Directory | What it tests |
+|---|---|
+| `tests/unit/` | Pure-logic helpers (parsers, argv builders, path math) and contracts driven in-process through `noop` or `mock`. |
+| `tests/integration/` | One backend and one primitive, e.g. `t_tart_lifecycle.nim`, `t_libvirt_backend.nim`. |
+| `tests/e2e/` | A full session or a whole CLI process: one backend from provision to cleanup (`t_vm_harness_*_smoke.nim`), the serve daemon, or the crud store across separate invocations. |
 
 ### 9.3 CI layering
 
-Not every test runs on every host. Layers:
+Every test file is registered in `scripts/test-catalog.txt`, with a tier and a
+platform (`all`, `posix` or `linux`). `scripts/test_catalog.nim` refuses an
+unregistered `t_*.nim`, so a new test cannot silently drop out of every run.
 
-1. **Universal layer**: `unit_*` tests + `integration_noop_*` tests. Run on every CI host regardless of available backends.
-2. **Per-host backend layer**:
-   - Windows runner: `integration_hyperv_*`, `integration_wsl_*`, `e2e_*_on_hyperv`, `e2e_*_on_wsl`.
-   - Linux runner: `integration_libvirt_*`, `e2e_*_on_libvirt`.
-   - macOS-Apple-Silicon runner: `integration_tart_*`, `integration_utm_*`, `e2e_*_on_tart`, `e2e_*_on_utm`.
-3. **Cross-backend layer** (most expensive): `cross_*` tests that compare results across backends. Only runs on hosts with multiple backends available — currently macOS hosts (Tart + UTM) and Windows hosts (Hyper-V + WSL).
-
-The matrix is hand-mapped in the Justfile + CI config; no magic auto-detection.
+1. **Universal layer** (`test` tier): host-independent tests. `just test` runs
+   them, and so does `repro test` through `repro.nim`. They need no hypervisor.
+2. **Host layer** (`host` tier): gates that drive a real hypervisor. `just
+   test-host` runs them, and each keeps an explicit platform and prerequisite
+   guard. A missing prerequisite is reported as a skip and is never counted as
+   coverage.
+3. **Specialized** (`specialized` tier): gates with their own prerequisites,
+   run by neither entry point.
 
 ### 9.4 What an integration test looks like
 
-Concrete example for `integration_tart_clone_produces_running_vm`:
-
-```nim
-suite "TartBackend integration":
-  test "clone from cirruslabs golden produces running VM":
-    # NO MOCKS. Requires: Mac host, pkgs.tart installed, network access.
-    let backend = newTartBackend()
-    requireBackendAvailable(backend)
-    
-    let baselineName = "test-clone-baseline-" & $getpid()
-    backend.provisionBaseline(BaselineSpec(
-      name: baselineName,
-      sourceImage: "ghcr.io/cirruslabs/macos-tahoe-base:latest",
-      cpus: 2, memoryMB: 4096, diskGB: 50))
-    
-    defer:
-      backend.removeBaseline(baselineName)  # cleanup
-    
-    let vm = backend.revertToBaseline(baselineName)
-    
-    defer:
-      backend.stopAndCleanup(vm, deleteVm = true)
-    
-    # The actual assertion: SSH actually works.
-    let r = backend.execInGuest(vm,
-      env = initTable[string, string](),
-      cmd = @["hostname"])
-    check r.exitCode == 0
-    check r.stdout.strip.len > 0
-```
-
-Note: real `tart clone`, real `tart run`, real `ssh`. No mocks anywhere. The test takes ~60-90 seconds wall-clock and is acceptable as a per-PR integration test.
+`tests/integration/t_tart_lifecycle.nim` is the shape: create a real backend,
+require it to be available or skip, provision a baseline, revert, exec over
+real SSH, and clean up in `defer`/`finally`. Real `tart clone`, real `tart
+run`, real `ssh`.
 
 ### 9.5 What an e2e test looks like
 
-`e2e_vm_harness_phase5_macos_gates_on_tart` (the M10 verification):
-
-```nim
-suite "Phase-5 macOS gates on Tart end-to-end":
-  test "M5-M9 gates run back-to-back with revert-between, all PASS":
-    # NO MOCKS. Requires: Mac host, pkgs.tart, repro binary built for Mac.
-    let backend = newTartBackend()
-    let baseline = "phase5-test-baseline"
-    backend.provisionBaseline(BaselineSpec(name: baseline, ...))
-    
-    let gates = @[
-      ("fs-systemfile",   "REPRO_PHASE5_MACOS_FS_VM"),
-      ("fs-userfile",     "REPRO_PHASE5_MACOS_FS_VM"),
-      ("env-userpath",    "REPRO_PHASE5_MACOS_ENV_VM"),
-      # ...
-    ]
-    
-    var revertTimings: seq[int]
-    for (gateName, envVar) in gates:
-      let revertStart = epochTime()
-      let vm = backend.revertToBaseline(baseline)
-      revertTimings.add(int((epochTime() - revertStart) * 1000))
-      
-      defer:
-        backend.stopAndCleanup(vm)
-      
-      backend.copyToGuest(vm, reproBinaryPath, "/tmp/repro")
-      let r = backend.execInGuest(vm,
-        env = {envVar: "1"}.toTable,
-        cmd = @["/tmp/repro", "test", gateName])
-      check r.exitCode == 0
-    
-    # Performance contract regression: median revert wall-clock under budget.
-    revertTimings.sort
-    let median = revertTimings[revertTimings.len div 2]
-    check median <= 30_000  # 30s budget per §3.4
-```
+`tests/e2e/t_vm_harness_tart_macos_smoke.nim` and its siblings run one backend
+through the whole session lifecycle of §3.3. The serve gates
+(`t_vmharness_serve_*.nim`) start a real daemon and drive it over HTTP, and the
+crud gates (§8.6) run each verb as a separate CLI process.
 
 ### 9.6 Failure-mode tests
 
-Specific tests for the failure modes that matter:
-
-- `e2e_vm_harness_finally_cleanup_on_panic`: gate throws mid-run; verify stale VM is cleaned up.
-- `integration_<backend>_handles_stale_ephemeral_from_prior_run`: pre-create a stale ephemeral; verify the backend cleans it up at session start.
-- `integration_<backend>_timeout_on_hung_guest`: exec a command that hangs; verify the backend respects timeoutSec and recovers.
-- `integration_<backend>_ssh_unreachable_recovery`: guest IP not reachable; verify clear error message, not infinite poll.
+`tests/e2e/t_vm_harness_finally_cleanup_on_panic.nim` throws mid-run and
+verifies the VM is still cleaned up. Backend-specific failure modes (stale
+ephemerals, hung guests, unreachable SSH) are covered in each backend's own
+integration file.
 
 ## 10. Repository layout
 
 ```
-metacraft-labs/vm-harness/
-├── README.md
-├── LICENSE
-├── flake.nix                        # dev shell with Nim + tart + utmctl + virsh
-├── vm_harness.nimble                # Nimble package manifest
+gosti/
+├── README.md, AGENTS.md, LICENSE, NOTICE, REUSE.toml
+├── flake.nix, Justfile         # dev shell, build and test entry points
+├── repro.nim, repro.lock       # the reprobuild build and test graph
+├── vm_harness.nimble
 ├── src/
-│   ├── vm_harness.nim               # main module
+│   ├── vm_harness.nim          # main module
 │   └── vm_harness/
-│       ├── types.nim                # VmBackend, VmHandle, ExecResult, etc.
-│       ├── output.nim               # envelope writer
-│       ├── auto.nim                 # backend dispatch
-│       ├── cli.nim                  # CLI binary entry point
-│       ├── backends/
-│       │   ├── noop.nim             # test-only fixture
-│       │   ├── hyperv.nim
-│       │   ├── wsl.nim
-│       │   ├── tart.nim
-│       │   ├── utm.nim
-│       │   └── libvirt.nim
-│       └── guest_scripts.nim        # staticRead of guest-scripts/ for embedding
-├── guest-scripts/
-│   ├── posix.sh
-│   ├── posix-shim-template.sh
-│   ├── windows.ps1
-│   └── windows-shim-template.ps1
-├── guest-recipes/
-│   └── windows-arm-base/
-│       ├── autounattend.xml
-│       └── README.md
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   │   ├── noop_lifecycle_test.nim
-│   │   ├── tart_test.nim         # macOS-only
-│   │   ├── utm_test.nim          # macOS-only
-│   │   ├── hyperv_test.nim       # Windows-only
-│   │   ├── wsl_test.nim          # Windows-only
-│   │   └── libvirt_test.nim      # Linux-only
-│   └── e2e/
-│       └── full_session_smoke.nim
-├── golden-outputs/                  # reference artifacts for Rust port cross-check
-│   ├── hyperv-m69-feature-capability/
-│   ├── wsl-m69-passwd-user/
-│   └── ...
+│       ├── types.nim           # VmBackend, VmHandle, ExecResult, …
+│       ├── cli.nim             # CLI entry point
+│       ├── crud.nim, crud_store.nim   # §8
+│       ├── backends/           # hyperv, incus, libvirt, lima, mock, noop,
+│       │                       #   qemu_boot, qemu_windows_arm, tart, utm, wsl
+│       ├── serve/              # the serve daemon (docs/contributors/serve.md)
+│       ├── repro/              # the reprobuild adapter (§13)
+│       └── …                   # output envelope, pools, serial, firmware, …
+├── guest-scripts/              # posix.sh, windows.ps1 (§5)
+├── guest-recipes/              # golden-image recipes
+├── repro_support/              # reprobuild tool recipes
+├── nix/                        # Nix-built test guests
+├── golden-outputs/             # recorded cross-backend gate outputs
+├── scripts/                    # test runner and catalog, installers
+├── tests/{unit,integration,e2e}/
+├── tools/                      # benchmarks and Hyper-V pool scripts
 └── docs/
-    ├── README.md
-    ├── design.md                    # mirror of this document, kept in repo
-    └── per-backend-notes/
-        ├── tart.md
-        ├── utm.md
-        ├── hyperv.md
-        └── ...
+    ├── contributors/           # this document and the other contributor notes
+    └── site/                   # the published user guide
 ```
 
-## 11. Implementation sequence (sub-agent build order)
+## 11. Implementation choices
 
-The milestone dependency graph is tracked outside this repository. The implementation sequence:
+1. **In-guest script delivery**: the scripts in `guest-scripts/` are embedded
+   with `staticRead` at compile time (`src/vm_harness/guest_scripts.nim`).
+2. **Logging**: human-readable on stderr by default. `--log-format json` emits
+   structured events, also on stderr, so stdout stays reserved for command
+   output.
+3. **Sync API**: the Nim library's core API is synchronous, matching the shape
+   of `osproc`.
 
-1. **M0 — scaffold + NoopBackend + envelope writer + CLI shell.** Prerequisite: a fresh `metacraft-labs/vm-harness` repo. Sub-agent reads this doc + M0 deliverables, builds the trait, NoopBackend, envelope writer, CLI dispatcher. Tests: `unit_*` + `integration_noop_*`. Verification: `e2e_vm_harness_smoke` PASSes with NoopBackend.
+## 12. References
 
-2. **M1 — refactor existing Hyper-V + WSL backends.** Prerequisite: M0 + Windows host with existing reprobuild PowerShell harnesses. Sub-agent wraps `run-hyperv-m69-system.ps1` and `run-wsl-m69-posix.ps1` behind the trait. Tests: existing M69 gates pass via `vm-harness run --backend hyperv/wsl ...`.
-
-3. **M2 — Tart backend.** Prerequisite: M0 + Mac host + `pkgs.tart` + network for image pull. Tests: `integration_tart_*` + `e2e_*_on_tart` (against cirruslabs golden, no AH-specific setup).
-
-4. **M3 — UTM backend.** Prerequisite: M0 + Mac host + UTM installed + Windows ARM ISO. Bigger lift than M2 because the autounattend.xml + ISO assembly is new code; the existing Hyper-V autounattend can be the model.
-
-5. **M4 — Phase-5 gate scaffolding.** Independent of M0–M3; can land in parallel. Test files compile with `nim check`; non-destructive halves PASS without any VM.
-
-6. **M5–M9 — driver validation.** Each requires M2 + M4 + the relevant macOS driver code in reprobuild. Sub-agents can parallelize M5/M6/M7/M8/M9 since they're disjoint drivers.
-
-7. **M10 — cross-backend integration.** Requires M1 + M2 + M3 + M5–M9. This milestone records golden output artifacts for the M15 Rust port's correctness gate.
-
-8. **M15 — Rust port.** Reads the recorded artifacts from M10 as test inputs. Sub-agent translates Nim trait → Rust trait, ports each backend, runs `diff -r` against M10 outputs. Hard CI gate: byte-identical artifacts.
-
-9. **M11–M14, M16–M26** — proceed per the milestones file dependency graph.
-
-For each milestone, the sub-agent's session starts with reading the milestone's `Deliverables`, then this design doc's relevant section, then implementing. Session ends with updating the milestone's `Verification` test statuses and `last_updated`.
-
-## 12. Implementation choices for M0 (no deferred questions)
-
-Per the campaign's autonomous-execution policy, this section commits the answers up front rather than punting to sub-agent discretion. Sub-agents implement as specified; deviations require updating this doc.
-
-1. **In-guest script delivery**: vendor via `staticRead` (compile-time embed). Simpler distribution; the Rust port (M17) does the same via `include_str!`. Either implementation reads the canonical scripts from `vm-harness/guest-scripts/` at build time.
-
-2. **CLI binary distribution**: both Nimble package (`nimble install vm_harness` for Nim consumers / dev work) *and* pre-built binaries on GitHub Releases (for users without a Nim toolchain — primarily Mac users who just want `vm-harness` to run their Tart guest). Single repo, two distribution channels via CI.
-
-3. **Logging strategy**: both. Human-readable on stderr by default (color when isatty, plain when piped). Structured JSON via `--log-format json` flag (events go to stderr too; stdout reserved for command output). Library API exposes a `LogSink` trait so consumers can route however they want.
-
-4. **Async vs sync**: synchronous core API in the Nim library (matches Nim's `osproc` shape, simpler error handling). Backends that need parallel ops use threads via Nim's `std/threadpool`, *not* `asyncdispatch` (`asyncdispatch` is heavier than threads for this use case and adds dependency surface). The Rust port (M17) uses `tokio` since AH is already tokio-based.
-
-## 13. References
-
-- `metacraft/reprobuild/tools/hyperv-m69-system/README.md` — reference for the Hyper-V harness pattern wrapped by M1.
-- `metacraft/reprobuild/tools/wsl-m69-posix/README.md` — reference for the WSL harness pattern wrapped by M1.
-- `metacraft/reprobuild/tests/e2e/m69/t_e2e_repro_infra_passwd_user_safe_destroy.nim` — reference gate-file shape that Phase-5 gates (M4–M9) mirror.
+- [`reprobuild/tools/hyperv-m69-system/README.md`](https://github.com/metacraft-labs/reprobuild/blob/dev/tools/hyperv-m69-system/README.md) — the Hyper-V harness pattern the Hyper-V backend wraps.
+- [`reprobuild/tools/wsl-m69-posix/README.md`](https://github.com/metacraft-labs/reprobuild/blob/dev/tools/wsl-m69-posix/README.md) — the WSL harness pattern the WSL backend wraps.
+- [`reprobuild/tests/e2e/m69/t_e2e_repro_infra_passwd_user_safe_destroy.nim`](https://github.com/metacraft-labs/reprobuild/blob/dev/tests/e2e/m69/t_e2e_repro_infra_passwd_user_safe_destroy.nim) — the gate-file shape reprobuild's VM gates follow.
 - [libvirt domain XML reference](https://libvirt.org/formatdomain.html) — for libvirt backend.
 - [Cuckoo Sandbox Machinery docs](https://cuckoo.readthedocs.io/) — abstract base class reference design.
 - [cirruslabs/packer-plugin-tart](https://github.com/cirruslabs/packer-plugin-tart) — Tart driving reference.
 - [naveenrajm7/packer-plugin-utm](https://github.com/naveenrajm7/packer-plugin-utm) — UTM driving reference.
 - [naveenrajm7/vagrant_utm](https://github.com/naveenrajm7/vagrant_utm) — utmctl invocation patterns.
 
-## 14. Reprobuild adapter
+## 13. Reprobuild adapter
 
 vm-harness is usable on its own — as the CLI of §6 and the Nim library of §7.
 It is *also* a source of build-graph edges: reprobuild drives guest lifecycle
@@ -1145,24 +993,24 @@ defaults against it. The four things worth restating before the table:
     on the *same* host may differ, because the action consumes implicit state
     (wall clock, network, randomness, live guest state) that the declared
     inputs do not capture.
-  * **Retention vocabulary (§2.2).** A `volatile` edge MUST carry a
+  * **Retention vocabulary.** A `volatile` edge MUST carry a
     `cacheRetention` clause; one without it is an error. The vocabulary is
     `max-age = N`, `no-cache`, `no-store`, `this-build`, and
-    `stale-while-revalidate = N`. Non-volatile classes carry no clause — §1's
-    table calls that "cache forever", and for `host-bound`, "cache forever, per
+    `stale-while-revalidate = N`. Non-volatile classes carry no clause — the model
+    calls that "cache forever", and for `host-bound`, "cache forever, per
     host".
-  * **Composition (§1.4).** A composite edge inherits the **strictest** class
+  * **Composition.** A composite edge inherits the **strictest** class
     on its path, under `strong < weak < host-bound < volatile`. Everything
     below is each edge's *own* declaration; an edge whose upstream is stricter
     is lifted to the upstream's class. A cold snapshot of a container the same
     graph just launched is `host-bound` by declaration and `volatile` in the
     graph.
-  * **Cross-machine substitution (§3).** `host-bound` and `volatile` entries
+  * **Cross-machine substitution.** `host-bound` and `volatile` entries
     are never substituted across machines. Reusing another machine's baseline
     or snapshot is an explicit, per-target, logged functional-reproducibility
     opt-in — never the default.
 
-### 14.1 Default class and retention
+### 13.1 Default class and retention
 
 The six resource types are declared in `src/vm_harness/repro/resources.nim`;
 the two running-state operations are `LibvirtBackend.snapshotRunning` and
@@ -1198,7 +1046,7 @@ by name, so a re-reconcile of the same graph on the same host is a hit.
 
 **Why a running-state snapshot is `volatile` and a cold one is not.** It is
 tempting to file both next to each other as `host-bound` — both are "a saved
-state on this host" — but they fail different tests. Apply §1.3's test: pause
+state on this host" — but they fail different tests. Apply the model's volatility test: pause
 the wall clock and the network, and take the same snapshot twice on the same
 host. A cold `--disk-only` snapshot freezes disk state, and two runs against
 the same declared inputs agree; that is `host-bound`. `snapshotRunning`
@@ -1213,7 +1061,7 @@ asserts that the domain is running: a snapshot taken while it is not carries no
 RAM, would look like a success, and would then *boot* on restore — the exact
 cost the primitive exists to remove. Second, **a warm state carries the guest's
 machine name and DHCP lease with it**. That makes it identity-bearing, which is
-strictly stronger than what the class alone forbids: §3 already refuses to
+strictly stronger than what the class alone forbids: the model already refuses to
 substitute the entry onto another machine, but a warm state must also not be
 restored into two domains on the *same* machine, because both would come up
 with one hostname and one lease. A warm pool is therefore N distinct warm
@@ -1231,10 +1079,9 @@ overlay is created above them, so the snapshot stays reusable. It is the
 restored, running domain that is volatile, and it must not outlive the
 invocation that produced it.
 
-### 14.2 The CLI subcommands
+### 13.2 The CLI subcommands
 
-§10.11 asks for the subcommand list in compact table form, so here it is; the
-paragraphs after it are the reasoning, not the reference.
+The table is the reference; the paragraphs after it are the reasoning.
 
 | Subcommand | Class | Retention |
 |---|---|---|
@@ -1266,7 +1113,7 @@ readiness barrier with no output of its own. `snapshot create` is `host-bound`
 cold and `volatile` with `max-age = 86400` under `--running`; `snapshot
 restore` is `volatile`, `this-build`. `baseline export` and `baseline import`
 are `host-bound`: the bundle is a host-bound baseline plus its snapshot tree,
-and carrying one to another machine is exactly §3's logged opt-in.
+and carrying one to another machine is exactly the model's logged cross-machine opt-in.
 `ephemeral-destroy` is `volatile` with `no-store` — a reclaim has no artifact
 worth caching, and a cached "already destroyed" would become a lie the moment
 anything re-created the instance.
@@ -1282,7 +1129,7 @@ would be a category error rather than a conservative default.
 action of a resource whose lifecycle the graph owns, so it belongs to an edge;
 `prune` and `layer` deliberately sweep outside any graph.
 
-### 14.3 Where the typed wrappers live
+### 13.3 Where the typed wrappers live
 
 The wrappers are **reprobuild's, not vm-harness's**. A graph author writes
 `package vm_harness:` from reprobuild's stdlib; vm-harness remains the

@@ -34,7 +34,7 @@ const
   RepoRoot = currentSourcePath().parentDir.parentDir.parentDir
   ResourcesPath = RepoRoot / "src" / "vm_harness" / "repro" / "resources.nim"
   DesignPath = RepoRoot / "docs" / "contributors" / "architecture.md"
-  SectionHeading = "## 14. Reprobuild adapter"
+  SectionHeading = "## 13. Reprobuild adapter"
   # Backend methods, not `resourceType` blocks. Presence-checked only.
   BackendOperations = ["snapshotRunning", "restoreSnapshot"]
 
