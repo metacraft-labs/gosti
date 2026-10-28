@@ -1,8 +1,8 @@
-# vm-harness docs site
+# Gosti docs site
 
-The **vm-harness documentation site**, published at
-<https://metacraft-labs.github.io/vm-harness/>. It renders the Markdown in
-`content/` (migrated from `docs/user-guide/`) through the
+The **Gosti documentation site**, published at
+<https://metacraft-labs.github.io/gosti/>. It renders the Markdown in
+`content/`, the only copy of the user guide, through the
 [isonim-docs](https://github.com/metacraft-labs/isonim-docs) static-site
 framework, themed by the shared
 [Metacraft docs design system](https://github.com/metacraft-labs/codetracer-design-system).
@@ -56,20 +56,19 @@ just test          # SSG smoke + basePath test
 |------|------|
 | `content/index.md` | The landing page (hero + start-here cards + popular articles) |
 | `content/getting_started/`, `guides/`, `reference/` | The three doc sections (order via each page's `order:` front matter + `sectionOrder` in `src/docs_config.nim`) |
-| `src/docs_config.nim` | Site config: title, `basePath` (`/vm-harness`), header/sidebar chrome, section order |
+| `src/docs_config.nim` | Site config: title, `basePath` (`/gosti`), header/sidebar chrome, section order |
 | `src/theme_tokens.nim` | Loads the shared design system (self-contained via the `vmhDocsDesignSystem` define) |
 | `src/{build,dev,ssr,redirects}.nim` | Build/serve entry points |
 | `assets/style.css` | The shared docs stylesheet (theme + WebFlow-parity layout) |
 | `static/` | Fonts + chrome icons |
 | `flake.nix` / `.envrc` | The self-contained dev shell (framework as inputs) |
 
-The source Markdown stays in [`../user-guide/`](../user-guide/); this `site/`
-tree is the rendered consumer.
+`content/` is the source Markdown; edit the user guide there.
 
 ## Hosting
 
 Served at a GitHub **project** Pages subpath, so `src/docs_config.nim` sets
-`basePath = "/vm-harness"` (the framework prefixes every internal root-relative
+`basePath = "/gosti"` (the framework prefixes every internal root-relative
 URL) and `baseUrl` carries the same subpath for canonical/sitemap URLs.
 Deployment is `.github/workflows/docs-pages.yml` (build via this flake → upload
 `public/` → `actions/deploy-pages`).

@@ -34,10 +34,12 @@ top (per the three-tier ownership below). The Rust port is `agent-harbor`
 ## Which guide do you want?
 
 - **To _use_ vm-harness** (drive VMs from the CLI or from your own harness code,
-  set its parameters, author a guest recipe) → read the **user guide** at
-  [`docs/user-guide/README.md`](docs/user-guide/README.md). Start with
-  [Getting started](docs/user-guide/getting-started.md); the parameter contract
-  consumers depend on is the [Parameters catalog](docs/user-guide/parameters.md).
+  set its parameters, author a guest recipe) → read the **user guide**, published at
+  <https://metacraft-labs.github.io/gosti/> from the Markdown in
+  [`docs/site/content/`](docs/site/content/). Start with
+  [Getting started](docs/site/content/getting_started/getting-started.md); the
+  parameter contract consumers depend on is the
+  [Parameters catalog](docs/site/content/reference/parameters.md).
 
 - **To _enhance / develop_ vm-harness itself** → the developing guide follows
   below, and the canonical internal architecture reference is
