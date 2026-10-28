@@ -4,7 +4,7 @@
 document describes the library and CLI as they are built in this tree. It is
 kept true by the code and tests it names. A change that alters what a section
 describes updates that section in the same pull request. How to *use* gosti is
-in the [user guide](https://metacraft-labs.github.io/vm-harness/).
+in the [user guide](https://metacraft-labs.github.io/gosti/).
 
 ## 1. Overview
 
