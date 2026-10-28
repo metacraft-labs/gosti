@@ -958,3 +958,45 @@ suite "Windows goldens ship no Defender exclusion that outlived its directory":
     check gateAt > 0
     check resetBaseAt > 0
     check gateAt < resetBaseAt
+
+suite "the Hyper-V runner golden's offline check reads the disk it verifies":
+  # win-ci-bare-001, 2026-10-27 20:54:31Z: the check refused a good build one
+  # second after Mount-VHD, reporting all six required files missing. The
+  # Windows volume had not surfaced with a drive letter yet, so the root it
+  # tested was a bare ':' and every Test-Path was against ':\...'. The next
+  # tick published the identical build. These gates hold the shape of the fix.
+  proc verifySection(): string =
+    let code = readRecipe("windows-x64-base",
+      "build-hyperv-runner-golden.ps1").codeOnly()
+    let start = code.find("Mount-VHD -Path $tmp -ReadOnly")
+    let stop = code.find("Dismount-VHD -Path $tmp", start)
+    check start > 0
+    check stop > start
+    code[start ..< stop]
+
+  test "the volume lookup is retried until a deadline, not tried once":
+    let s = verifySection()
+    s.mustContain("$deadline", "offline verification")
+    s.mustContain("Start-Sleep", "offline verification")
+    let loops = s.codeLinesWith("while (-not $r)")
+    checkpoint "lines polling for the Windows root: " & $loops.len
+    check loops.len == 1
+
+  test "an unreadable disk is refused as unreadable, before any file check":
+    let s = verifySection()
+    let refuse = s.find("could not locate the Windows volume")
+    let firstCheck = s.find("foreach ($must in")
+    checkpoint "refusal at " & $refuse & ", first file check at " & $firstCheck
+    check refuse > 0
+    check firstCheck > refuse
+    let refusals = s.codeLinesWith("could not locate the Windows volume")
+    check refusals.len == 1
+    for line in refusals:
+      line.mustContain("throw ", "unreadable-disk refusal")
+
+  test "the root is never built from a volume that may have no letter":
+    # The old fallback did `$r = "$($win.DriveLetter):"` on whatever
+    # `$part | Get-Volume` returned, letter or not.
+    let s = verifySection()
+    check s.codeLinesWith("$r = \"$($win.DriveLetter):\"").len == 0
+    s.mustContain("ntoskrnl.exe", "offline verification root probe")
