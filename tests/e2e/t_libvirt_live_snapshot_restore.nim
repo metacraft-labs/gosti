@@ -25,10 +25,10 @@
 ##       ratio, and the ratio is the claim.
 ##
 ## THRESHOLDS, and where they come from. `p50(restore) <= 10 s` is the
-## pre-existing libvirt per-revert budget in `docs/design.md` §3.4. The
+## pre-existing libvirt per-revert budget in `docs/contributors/architecture.md` §3.4. The
 ## `>= 4x faster than cold boot` ratio is DERIVED from Hyper-V's measured
 ## 36 s boot / 7.2 s restore+resume on the same Windows 11 golden
-## (`docs/per-backend-notes/hyperv-snapshot-benchmarks.md`), discounted
+## (`docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md`), discounted
 ## from 5.0x to 4x to absorb qcow2-vs-VHDX and host differences. Hyper-V is
 ## the ANALOGY that motivates this milestone, not a measurement of libvirt;
 ## this test is what turns it into one.
@@ -63,7 +63,7 @@
 ##   * Linux   — `/proc/sys/kernel/random/boot_id`, regenerated per boot.
 ##   * Windows — `(Get-CimInstance Win32_OperatingSystem).LastBootUpTime`,
 ##     the substitution named in
-##     `docs/per-backend-notes/libvirt-snapshot-benchmarks.md`, since the
+##     `docs/contributors/per-backend-notes/libvirt-snapshot-benchmarks.md`, since the
 ##     WR0 headline has to be taken on the real Windows golden and Windows
 ##     has no boot id.
 ##
@@ -98,7 +98,7 @@ if domName.len == 0:
        "domain; it does not create one, because provisioning a guest on a " &
        "shared runner host is an operator act. See the header for the full " &
        "variable list and " &
-       "docs/per-backend-notes/libvirt-snapshot-benchmarks.md for the " &
+       "docs/contributors/per-backend-notes/libvirt-snapshot-benchmarks.md for the " &
        "maintenance-window procedure."
   quit(0)
 
@@ -369,7 +369,7 @@ suite "t_libvirt_live_snapshot_restore":
     echo "  cold restore+boot ms:  ", coldMs, "  p50=", p50(coldMs)
     echo "  ratio (cold/warm): ",
          (if p50(warmMs) > 0: p50(coldMs).float / p50(warmMs).float else: 0.0)
-    # Budget: docs/design.md §3.4, "libvirt virsh snapshot-revert <= 10s".
+    # Budget: docs/contributors/architecture.md §3.4, "libvirt virsh snapshot-revert <= 10s".
     check p50(warmMs) <= 10_000
     # Ratio: derived from Hyper-V's 36 s / 7.2 s = 5.0x, discounted to 4x.
     check p50(coldMs) >= 4 * p50(warmMs)

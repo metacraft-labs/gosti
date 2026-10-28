@@ -41,7 +41,7 @@ top (per the three-tier ownership below). The Rust port is `agent-harbor`
 
 - **To _enhance / develop_ vm-harness itself** → the developing guide follows
   below, and the canonical internal architecture reference is
-  [`docs/design.md`](docs/design.md).
+  [`docs/contributors/architecture.md`](docs/contributors/architecture.md).
 
 ## Developing vm-harness
 

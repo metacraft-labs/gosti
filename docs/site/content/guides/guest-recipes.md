@@ -46,7 +46,7 @@ shipped read-only under `/nix/store`, pass a writable `--recipe-build-dir`.
 - `linux-nixos-runner/` — a NixOS runner-image variant.
 
 For the design intent of recipes, read the
-[guest-recipes README](https://github.com/metacraft-labs/gosti/blob/main/guest-recipes/README.md).
+[guest-recipes README](https://github.com/metacraft-labs/gosti/blob/dev/guest-recipes/README.md).
 
 ## Recipe conventions
 

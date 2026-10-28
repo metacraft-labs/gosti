@@ -945,7 +945,7 @@ suite "LibvirtBackend (continued)":
 # ---------------------------------------------------------------------------
 # UEFI El Torito ISO validation (Gap 1, backend side).
 #
-# MOCK JUSTIFICATION (per design.md §9.1): no backend or process mocks.
+# MOCK JUSTIFICATION (per docs/contributors/architecture.md §9.1): no backend or process mocks.
 # The pure decision `isoHasUefiElTorito` is fed representative
 # `xorriso -report_el_torito` output (the same BIOS-only vs BIOS+UEFI
 # samples the shell unit test uses; we cannot ship real multi-GB ISOs).

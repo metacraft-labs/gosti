@@ -5,9 +5,9 @@
 `qemu-windows-arm` can *consume* a Windows ARM64 golden — a directory
 containing `windows.qcow2` — but nothing in this repository can *produce*
 one. `provisionBaseline` only validates that the directory exists and holds
-that file ([`qemu_windows_arm.nim:497`](../src/vm_harness/backends/qemu_windows_arm.nim)),
+that file ([`qemu_windows_arm.nim:497`](../../src/vm_harness/backends/qemu_windows_arm.nim)),
 and the recipe under
-[`guest-recipes/windows-arm-base/`](../guest-recipes/windows-arm-base/)
+[`guest-recipes/windows-arm-base/`](../../guest-recipes/windows-arm-base/)
 builds a **UTM bundle** through a GUI step, not a qcow2. The golden that the
 `eph-win-arm64` CI lane ran on was therefore promoted by hand, exists in no
 build graph, and had no backup.
@@ -47,7 +47,7 @@ the checked-in answer files.
 ## Why this is tractable now
 
 The per-job run path is *already* fully headless. `qemuBaseArgs`
-([`qemu_windows_arm.nim:336`](../src/vm_harness/backends/qemu_windows_arm.nim))
+([`qemu_windows_arm.nim:336`](../../src/vm_harness/backends/qemu_windows_arm.nim))
 launches with `-accel hvf`, `-display none`, UEFI pflash firmware, an
 `swtpm` TPM 2.0 device, `-serial file:`, a QMP/monitor socket, and user-mode
 networking with `hostfwd` for SSH. Every primitive the install needs is in
@@ -67,7 +67,7 @@ OpenSSH and VirtIO NetKVM payloads. Only the *driver* is missing.
 
 There is also a working precedent in this repo. The Linux libvirt backend
 performs the equivalent install headlessly through `virt-install` (see
-[`m4-libvirt.md`](m4-libvirt.md), Phase A). This work is that same shape for
+[`m4-libvirt.md`](libvirt.md), Phase A). This work is that same shape for
 the macOS/ARM host, minus libvirt, which does not exist on Darwin.
 
 ## Goals

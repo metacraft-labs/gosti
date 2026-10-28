@@ -12,9 +12,9 @@ running a self-hosted GitHub Actions runner. Per-gate snapshot
 revert, GPU passthrough, and SR-IOV are out of scope for Phase A.
 
 The implementation lives at
-[`src/vm_harness/backends/libvirt.nim`](../src/vm_harness/backends/libvirt.nim);
+[`src/vm_harness/backends/libvirt.nim`](../../src/vm_harness/backends/libvirt.nim);
 the consumer-facing recipe at
-[`guest-recipes/windows-x64-base/`](../guest-recipes/windows-x64-base/).
+[`guest-recipes/windows-x64-base/`](../../guest-recipes/windows-x64-base/).
 
 ## What Phase A ships
 
@@ -198,7 +198,7 @@ NIC, so the work waits for an applicable runner host).
 
 ## Related files
 
-- [`src/vm_harness/backends/libvirt.nim`](../src/vm_harness/backends/libvirt.nim) — the backend implementation (~600 lines).
-- [`tests/integration/t_libvirt_backend.nim`](../tests/integration/t_libvirt_backend.nim) — no-live-virsh smoke test.
-- [`guest-recipes/windows-x64-base/`](../guest-recipes/windows-x64-base/) — the autounattend + helper scripts that produce the Win11 x64 baseline.
+- [`src/vm_harness/backends/libvirt.nim`](../../src/vm_harness/backends/libvirt.nim) — the backend implementation (~600 lines).
+- [`tests/integration/t_libvirt_backend.nim`](../../tests/integration/t_libvirt_backend.nim) — no-live-virsh smoke test.
+- [`guest-recipes/windows-x64-base/`](../../guest-recipes/windows-x64-base/) — the autounattend + helper scripts that produce the Win11 x64 baseline.
 - The infra-repo windows-runner-001 prototype README (sibling worktree) — operator-facing documentation that consumes this backend.

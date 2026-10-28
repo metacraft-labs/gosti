@@ -8,7 +8,7 @@ reproducible reference data, not a per-host guarantee.
 
 ## TL;DR
 
-| Path | Per-revert wall-clock | Per-Gate Reset budget (`docs/design.md` §3.4) |
+| Path | Per-revert wall-clock | Per-Gate Reset budget (`docs/contributors/architecture.md` §3.4) |
 |---|---|---|
 | Cold checkpoint (`Restore-VMCheckpoint` to a snapshot taken with VM Off) | 28 - 46 s | misses ≤ 10 s by 3-4× |
 | **Hot Standard Checkpoint** (`Restore-VMCheckpoint` to a snapshot taken with VM running, captures RAM + CPU + device state) | **5.4 s** | meets ≤ 10 s |
@@ -166,7 +166,7 @@ machine). Cross-host transfer should work, with these caveats:
 
 ## Implication for `revertToBaseline`
 
-The performance contract in `docs/design.md` §3.4 budgets Hyper-V at
+The performance contract in `docs/contributors/architecture.md` §3.4 budgets Hyper-V at
 ≤ 10 s per revert. The same `Restore-VMCheckpoint` invocation meets or
 misses the budget by **3-4×** depending solely on **how the
 checkpoint was created**:

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
 #
-# vm-harness-fixture — the gosti CRUD contract (docs/design.md §8.1) with no
+# vm-harness-fixture — the gosti CRUD contract (docs/contributors/architecture.md §8.1) with no
 # hypervisor, for hermetic consumer tests (e.g. an ah-vm GostiOrchestrator
 # test suite).
 #

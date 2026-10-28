@@ -23,7 +23,7 @@
 ## controller's trust store. The wire format carries an ``alg`` field
 ## (``"hmac-sha256"``) so a later upgrade to an asymmetric scheme (Ed25519 —
 ## controller holds only public keys) is a versioned, non-breaking change; that
-## upgrade is the documented follow-up (``docs/serve-enrollment.md``).
+## upgrade is the documented follow-up (``docs/contributors/serve-enrollment.md``).
 ##
 ## ── Model ───────────────────────────────────────────────────────────────────
 ##   * ``keyId``  — a STABLE, non-secret host identifier = ``"vmh1-" &

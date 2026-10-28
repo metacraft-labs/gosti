@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
 ## t_gosti_command_names — the installed command layout after the
-## vm-harness -> gosti rename (docs/design.md §6.0).
+## vm-harness -> gosti rename (docs/contributors/architecture.md §6.0).
 ##
 ## Builds the REAL CLI, installs it with the SAME script the flake's
 ## installPhase and `just build` use (scripts/install-binaries.sh), or the

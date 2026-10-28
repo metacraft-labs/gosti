@@ -19,7 +19,7 @@
 ## - MockBackend (deterministic in-memory fixture): re-exported from
 ##   ``backends/mock`` (GOSTI2 PR-2).
 ##
-## See ``docs/design.md`` for the canonical design reference and the
+## See ``docs/contributors/architecture.md`` for the canonical design reference and the
 ## per-backend implementation notes.
 
 import ./vm_harness/types

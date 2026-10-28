@@ -4,7 +4,7 @@
 ##
 ## Two ways to serve a stream of tasks from one host. They are not
 ## interchangeable and the right one is a property of the BACKEND'S STORAGE,
-## not of the workload -- see ``docs/pool-algorithms.md`` for the rule, the
+## not of the workload -- see ``docs/contributors/pool-algorithms.md`` for the rule, the
 ## measurements behind it, and the recorded per-backend selections.
 ##
 ## The selection is fixed at development time (``defaultAlgorithmFor``) and
@@ -57,7 +57,7 @@ type
       ## and DHCP lease with it, so N members restored from ONE shared
       ## checkpoint come up as N guests with identical identities --
       ## measured, see the identity-collision section of
-      ## ``docs/per-backend-notes/hyperv-snapshot-benchmarks.md``. The pool
+      ## ``docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md``. The pool
       ## is N distinct baselines, not N copies of one.
     vm*: VmHandle
     inUse*: bool
@@ -174,7 +174,7 @@ proc defaultAlgorithmFor*(backend: BackendId): PoolAlgorithm =
     # migration-from-file, ZFS overhead on the memstate volume, and the
     # QEMU process teardown/re-create that an external-snapshot revert does.
     # Full numbers, host conditions and evidence:
-    # `docs/per-backend-notes/libvirt-snapshot-benchmarks.md`.
+    # `docs/contributors/per-backend-notes/libvirt-snapshot-benchmarks.md`.
     paClonePerTask
   of biIncus:
     # UNDECIDED upstream, defaulted conservatively. A container has no boot

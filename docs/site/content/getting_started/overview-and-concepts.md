@@ -24,7 +24,7 @@ It is single-machine, single-process orchestration. It is not an
 image-build pipeline (use Packer for that), it does not know what a "task" is
 (consumers compose that on top), it is not a cloud-fleet manager, and it does
 not target microVM-grade sub-second cold starts. See the
-[design reference](https://github.com/metacraft-labs/gosti/blob/main/docs/design.md)
+[design reference](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/architecture.md)
 §1 for the full in-scope / out-of-scope statement.
 
 ## The `VmBackend` abstraction
@@ -128,4 +128,4 @@ table).
 
 For the full architecture — lifecycle phase diagram, output-envelope schema,
 per-backend transport details, and design references — read the
-[design reference](https://github.com/metacraft-labs/gosti/blob/main/docs/design.md).
+[design reference](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/architecture.md).

@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## `docs/design.md` § "Reprobuild adapter" must describe the resource types
+## `docs/contributors/architecture.md` § "Reprobuild adapter" must describe the resource types
 ## this repository actually declares.
 ##
 ## MOCK POLICY — nothing is mocked. The test reads the two real files in the
-## working tree: `src/vm_harness/repro/resources.nim` and `docs/design.md`.
+## working tree: `src/vm_harness/repro/resources.nim` and `docs/contributors/architecture.md`.
 ##
 ## WHY THIS EXISTS. The determinism table is documentation of a contract that
 ## lives in code — a class in the table that the source does not declare is
@@ -33,7 +33,7 @@ import std/[os, strutils, tables, unittest]
 const
   RepoRoot = currentSourcePath().parentDir.parentDir.parentDir
   ResourcesPath = RepoRoot / "src" / "vm_harness" / "repro" / "resources.nim"
-  DesignPath = RepoRoot / "docs" / "design.md"
+  DesignPath = RepoRoot / "docs" / "contributors" / "architecture.md"
   SectionHeading = "## 14. Reprobuild adapter"
   # Backend methods, not `resourceType` blocks. Presence-checked only.
   BackendOperations = ["snapshotRunning", "restoreSnapshot"]
@@ -101,7 +101,7 @@ proc rowFor(section: string; typeId: string): string =
       return line
   ""
 
-suite "docs/design.md Reprobuild adapter section":
+suite "docs/contributors/architecture.md Reprobuild adapter section":
 
   let source = readFile(ResourcesPath)
   let doc = readFile(DesignPath)

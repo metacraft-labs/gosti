@@ -20,7 +20,7 @@
 ##   * ``POST /v1/shutdown`` — graceful stop.
 ##
 ## Transport rationale + the TLS/NetBird posture are documented in
-## ``protocol.nim`` and ``docs/serve.md``. Over a NetBird overlay the bearer
+## ``protocol.nim`` and ``docs/contributors/serve.md``. Over a NetBird overlay the bearer
 ## token is carried inside WireGuard; an optional ``-d:ssl`` TLS wrap is a
 ## documented follow-up hook.
 
@@ -377,7 +377,7 @@ proc applyUserData*(argv: seq[string], userData: string,
   (argv & @["--user-data", path], path)
 
 # ---------------------------------------------------------------------------
-# Client-disconnect handling (docs/serve.md "Client disconnects: finish the
+# Client-disconnect handling (docs/contributors/serve.md "Client disconnects: finish the
 # worker, never spin").
 #
 # A vanished client is NOT a cancellation: the worker must run to completion

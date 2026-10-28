@@ -476,7 +476,7 @@ delete its overlay, and confirm `virsh list --all` shows only the fleet.
 
 | quantity | target | derivation |
 | --- | --- | --- |
-| `restoreSnapshot` + resume → ready, p50 | **≤ 10 s** | the pre-existing per-backend budget for libvirt in `docs/design.md` §3.4, and the threshold `Multi-OS-VM-Automation-Campaign` M4 already named |
+| `restoreSnapshot` + resume → ready, p50 | **≤ 10 s** | the pre-existing per-backend budget for libvirt in `docs/contributors/architecture.md` §3.4, and the threshold `Multi-OS-VM-Automation-Campaign` M4 already named |
 | ratio vs cold boot → ready, same run | **≥ 4×** | Hyper-V measured 36 s / 7.2 s = 5.0× on the same guest OS, discounted to 4× to absorb qcow2-vs-VHDX and host differences without letting a null result pass |
 
 Report the absolutes **separately** from the ratio. The ratio is the claim; an

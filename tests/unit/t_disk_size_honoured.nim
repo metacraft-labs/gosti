@@ -21,7 +21,7 @@
 ##   volume that still does not span the disk fails by name
 ##   (``GuestDiskNotGrownError``).
 ##
-## HOST CONTRACT. docs/design.md section 4.5 restricts libvirt operations
+## HOST CONTRACT. docs/contributors/architecture.md section 4.5 restricts libvirt operations
 ## to Linux. Their complete sizing cases run there; other POSIX hosts
 ## assert BackendUnavailableError before a disk, virsh or SSH side effect.
 ## Portable sizing, guest-growth and Hyper-V contracts are preserved in

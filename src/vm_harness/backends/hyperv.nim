@@ -554,7 +554,7 @@ method exportBaseline*(b: HyperVBackend, vmName, destDir: string;
   ## hint — if non-empty, the export aborts if no snapshot of that name
   ## exists.
   ##
-  ## See ``docs/per-backend-notes/hyperv-snapshot-benchmarks.md`` for the
+  ## See ``docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md`` for the
   ## cross-host transfer payload analysis (same-volume export uses
   ## reflinks; cross-host transfer payload is ~10 GB for a typical
   ## Windows guest + 0.7 GB per hot checkpoint).
