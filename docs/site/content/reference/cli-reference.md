@@ -28,10 +28,14 @@ ERROR / usage error, `130` INCOMPLETE (interrupted).
 | `run` | One-shot revert + exec + harvest + cleanup (the gate runner). |
 | `run --ephemeral` | libvirt/incus: launch one per-job clone, probe, destroy (no residue). |
 | `ephemeral-destroy` | libvirt/incus: reclaim an instance left by `run --ephemeral --keep`. |
+| `ephemeral-list` | List the per-job instances `run --ephemeral --keep` left on `--backend`, as one JSON line. |
+| `ephemeral-label` | Record `--label k=v` attribution for a kept instance; removed by `ephemeral-destroy`. |
 | `instance start\|ssh\|exec\|status\|logs\|stop\|destroy\|screenshot NAME --state-dir ROOT` | [Durable installed Linux/libvirt VM lifecycle](/guides/durable-media). |
+| `instance wait\|exec\|copy-to\|copy-from\|start\|stop --backend incus NAME` | Operate on an existing Incus system container through typed backend methods. |
 | `probe` | Print available backends as JSON (capability detection). |
+| `manifest` | Print this host's capability manifest as JSON; with `--remote <addr>`, fetch a remote daemon's signed identity and manifest. |
 | `backends` | Tabular listing of every known backend (`*` = registered here). |
-| `shell` | (Placeholder in M0) open an interactive shell into a baseline. |
+| `shell` | (Placeholder) open an interactive shell into a baseline. |
 | `snapshot create\|restore\|list` | Snapshot lifecycle for the resolved backend. |
 | `baseline export\|import` | Export/import a baseline (and its snapshot tree). |
 | `prune` | Reclaim ephemeral instances leaked by hard-killed launchers. |
@@ -45,6 +49,29 @@ gosti provision --backend <id|auto> --guest <linux|windows|macos> \
 ```
 
 Builds the baseline if absent; no-op if present. `--baseline` is required.
+
+### `boot`
+
+```sh
+gosti boot --backend auto --source-image <media> \
+  [--acceleration <auto|kvm|tcg>] [--graphics <none|vnc|spice>] \
+  [--ssh-ready-timeout-sec <seconds>] \
+  (--keep | --expect <serial-regex>)
+```
+
+Libvirt defaults to hardware acceleration when it is available. Select `tcg`
+for QEMU software emulation on hosts where KVM is unavailable or nested KVM is
+unreliable; TCG uses libvirt's portable `qemu64` CPU model rather than
+`host-model`.
+
+For libvirt media boots, a command after `--` runs through the loopback SSH
+forward. Select key-only authentication with `--ssh-forward-port auto`,
+`--ssh-user <user>`, and `--ssh-private-key <path>`. Persist and verify the
+guest host identity with `--ssh-known-hosts <path>` and a stable
+`--ssh-host-key-alias <name>` when automatic forwarding may select a different
+port on each boot. Password-based guests can instead use
+`--ssh-password-env <name>`; the two authentication options are mutually
+exclusive.
 
 ### `install`
 
@@ -88,12 +115,33 @@ it, destroy it leaving no residue.
 ### `ephemeral-destroy`
 
 ```
-gosti ephemeral-destroy --baseline <vm>
+gosti ephemeral-destroy --backend <libvirt|incus> --baseline <instance>
 ```
 
-libvirt-only. Reclaims a clone left running by `run --ephemeral --keep`:
-`virsh destroy` + `virsh undefine --nvram` + remove the overlay, config-drive
-ISO, and per-job OVMF nvram. The golden and OVMF template are never touched.
+For libvirt, reclaims a clone left running by `run --ephemeral --keep` with
+`virsh destroy`, `virsh undefine --nvram`, and removal of its overlay,
+config-drive ISO, and per-job OVMF nvram. For Incus, force-deletes only the
+named container, retrying a busy delete, and exits non-zero if the container
+still exists afterwards. The golden/base image is never touched.
+
+### `instance` (Incus)
+
+For retained installed Linux VMs, see [Durable media instances](/guides/durable-media).
+These commands operate on an existing Incus container:
+
+```console
+gosti instance wait --backend incus <name>
+gosti instance exec --backend incus <name> -- <command...>
+gosti instance copy-to --backend incus <name> <host-path> <guest-path>
+gosti instance copy-from --backend incus <name> <guest-path> <host-path>
+gosti instance start --backend incus <name>
+gosti instance stop --backend incus <name>
+```
+
+They never delete the container implicitly. `wait`, `exec`, and both transfer
+commands require the container to be running and exec-ready. `start` is
+idempotent for a running container; `stop` is idempotent for a stopped
+container. Missing containers are hard errors.
 
 ### `probe` / `backends`
 
@@ -111,8 +159,9 @@ gosti snapshot list <vm>
 ```
 
 `--running` captures RAM + CPU + device state so restore resumes from memory
-instead of a fresh boot (Hyper-V Standard Checkpoint; Tart `tart suspend`
-planned). Backends without snapshot support raise `BackendUnavailableError`.
+instead of a fresh boot (Hyper-V Standard Checkpoint; libvirt live external
+snapshot). Incus takes a filesystem snapshot either way. Tart does not support
+`--running`. Backends without snapshot support raise `BackendUnavailableError`.
 
 ### `baseline`
 
@@ -149,7 +198,7 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--guest <linux\|windows\|macos>` | Required when `--backend auto`. |
 | `--allow-noop-fallback` | Use `NoopBackend` if the real backend isn't installed (selection tests on hypervisor-less hosts). |
 | `--baseline <name>` | Logical baseline tag (== libvirt domain name). |
-| `--name <vm>` | Alias for `--baseline` (canonical libvirt-M4 command shape); if both are given they must match. |
+| `--name <vm>` | Alias for `--baseline` (the libvirt command shape); if both are given they must match. |
 
 ### Baseline sizing
 
@@ -160,6 +209,7 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--memory-gb <int>` | — | Alias for `--memory-mb`, in GiB (converted at parse time). |
 | `--disk-gb <int>` | 50 | Per-job guest disk in GiB (Tart: decimal GB). A clone smaller than this is grown before boot: libvirt overlay / qcow2 import and Windows-ARM QEMU overlay via `qemu-img`, UTM clone via `qemu-img resize`, Hyper-V clone and qcow2 conversion via `Resize-VHD`, Tart Linux via `tart set --disk-size`. Once the guest is reachable its system volume is grown (Linux growpart + resize2fs, Windows `Resize-Partition`) and verified, failing with `GuestDiskNotGrownError` otherwise. Disks never shrink: an explicit value below the image's size is refused (`DiskSizeTooSmallError`); the omitted default keeps a larger image. Tart macOS clones keep the image's size. |
 | `--source-image <ref>` | — | Backend-specific base image reference. |
+| `--acceleration <auto\|kvm\|tcg>` | `auto` | Libvirt media-boot execution mode. `tcg` uses QEMU software emulation. |
 
 ### Recipe / Windows provisioning
 
@@ -237,3 +287,9 @@ Beyond flags, several backends and recipes read `VMH_*` environment variables
 - `VMH_INCUS_CMD` — override the incus invocation, e.g. `"sudo -n incus"`.
 - `VMH_RECIPES_DIR` — override where `--recipe <id>` is resolved from.
 - `VMH_TART_CMD` — override the `tart` binary path (also honored by `prune`).
+
+The two Incus capability flags are accepted only with
+`run --ephemeral --backend incus`. They are host privileges selected by a local
+Incus administrator or by the authenticated `gosti serve` fleet controller.
+They must never be derived from workflow or guest user-data. Their device
+path, type, and mode are intentionally not parameterized.

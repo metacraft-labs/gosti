@@ -51,7 +51,7 @@ before invoking the script.
 | `VMH_RUNNER_USER` | string | `runner` | Unprivileged runner user (created with passwordless sudo; the runner refuses to run as root). |
 | `VMH_RUNNER_CACHE` | path | `/home/<user>/actions-runner` | In-image runner directory. Must match GARM's Linux install template's cached path, or the per-job bootstrap re-downloads the ~200 MB runner every job. |
 
-### Nested Docker bake (HR1)
+### Nested Docker bake
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
@@ -66,7 +66,7 @@ Security/perf: nested Docker requires the container to run with
 one-job guest; the socket is group-owned `docker` so the runner reaches it
 without sudo.
 
-### Nested KVM bake (HR2)
+### Nested KVM bake
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
@@ -78,7 +78,7 @@ provider to attach `/dev/kvm` into the container. `VMH_RUNNER_DOCKER=1
 VMH_RUNNER_KVM=1` bakes both into one image (the prod `incus-nested` class needs
 both).
 
-### `repro` CLI bake (HR-REPRO)
+### `repro` CLI bake
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
@@ -120,6 +120,13 @@ the prior `incus launch` argv exactly.
 | --- | --- | --- | --- |
 | `--incus-security-nesting` | bool | `false` | Before first start, sets `security.nesting=true` plus the fixed mknod/setxattr syscall intercepts used by unprivileged nested Docker/Podman. |
 | `--incus-nested-kvm` | bool | `false` | Implies nesting; before first start attaches exactly host `/dev/kvm` to guest `/dev/kvm` as a unix-char device with mode `0666`, then converges and verifies that exact guest mode and a real read/write open. The host path/type/mode are not caller-selectable. |
+| `--incus-profile <name>` | repeatable string | empty | Forwards existing administrator-created Incus profiles in the supplied order. Empty retains Incus's automatic `default` profile. An explicit list replaces it: include `--incus-profile default` first to retain its root disk and NIC before an overlay profile. |
+
+Profiles are applied at instance creation, before the first guest process.
+Their ordering and default behavior follow [Incus's profile contract](https://linuxcontainers.org/incus/docs/main/profiles/).
+This option selects existing host policy; it creates no profile or mount and
+must never be derived from guest user-data or workflow input. A profile failure
+cleans up the half-created instance rather than returning a degraded runner.
 
 The caller is part of the trusted host control plane. Locally it already needs
 the Incus administrative socket; remotely it must possess the overlay-only

@@ -55,9 +55,9 @@ without any real hypervisor — the only mock allowed by the test methodology
   recipe that assembles an autounattend ISO; a controller SSH pubkey and a
   first-boot script can be baked into that ISO (`--controller-pubkey`,
   `--first-boot-script`, both require `--recipe`). See the
-  [M4 libvirt notes](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/libvirt.md)
-  for the canonical command shapes and the Phase B/C scope (snapshot/restore,
-  GPU/SR-IOV/USB passthrough are outstanding).
+  [libvirt notes](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/libvirt.md)
+  for the canonical command shapes. GPU, SR-IOV and USB passthrough are not
+  supported.
 - Caveat: the golden qcow2 and every parent directory must be readable by
   the libvirt/QEMU user, or the clone fails to open its backing file.
 
@@ -118,7 +118,7 @@ without any real hypervisor — the only mock allowed by the test methodology
 ## UTM (Apple-Silicon macOS host, Windows-on-ARM guest)
 
 - Host needs: UTM installed out-of-band (provides `utmctl`).
-- Guests: Windows on ARM (`utm-windows-arm`). Partial support (M3).
+- Guests: Windows on ARM (`utm-windows-arm`). Partial support.
 - Reset: `utmctl clone` from a local bundle (≤ 20 s).
 - Recipe: built from `guest-recipes/windows-arm-base` (autounattend ISO
   assembly, with an offline Win32-OpenSSH ARM64 fallback).
