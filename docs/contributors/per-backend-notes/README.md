@@ -1,16 +1,19 @@
 # Per-backend implementation notes
 
-One file per backend lands here as M1-M5 are implemented:
+Notes on how a particular backend is implemented and measured:
 
-- `hyperv.md` — M1 (refactor existing reprobuild Hyper-V harness).
-- `wsl.md` — M1 (refactor existing reprobuild WSL harness).
-- `tart.md` — M2 (macOS + Linux ARM guests on Mac hosts).
-- `utm.md` — M3 (Windows-on-ARM guests on Mac hosts).
-- `libvirt.md` — M4 (Linux + Windows guests on Linux hosts).
-- `lima.md` — M5 (Linux guests on Mac hosts, alternative to Tart).
-- `incus.md` — Linux system-container guests on Linux hosts (ephemeral
-  per-job containers; the container analog of the libvirt VM path).
+- [`incus.md`](incus.md) — Linux system-container guests on Linux hosts
+  (ephemeral per-job containers; the container analog of the libvirt VM
+  path): host prerequisites, the CLI command map, cloud-init injection, and
+  the Linux runner image.
+- [`hyperv-snapshot-benchmarks.md`](hyperv-snapshot-benchmarks.md) — Hyper-V
+  checkpoint, restore and clone costs, and the identity-collision finding
+  behind the recycle pool.
+- [`libvirt-snapshot-benchmarks.md`](libvirt-snapshot-benchmarks.md) —
+  libvirt external snapshots: why external rather than internal, and what
+  restore costs against a cold boot.
 
-Each note documents the host-side CLI invocations, the in-guest
-transport (SSH, PowerShell Direct, direct `wsl --` exec), file-transfer
-mechanism, snapshot/clone strategy, and any known gotchas.
+The libvirt backend's operator guide is [`../libvirt.md`](../libvirt.md).
+The other backends (Hyper-V, WSL, Tart, UTM, Lima, QEMU Windows-ARM) have no
+separate note; their source in `src/vm_harness/backends/` and
+[`../architecture.md`](../architecture.md) are the reference.

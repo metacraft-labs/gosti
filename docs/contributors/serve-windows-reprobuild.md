@@ -1,19 +1,18 @@
 # vm-harness serve on Windows, under reprobuild (reusable recipe)
 
 This is the **general, company-agnostic** recipe for running `vm-harness serve`
-(the RA1 remoting daemon — see [serve.md](serve.md)) as a Windows service on a
+(the remoting daemon — see [serve.md](serve.md)) as a Windows service on a
 **reprobuild-managed** host (i.e. a box whose system scope is realised by
 `repro infra apply` against a `*.nim` profile, *not* by NixOS / nix-darwin).
 
 It is the reprobuild counterpart of the NixOS `services.vm-harness-serve`
 module that Linux/darwin hosts get. The two express the same shape — a
 hardened, NetBird-only serve daemon with agent-provisioned auth material —
-through the deployment system each host actually uses. The CI Runner Fleet
-campaign's repo-layering rule keeps this recipe **reusable** (any company can
-adopt it) while the concrete Metacraft instantiation lives in
-`infra/machines/server/_win-ci-bare-001/system_windows_runner.nim` (the RA4
-profile). If you are standing up your own reprobuild-managed Windows VM host,
-copy the shape below and fill in your own paths, golden, switch, and NetBird IP.
+through the deployment system each host actually uses. This recipe is
+**reusable** (any company can adopt it); a concrete host profile is kept with
+that host's own deployment configuration. If you are standing up your own
+reprobuild-managed Windows VM host, copy the shape below and fill in your own
+paths, golden, switch, and NetBird IP.
 
 ## What the daemon does on a Windows host
 
@@ -75,7 +74,7 @@ substitute your own constants.
 
 ## Auth & network posture (NON-NEGOTIABLE)
 
-- **NetBird-only** (campaign non-negotiable pattern (a)): the daemon binds a
+- **NetBird-only**: the daemon binds a
   **single host address** — the NetBird overlay IP — **never `0.0.0.0`**. Until
   the host is NetBird-enrolled, bind **loopback** (`127.0.0.1`) as the fail-safe
   default rather than an empty host that would bind every interface. Flip the
@@ -95,8 +94,7 @@ substitute your own constants.
   hypervisor is live.
 - A `vm-harness` binary in the managed dev-deps tree. Like the `repro` binary
   on such a box, its provisioning (and the golden VHDX + credential-cache
-  pipeline) is a bootstrap concern; pin/declare it as your management model
-  matures.
+  pipeline) is a bootstrap concern this recipe does not declare.
 
 ## Verifying it
 
