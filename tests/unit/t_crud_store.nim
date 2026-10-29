@@ -16,8 +16,8 @@
 ## presence decisions are pure functions over the exact CLI output shapes.
 
 import std/[json, options, os, osproc, strutils, tempfiles, unittest]
-import vm_harness/[types, crud_store, process_capture]
-import vm_harness/backends/[incus, libvirt, tart, hyperv]
+import gosti/[types, crud_store, process_capture]
+import gosti/backends/[incus, libvirt, tart, hyperv]
 
 # Child mode exercises the real lock and timeout against a real unwritable
 # private directory. No store/lock adapter or clock is replaced.
@@ -44,22 +44,22 @@ proc withEnv(pairs: openArray[(string, string)], body: proc()) =
 
 suite "crud store location":
   test "--state-dir wins, then the configured chain":
-    withEnv([("VMH_CRUD_STATE_DIR", "/x/crud-explicit"),
-             ("VMH_EPHEMERAL_STATE_DIR", "/x/eph"),
+    withEnv([("GOSTI_CRUD_STATE_DIR", "/x/crud-explicit"),
+             ("GOSTI_EPHEMERAL_STATE_DIR", "/x/eph"),
              ("STATE_DIRECTORY", "/x/sd"), ("XDG_STATE_HOME", "/x/xdg")]) do:
       check crudStateRoot("/x/flag") == "/x/flag" / "crud"
       check crudStateRoot() == "/x/crud-explicit"
-    withEnv([("VMH_CRUD_STATE_DIR", ""), ("VMH_EPHEMERAL_STATE_DIR", "/x/eph"),
+    withEnv([("GOSTI_CRUD_STATE_DIR", ""), ("GOSTI_EPHEMERAL_STATE_DIR", "/x/eph"),
              ("STATE_DIRECTORY", "/x/sd"), ("XDG_STATE_HOME", "/x/xdg")]) do:
       check crudStateRoot() == "/x/eph" / "crud"
-    withEnv([("VMH_CRUD_STATE_DIR", ""), ("VMH_EPHEMERAL_STATE_DIR", ""),
+    withEnv([("GOSTI_CRUD_STATE_DIR", ""), ("GOSTI_EPHEMERAL_STATE_DIR", ""),
              ("STATE_DIRECTORY", "/x/sd:/x/other"),
              ("XDG_STATE_HOME", "/x/xdg")]) do:
       check crudStateRoot() == "/x/sd" / "crud"
     when not defined(windows):
-      withEnv([("VMH_CRUD_STATE_DIR", ""), ("VMH_EPHEMERAL_STATE_DIR", ""),
+      withEnv([("GOSTI_CRUD_STATE_DIR", ""), ("GOSTI_EPHEMERAL_STATE_DIR", ""),
                ("STATE_DIRECTORY", ""), ("XDG_STATE_HOME", "/x/xdg")]) do:
-        # Neither /x/xdg/gosti nor /x/xdg/vm-harness exists: the new name.
+        # Neither /x/xdg/gosti nor /x/xdg/gosti exists: the new name.
         check crudStateRoot() == "/x/xdg/gosti/crud"
 
 suite "crud store names":
@@ -74,7 +74,7 @@ suite "crud store names":
 
 suite "crud store records":
   test "save / load / list / remove round-trip; internals are not listed":
-    let root = createTempDir("vmh-crud-store-", "")
+    let root = createTempDir("gosti-crud-store-", "")
     defer: removeDir(root)
     let store = newCrudStore(root / "crud")
     check store.list("mock").len == 0          # missing dir ⇒ none yet
@@ -96,7 +96,7 @@ suite "crud store records":
     check store.load("mock", "vm1").isNone
 
   test "an unparsable record raises instead of reading as absent":
-    let root = createTempDir("vmh-crud-store-bad-", "")
+    let root = createTempDir("gosti-crud-store-bad-", "")
     defer: removeDir(root)
     let store = newCrudStore(root / "crud")
     createDir(store.backendDir("mock"))
@@ -108,7 +108,7 @@ suite "crud store records":
 
 suite "crud store locks":
   test "exclusive; a held lock times out as CrudBusyError":
-    let root = createTempDir("vmh-crud-lock-", "")
+    let root = createTempDir("gosti-crud-lock-", "")
     defer: removeDir(root)
     let store = newCrudStore(root / "crud")
     var a = store.lockVm("mock", "vm1", 1)
@@ -122,7 +122,7 @@ suite "crud store locks":
 
   when defined(posix):
     test "a lock whose owner process is dead is broken":
-      let root = createTempDir("vmh-crud-stale-", "")
+      let root = createTempDir("gosti-crud-stale-", "")
       defer: removeDir(root)
       let store = newCrudStore(root / "crud")
       # A pid that certainly exited: a finished child.
@@ -140,7 +140,7 @@ suite "crud store locks":
 when defined(posix):
   suite "crud stale lock removal failure":
     test "an unremovable dead-owner lock still expires without busy spinning":
-      let root = createTempDir("vmh-crud-stale-unremovable-", "")
+      let root = createTempDir("gosti-crud-stale-unremovable-", "")
       let lockDir = root / "held.lock"
       createDir(lockDir)
       defer:

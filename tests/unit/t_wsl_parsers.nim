@@ -5,10 +5,10 @@
 ## Like the Hyper-V parser tests, these are pure-logic and run on any
 ## host. The full lifecycle (which requires a Windows host with WSL2)
 ## is covered by ``tests/integration/t_wsl_lifecycle.nim`` (status
-## pending) and ``tests/e2e/t_vm_harness_wsl_m69_passwd_user_passes.nim``.
+## pending) and ``tests/e2e/t_gosti_wsl_m69_passwd_user_passes.nim``.
 
 import std/unittest
-import vm_harness
+import gosti
 
 suite "parseWslListQuiet":
   test "splits ASCII names":

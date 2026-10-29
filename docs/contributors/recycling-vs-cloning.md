@@ -37,7 +37,7 @@ The Hyper-V conclusion does not transfer, and assuming it would be a
 mistake.
 
 **Cloning is already cheap here.** `provisionEphemeralClone` (in
-`src/vm_harness/backends/libvirt.nim`) creates the per-job disk with
+`src/gosti/backends/libvirt.nim`) creates the per-job disk with
 
 ```
 qemu-img create -f qcow2 -b <golden> -F qcow2 <overlay>
@@ -84,7 +84,7 @@ carries state across jobs. Numbers, host conditions and method are in
 
 Like libvirt, incus **has** the primitives: `snapshot`,
 `snapshotRunning`, `restoreSnapshot`, `listSnapshots` and `removeSnapshot`
-are all implemented (`src/vm_harness/backends/incus.nim`), wrapping
+are all implemented (`src/gosti/backends/incus.nim`), wrapping
 `incus snapshot create` / `incus snapshot restore`.
 
 Two things qualify that, and the second is the important one.

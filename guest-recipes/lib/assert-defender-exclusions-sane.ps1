@@ -12,7 +12,7 @@
 #
 #     Get-MpPreference -> ExclusionPath:
 #       C:\pwsh                                  <- deliberate, still there
-#       C:\Windows\Temp\vmh-pwsh-extract-6752    <- the defect
+#       C:\Windows\Temp\gosti-pwsh-extract-6752    <- the defect
 #
 # The staging directory stopped existing the moment the extracted tree was
 # moved into place, but the exclusion outlived it and was CAPTURED into the
@@ -21,7 +21,7 @@
 #
 # That is not untidy, it is an antivirus hole with a lottery number for an
 # address. Windows reuses PIDs freely, so any later process that happens to
-# draw 6752 recreates `C:\Windows\Temp\vmh-pwsh-extract-6752` and everything
+# draw 6752 recreates `C:\Windows\Temp\gosti-pwsh-extract-6752` and everything
 # written into it is UNSCANNED -- on machines whose entire job is executing
 # pull-request code from forks.
 #
@@ -35,7 +35,7 @@
 # how it survived promotion in the first place.
 #
 # The general defect class is "an exclusion outlived the thing it was
-# excluding". So this gate does not look for `vmh-pwsh-extract-6752`, or for
+# excluding". So this gate does not look for `gosti-pwsh-extract-6752`, or for
 # any hard-coded name. It asserts the INVARIANT:
 #
 #     every Defender path exclusion must name a path that exists

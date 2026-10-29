@@ -51,7 +51,7 @@ param(
   [string] $SwitchName = 'Default Switch',
   # Distinct from build-golden-hyperv.ps1's default so a hand-kept authoring VM
   # of that name is never removed by a pipeline run.
-  [string] $VmName = 'vmh-runner-golden-build',
+  [string] $VmName = 'gosti-runner-golden-build',
   [string] $Bash = 'C:\PortableGit\bin\bash.exe',
   [int] $TimeoutMinutes = 120,
   [switch] $DisableDefender,
@@ -150,7 +150,7 @@ $firstBoot = Join-Path $WorkDir 'first-boot.ps1'
   Set-Content -LiteralPath $firstBoot -Encoding UTF8
 
 function Bash([string]$script, [string[]]$argv) {
-  $env:VMH_BUILD_DIR = $buildDir -replace '\\', '/'
+  $env:GOSTI_BUILD_DIR = $buildDir -replace '\\', '/'
   & $Bash $script @argv
   if ($LASTEXITCODE -ne 0) { throw "$script failed ($LASTEXITCODE)" }
 }
@@ -222,18 +222,18 @@ try {
   }
   Log "offline verification reading $r"
   foreach ($must in 'actions-runner\config.cmd', 'actions-runner\run.cmd',
-                    'actions-runner\bin\Runner.Listener.exe', 'actions-runner\.vmh-staged',
+                    'actions-runner\bin\Runner.Listener.exe', 'actions-runner\.gosti-staged',
                     'PortableGit\bin\bash.exe', 'pwsh\pwsh.exe') {
     if (-not (Test-Path -LiteralPath "$r\$must")) { $problems += "missing $must" }
   }
   foreach ($mustNot in 'actions-runner\.runner', 'actions-runner\.credentials') {
     if (Test-Path -LiteralPath "$r\$mustNot") { $problems += "golden carries registration state: $mustNot" }
   }
-  foreach ($failed in 'vmh-runner-stage-failed', 'vmh-git-provision-failed', 'vmh-pwsh-provision-failed') {
+  foreach ($failed in 'gosti-runner-stage-failed', 'gosti-git-provision-failed', 'gosti-pwsh-provision-failed') {
     $f = "$r\Windows\Temp\$failed"
     if (Test-Path -LiteralPath $f) { $problems += "${failed}: $((Get-Content -LiteralPath $f -Raw).Trim())" }
   }
-  $staged = if (Test-Path "$r\actions-runner\.vmh-staged") { (Get-Content "$r\actions-runner\.vmh-staged" -Raw).Trim() } else { '' }
+  $staged = if (Test-Path "$r\actions-runner\.gosti-staged") { (Get-Content "$r\actions-runner\.gosti-staged" -Raw).Trim() } else { '' }
   if ($staged -and $staged -ne $RunnerVersion) { $problems += "staged runner $staged != pinned $RunnerVersion" }
 } finally {
   Dismount-VHD -Path $tmp

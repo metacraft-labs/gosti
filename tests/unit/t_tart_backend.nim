@@ -6,14 +6,14 @@
 ## guest. Process creation, process groups, files and exit codes remain real.
 ##
 ## Golden-image SELECTION is not here: it is the MA0 gate
-## ``t_vmharness_image_is_honoured`` and lives, whole, in
-## ``tests/unit/t_vmharness_image_is_honoured.nim`` so that grepping the gate
+## ``t_gosti_image_is_honoured`` and lives, whole, in
+## ``tests/unit/t_gosti_image_is_honoured.nim`` so that grepping the gate
 ## name lands on the assertions that prove it.
 
 import std/[json, options, os, strutils, tables, tempfiles, unittest]
 import ../native_command_fixture
-import vm_harness/backends/tart
-import vm_harness/types
+import gosti/backends/tart
+import gosti/types
 
 when defined(posix):
   import std/posix
@@ -27,7 +27,7 @@ suite "Tart backend commands":
 
   when defined(posix):
     test "background Tart run remains in the provider-owned process group":
-      let tmp = createTempDir("vmh-tart-unit-", "")
+      let tmp = createTempDir("gosti-tart-unit-", "")
       defer: removeDir(tmp)
       let tart = commandFixture(tmp / "tart", %*{"sleepMs": 60000})
 
@@ -39,7 +39,7 @@ suite "Tart backend commands":
       check getpgid(Pid(pid)) == getpgrp()
 
   test "clone randomizes the ephemeral MAC before boot":
-    let tmp = createTempDir("vmh-tart-unit-", "")
+    let tmp = createTempDir("gosti-tart-unit-", "")
     defer: removeDir(tmp)
     let log = tmp / "tart.log"
     let tart = commandFixture(tmp / "tart", %*{"log": log})
@@ -53,19 +53,19 @@ suite "Tart backend commands":
       ""]
 
   test "failed MAC randomization deletes the unusable clone":
-    let tmp = createTempDir("vmh-tart-unit-", "")
+    let tmp = createTempDir("gosti-tart-unit-", "")
     defer: removeDir(tmp)
     let log = tmp / "tart.log"
     let tart = commandFixture(tmp / "tart", %*{"log": log,
       "failFirstArg": "set", "failureCode": 9})
 
     let backend = newTartBackend(guestOs = goMacos, tartCmd = tart)
-    expect VmHarnessError:
+    expect GostiError:
       backend.cloneTartVm("golden", "ephemeral")
     check "delete ephemeral" in readFile(log)
 
   test "SCP retries a transient authentication failure":
-    let tmp = createTempDir("vmh-tart-unit-", "")
+    let tmp = createTempDir("gosti-tart-unit-", "")
     defer: removeDir(tmp)
     let attempts = tmp / "attempts"
     let src = tmp / "payload"
@@ -81,7 +81,7 @@ suite "Tart backend commands":
     check readFile(attempts) == "2"
 
   test "guest exec retries a transient authentication failure":
-    let tmp = createTempDir("vmh-tart-unit-", "")
+    let tmp = createTempDir("gosti-tart-unit-", "")
     defer: removeDir(tmp)
     let attempts = tmp / "attempts"
     let sshpass = commandFixture(tmp / "sshpass", %*{"forwardSkip": 2})

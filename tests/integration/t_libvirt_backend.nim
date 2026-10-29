@@ -9,7 +9,7 @@
 ##
 ## What this asserts:
 ##
-##  - The libvirt module compiles into the vm-harness library on any
+##  - The libvirt module compiles into the gosti library on any
 ##    host (Linux/macOS/Windows).
 ##  - ``newLibvirtBackend()`` returns a populated backend with
 ##    sensible defaults.
@@ -34,11 +34,11 @@
 ## on Windows as well as POSIX. The report parser is tested independently.
 
 import std/[options, os, sequtils, strutils, tables, tempfiles, unittest]
-import vm_harness
-from vm_harness/backends/libvirt import cleanupAcquiredDomain
-import vm_harness/cli
-import vm_harness/process_capture
-import vm_harness/[ephemeral_handle, crud_store]
+import gosti
+from gosti/backends/libvirt import cleanupAcquiredDomain
+import gosti/cli
+import gosti/process_capture
+import gosti/[ephemeral_handle, crud_store]
 import std/json
 
 # Internal ownership fixtures invoke the real backend through executable
@@ -55,7 +55,7 @@ type CleanupFixture = object
   root, name, virsh, qemu, installer, log, disk: string
 
 proc cleanupFixture(): CleanupFixture =
-  result.root = createTempDir("vmh-cleanup-owned-", "")
+  result.root = createTempDir("gosti-cleanup-owned-", "")
   result.name = BootDomainNamePrefix & result.root.extractFilename
   result.virsh = result.root / "virsh"
   result.qemu = result.root / "qemu-img"
@@ -360,7 +360,7 @@ suite "LibvirtBackend smoke (no live virsh)":
 # MOCK JUSTIFICATION (repo policy: every mock needs one).
 #
 # These tests substitute a 20-line shell script for the `virsh` BINARY. They
-# do not mock the backend, the domain model, or any vm-harness type: the real
+# do not mock the backend, the domain model, or any gosti type: the real
 # LibvirtBackend methods run, build real argv, and parse real virsh-shaped
 # text off a real process boundary. What is faked is only libvirt's ANSWER,
 # and it is faked to reach states this host cannot be made to produce
@@ -402,7 +402,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
 
   test "snapshotRunning refuses a domain that is not running":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-snap-notrunning", "")
+      let root = createTempDir("gosti-libvirt-snap-notrunning", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       let argvLog = root / "virsh.argv"
@@ -418,7 +418,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
       var msg = ""
       try:
         discard b.snapshotRunning("member-0", "warm")
-      except VmHarnessError as e:
+      except GostiError as e:
         msg = e.msg
       check "requires domain state 'running'" in msg
       check "shut off" in msg
@@ -432,7 +432,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
       # guest's machine name and DHCP lease; two domains on one disk file
       # would restore into one identity (measured on Hyper-V: two guests
       # both came up as WIN-EDC8DG9PTDT on 172.27.94.244).
-      let root = createTempDir("vmh-libvirt-snap-shared", "")
+      let root = createTempDir("gosti-libvirt-snap-shared", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       let argvLog = root / "virsh.argv"
@@ -452,7 +452,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
       var msg = ""
       try:
         discard b.snapshotRunning("member-0", "warm")
-      except VmHarnessError as e:
+      except GostiError as e:
         msg = e.msg
       check "member-1" in msg
       check "identical network identity" in msg
@@ -460,7 +460,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
 
   test "snapshotRunning refuses to overwrite an existing memory-state file":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-snap-memexists", "")
+      let root = createTempDir("gosti-libvirt-snap-memexists", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       let argvLog = root / "virsh.argv"
@@ -483,14 +483,14 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
       var msg = ""
       try:
         discard b.snapshotRunning("member-0", "warm")
-      except VmHarnessError as e:
+      except GostiError as e:
         msg = e.msg
       check "already exists" in msg
       check not logLines(argvLog).mentions("snapshot-create-as")
 
   test "snapshotRunning issues --live with an external memspec when clean":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-snap-live", "")
+      let root = createTempDir("gosti-libvirt-snap-live", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       let argvLog = root / "virsh.argv"
@@ -521,7 +521,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
 
   test "snapshot (cold) is --disk-only and carries no memory state":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-snap-cold", "")
+      let root = createTempDir("gosti-libvirt-snap-cold", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       let argvLog = root / "virsh.argv"
@@ -545,7 +545,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
 
   test "listSnapshots parses names, and a virsh failure raises":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-snap-list", "")
+      let root = createTempDir("gosti-libvirt-snap-list", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       let argvLog = root / "virsh.argv"
@@ -562,12 +562,12 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
                                 libvirtUri = "qemu:///test",
                                 imagePoolDir = root)
       check b.listSnapshots("member-0") == @["pool-baseline-0", "warm"]
-      expect VmHarnessError:
+      expect GostiError:
         discard b.listSnapshots("no-such-domain")
 
   test "removeSnapshot is a no-op for an unknown snapshot, and sweeps the RAM image":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-snap-remove", "")
+      let root = createTempDir("gosti-libvirt-snap-remove", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       let argvLog = root / "virsh.argv"
@@ -596,7 +596,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
 
   test "restoreSnapshot reverts --running and retries with --force ONLY on that refusal":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-snap-revert", "")
+      let root = createTempDir("gosti-libvirt-snap-revert", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       let argvLog = root / "virsh.argv"
@@ -623,7 +623,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
 
   test "restoreSnapshot does NOT force on an unrelated failure":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-snap-revert-fail", "")
+      let root = createTempDir("gosti-libvirt-snap-revert-fail", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       let argvLog = root / "virsh.argv"
@@ -637,7 +637,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
       let b = newLibvirtBackend(virshCmd = fakeVirsh,
                                 libvirtUri = "qemu:///test",
                                 imagePoolDir = root)
-      expect VmHarnessError:
+      expect GostiError:
         b.restoreSnapshot("member-0", "warm")
       # Exactly one revert attempt: --force must not paper over a real
       # incompatibility.
@@ -648,7 +648,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
 
   test "restoreSnapshot refuses an undefined domain before touching virsh":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-snap-revert-nodom", "")
+      let root = createTempDir("gosti-libvirt-snap-revert-nodom", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       let argvLog = root / "virsh.argv"
@@ -660,7 +660,7 @@ suite "LibvirtBackend snapshot surface (fake virsh)":
       let b = newLibvirtBackend(virshCmd = fakeVirsh,
                                 libvirtUri = "qemu:///test",
                                 imagePoolDir = root)
-      expect VmHarnessError:
+      expect GostiError:
         b.restoreSnapshot("never-defined", "warm")
       check not logLines(argvLog).mentions("snapshot-revert")
 
@@ -780,7 +780,7 @@ suite "LibvirtBackend (continued)":
 
   test "captureScreenshot writes a non-empty console frame":
     when defined(linux):
-      let root = createTempDir("vmh-libvirt-screenshot", "")
+      let root = createTempDir("gosti-libvirt-screenshot", "")
       defer: removeDir(root)
       let fakeVirsh = root / "virsh"
       writeFile(fakeVirsh,
@@ -1026,7 +1026,7 @@ suite "LibvirtBackend UEFI El Torito ISO validation":
   test "validateWindowsIsoBootable RAISES on a BIOS-only ISO (xorriso present)":
     let b = newLibvirtBackend()
     let dir = writeXorrisoStub(
-      getTempDir() / "vmh-xorriso-bios-" & $getCurrentProcessId(),
+      getTempDir() / "gosti-xorriso-bios-" & $getCurrentProcessId(),
       BiosOnlyPlain)
     defer: removeDir(dir)
     withPath(dir & PathSep & getEnv("PATH")):
@@ -1039,7 +1039,7 @@ suite "LibvirtBackend UEFI El Torito ISO validation":
       var raised = false
       try:
         b.validateWindowsIsoBootable("/tmp/fake-bios-only.iso")
-      except VmHarnessError as e:
+      except GostiError as e:
         raised = true
         check e.phase == lpProvisioning
         check "BIOS-boot only" in e.msg
@@ -1050,7 +1050,7 @@ suite "LibvirtBackend UEFI El Torito ISO validation":
   test "validateWindowsIsoBootable PASSES on a UEFI ISO (xorriso present)":
     let b = newLibvirtBackend()
     let dir = writeXorrisoStub(
-      getTempDir() / "vmh-xorriso-uefi-" & $getCurrentProcessId(),
+      getTempDir() / "gosti-xorriso-uefi-" & $getCurrentProcessId(),
       Win11PlainBiosPlusUefi)
     defer: removeDir(dir)
     withPath(dir & PathSep & getEnv("PATH")):
@@ -1062,7 +1062,7 @@ suite "LibvirtBackend UEFI El Torito ISO validation":
 
   test "validateWindowsIsoBootable WARNS + SKIPS when xorriso is absent":
     let b = newLibvirtBackend()
-    let emptyDir = getTempDir() / "vmh-noxorriso-" & $getCurrentProcessId()
+    let emptyDir = getTempDir() / "gosti-noxorriso-" & $getCurrentProcessId()
     createDir(emptyDir)
     defer: removeDir(emptyDir)
     # PATH with no xorriso ⇒ findExe returns "" ⇒ warn + return (no raise).
@@ -1104,7 +1104,7 @@ when defined(linux):
         else:
           writeFile(f.root / "name", "renamed-owned-domain\n")
         writeFile(f.log, "")
-        expect VmHarnessError: f.backend.cleanupAcquiredDomain(vm, true)
+        expect GostiError: f.backend.cleanupAcquiredDomain(vm, true)
         check "destroy " notin f.logText
         check "undefine " notin f.logText
         check fileExists(vm.extra["overlayPath"])
@@ -1119,7 +1119,7 @@ when defined(linux):
           writeFile(f.root / "foreign-xml", "<domain><os/><devices><disk><source file=\"" & alias & "\"/></disk></devices></domain>")
         writeFile(f.root / "mode", mode)
         writeFile(f.log, "")
-        expect VmHarnessError: f.backend.cleanupAcquiredDomain(vm, true)
+        expect GostiError: f.backend.cleanupAcquiredDomain(vm, true)
         check "destroy " notin f.logText
         check "undefine " notin f.logText
         check fileExists(vm.extra["overlayPath"])
@@ -1150,7 +1150,7 @@ when defined(linux):
         writeFile(f.root / "state", "paused\n")
         writeFile(f.root / "mode", mode)
         writeFile(f.log, "")
-        expect VmHarnessError: f.backend.cleanupAcquiredDomain(vm, true)
+        expect GostiError: f.backend.cleanupAcquiredDomain(vm, true)
         check fileExists(vm.extra["overlayPath"])
         if mode == "stopfail": check "undefine " notin f.logText
   
@@ -1158,7 +1158,7 @@ when defined(linux):
       let f = cleanupFixture(); defer: removeDir(f.root)
       writeFile(f.root / "mode", "missingnvram")
       let b = f.backend
-      expect VmHarnessError:
+      expect GostiError:
         discard b.bootFromMedia(BootMediaSpec(name: f.name, kind: bmkQcow2,
           mediaPath: f.disk, serialLogPath: f.root / "serial", generation: 2))
       check not fileExists(f.root / "name")
@@ -1196,7 +1196,7 @@ when defined(linux):
     test "failed clone start cleans its UUID-bound overlay without touching golden":
       let f = cleanupFixture(); defer: removeDir(f.root)
       writeFile(f.root / "mode", "startfail")
-      expect VmHarnessError: discard f.clone()
+      expect GostiError: discard f.clone()
       check not fileExists(f.root / "name")
       check not fileExists(f.backend.overlayPathFor(f.name))
       check readFile(f.disk) == "golden preserved"
@@ -1276,7 +1276,7 @@ when defined(linux):
       require fileExists(f.keptRecord)
       let bytes = readFile(f.keptRecord)
       let doc = parseJson(bytes)
-      check doc["schema"].getStr == "vm-harness/ephemeral-handle/1"
+      check doc["schema"].getStr == "gosti/ephemeral-handle/1"
       check doc["backend"].getStr == "libvirt"
       check doc["baseline"].getStr == f.name
       check doc["extra"]["cleanupUuid"].getStr == readFile(f.root / "uuid").strip

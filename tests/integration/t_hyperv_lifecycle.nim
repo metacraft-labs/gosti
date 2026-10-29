@@ -28,15 +28,15 @@
 ## the suite's tear-down logs a clear warning so this is detectable.
 
 import std/[os, strutils, tables, tempfiles, unittest]
-import vm_harness
+import gosti
 
 when not defined(windows):
   echo "[skip] t_hyperv_lifecycle: integration test requires a Windows host"
   quit(0)
 
-suite "integration_vm_harness_hyperv_lifecycle":
+suite "integration_gosti_hyperv_lifecycle":
   setup:
-    let credPath = getEnv("VMH_HYPERV_CRED_XML",
+    let credPath = getEnv("GOSTI_HYPERV_CRED_XML",
                           getHomeDir() / "AppData" / "Local" /
                           "Repro" / "hyperv-m69" / "vm-cred.xml")
     let backend = newHyperVBackend(vmName = "repro-m69-hyperv",
@@ -64,12 +64,12 @@ suite "integration_vm_harness_hyperv_lifecycle":
     var vm: VmHandle
     try:
       vm = backend.revertToBaseline("base-clean")
-      let host = createTempDir("vmh-hyperv-", "")
+      let host = createTempDir("gosti-hyperv-", "")
       defer: removeDir(host)
       let payload = repeat('A', 1024)
       writeFile(host / "send.bin", payload)
-      backend.copyToGuest(vm, host / "send.bin", "C:\\Temp\\vmh-roundtrip.bin")
-      backend.copyFromGuest(vm, "C:\\Temp\\vmh-roundtrip.bin",
+      backend.copyToGuest(vm, host / "send.bin", "C:\\Temp\\gosti-roundtrip.bin")
+      backend.copyFromGuest(vm, "C:\\Temp\\gosti-roundtrip.bin",
                             host / "recv.bin")
       check readFile(host / "recv.bin") == payload
     finally:
@@ -85,7 +85,7 @@ suite "integration_vm_harness_hyperv_lifecycle":
       # Trigger an invocation that the shim should capture.
       discard backend.execInGuest(vm, initTable[string, string](),
                                   @["net", "config", "workstation"])
-      let host = createTempDir("vmh-hyperv-shim-", "")
+      let host = createTempDir("gosti-hyperv-shim-", "")
       defer: removeDir(host)
       backend.copyFromGuest(vm, "C:\\Temp\\net-trace.log",
                             host / "trace.log")

@@ -11,7 +11,7 @@ fetches the JIT/registration material from GARM's metadata endpoint
 (the `run.cmd --jitconfig` path).
 
 This is the golden the M3 gate `t_windows_golden_jit_boot` boots (and the M1
-provider clones once `services.garm.providers.vmharness` is enabled with a
+provider clones once `services.garm.providers.gosti` is enabled with a
 real `poolDir`).
 
 ## What's in the golden

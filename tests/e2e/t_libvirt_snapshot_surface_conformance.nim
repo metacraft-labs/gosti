@@ -39,29 +39,29 @@
 ## SAFETY. This test DEFINES a libvirt domain, so it refuses to run unless
 ## it is told to, twice over:
 ##
-##   * ``VMH_LIBVIRT_SCRATCH=1`` must be set, and
+##   * ``GOSTI_LIBVIRT_SCRATCH=1`` must be set, and
 ##   * the connection URI must be a user-mode ``/session`` one.
 ##
 ## high-mem-server's ``qemu:///system`` carries the production ephemeral
 ## runner fleet (``garm-*``) and ``win-ci-vm-001``; a test must not be one
 ## typo away from defining domains next to them. The scratch domain is
-## named ``vmh-wr0-conformance-<pid>``, is never asked to boot an OS, and is
+## named ``gosti-wr0-conformance-<pid>``, is never asked to boot an OS, and is
 ## destroyed + undefined in a ``finally``.
 ##
 ## Run:
 ##   export LIBVIRT_DEFAULT_URI=qemu:///session
-##   export VMH_LIBVIRT_SCRATCH=1
+##   export GOSTI_LIBVIRT_SCRATCH=1
 ##   nim r --hints:off tests/e2e/t_libvirt_snapshot_surface_conformance.nim
 
 import std/[os, osproc, strutils, times, unittest]
-import vm_harness
+import gosti
 
 when not defined(linux):
   echo "[skip] t_libvirt_snapshot_surface_conformance: Linux host required"
   quit(0)
 
-if getEnv("VMH_LIBVIRT_SCRATCH") != "1":
-  echo "[skip] t_libvirt_snapshot_surface_conformance: VMH_LIBVIRT_SCRATCH=1 " &
+if getEnv("GOSTI_LIBVIRT_SCRATCH") != "1":
+  echo "[skip] t_libvirt_snapshot_surface_conformance: GOSTI_LIBVIRT_SCRATCH=1 " &
        "not set. This gate DEFINES a throwaway libvirt domain, so it is " &
        "opt-in by design — see the safety note in this file's header."
   quit(0)
@@ -80,7 +80,7 @@ if not b.probeAvailability():
        "at " & b.libvirtUri & " (is the user session libvirtd running?)"
   quit(0)
 
-let domName = "vmh-wr0-conformance-" & $getCurrentProcessId()
+let domName = "gosti-wr0-conformance-" & $getCurrentProcessId()
 let workDir = getTempDir() / domName
 let diskPath = workDir / "disk.qcow2"
 
@@ -158,7 +158,7 @@ try:
       var msg = ""
       try:
         discard b.snapshotRunning(domName, "warm")
-      except VmHarnessError as e:
+      except GostiError as e:
         msg = e.msg
       check "requires domain state 'running'" in msg
       # The important half: no snapshot was created behind the refusal.

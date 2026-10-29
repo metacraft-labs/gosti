@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## vm-harness docs -- SSG smoke + basePath test.
+## gosti docs -- SSG smoke + basePath test.
 ##
 ## Builds the real `content/` through the framework `buildSite` into a temp
 ## output dir (no client-JS bundle, to keep the test fast) and asserts the site
 ## renders, the landing + a couple of articles exist, and every internal
-## root-relative URL carries the `/vm-harness` project-Pages prefix.
+## root-relative URL carries the `/gosti` project-Pages prefix.
 ##
 ## Run from the site package root: `nim c -r --hints:off tests/test_site_builds.nim`.
 
@@ -15,16 +15,16 @@ import core/docs_tokens
 import ../src/docs_config
 import ../src/theme_tokens
 
-suite "vm-harness docs site builds":
+suite "gosti docs site builds":
   # Package root is one dir up from tests/, so paths resolve like `just build`.
   setup:
     setCurrentDir(currentSourcePath().parentDir().parentDir())
-  let outDir = getTempDir() / "vmh-docs-test-public"
+  let outDir = getTempDir() / "gosti-docs-test-public"
 
-  test "renders every page and applies the /vm-harness basePath":
+  test "renders every page and applies the /gosti basePath":
     let tokensCss = emitTokensCss(metacraftDocsTokenLayer(), designSystemTokens())
     let n = buildSite(outDir = outDir, contentDir = "content",
-                      cfg = vmhDocsConfig(), docsTokensCss = tokensCss)
+                      cfg = gostiDocsConfig(), docsTokensCss = tokensCss)
     check n >= 11  # index + 3 section indexes + 7 migrated pages
 
     # Landing + section indexes + a couple of articles are emitted as
@@ -37,8 +37,8 @@ suite "vm-harness docs site builds":
 
     # basePath: internal root-relative links are prefixed; external links aren't.
     let home = readFile(outDir / "index.html")
-    check "href=\"/vm-harness/" in home
-    check "href=\"https://github.com/metacraft-labs/vm-harness\"" in home
+    check "href=\"/gosti/" in home
+    check "href=\"https://github.com/metacraft-labs/gosti\"" in home
     # No un-prefixed internal doc link should leak through.
     check "href=\"/getting_started/" notin home
 

@@ -6,7 +6,7 @@
 ## documented in both docs/contributors/libvirt.md and the windows-runner-001
 ## prototype README:
 ##
-##   vm-harness provision \
+##   gosti provision \
 ##       --backend libvirt \
 ##       --recipe windows-x64-base \
 ##       --name windows-runner-001 \
@@ -27,8 +27,8 @@
 ## live-virsh case land with M4 Phase B's integration suite.
 
 import std/[os, strutils, tables, tempfiles, unittest]
-import vm_harness
-import vm_harness/cli
+import gosti
+import gosti/cli
 
 # Replicate the private helper in cli.nim so the test exercises the
 # same observable behaviour the CLI does.
@@ -87,7 +87,7 @@ suite "CLI libvirt M4 canonical-command flag plumbing":
 
   test "boot can pin host identity across forwarded port changes":
     let privateKey = getAppFilename()
-    let knownHosts = getTempDir() / "vmh cli known hosts"
+    let knownHosts = getTempDir() / "gosti cli known hosts"
     let opts = parseCliOpts(@[
       "boot",
       "--backend", "libvirt",
@@ -122,7 +122,7 @@ suite "CLI libvirt M4 canonical-command flag plumbing":
     expect ValueError:
       discard parseCliOpts(@[
         "boot",
-        "--ssh-known-hosts", getTempDir() / "vmh-cli-known-hosts",
+        "--ssh-known-hosts", getTempDir() / "gosti-cli-known-hosts",
         "--ssh-host-key-alias", "not one host"])
 
   test "boot rejects ambiguous SSH authentication":
@@ -244,7 +244,7 @@ suite "CLI libvirt M4 canonical-command flag plumbing":
   test "--provision-script reads file contents into CliOpts and threads through BaselineSpec":
     # lima-only knob: each --provision-script is read at parse time and
     # its CONTENTS (not the path) land in provisionScripts, repeatable.
-    let tmp = createTempDir("vmh-cli-prov-", "")
+    let tmp = createTempDir("gosti-cli-prov-", "")
     defer: removeDir(tmp)
     let s1 = tmp / "setup-a.sh"
     let s2 = tmp / "setup-b.sh"

@@ -7,11 +7,11 @@
 ## ``incus exec`` AFTER launch + readiness — instead of relying on cloud-init,
 ## which incus does not drive (its guest API is on ``/dev/incus/sock`` while a
 ## golden's cloud-init probes ``/dev/lxd/sock``). See
-## ``src/vm_harness/backends/incus.nim`` (``injectAndRunBootstrap``).
+## ``src/gosti/backends/incus.nim`` (``injectAndRunBootstrap``).
 ##
 ## MOCK JUSTIFICATION: this test uses the same hermetic seam as the sibling
 ## ``t_cli_incus`` — a FAKE ``incus`` shell script installed via the
-## ``VMH_INCUS_CMD`` command-vector env seam. The fake logs the exact argv of
+## ``GOSTI_INCUS_CMD`` command-vector env seam. The fake logs the exact argv of
 ## every invocation and answers the two calls the flow depends on (existence
 ## probe → "absent", readiness/state → "RUNNING"). No real Incus daemon,
 ## container, or network is touched. This is the most hermetic level the
@@ -26,12 +26,12 @@
 ## argv log). Both are asserted against here.
 
 import std/[os, strutils, tempfiles, unittest]
-import vm_harness/cli
+import gosti/cli
 
 suite "CLI Incus bootstrap exec-injection":
   test "ephemeral --keep delivers the bootstrap on stdin and execs it detached":
     when defined(linux):
-      let work = createTempDir("vmh-cli-incus-boot", "")
+      let work = createTempDir("gosti-cli-incus-boot", "")
       defer: removeDir(work)
       let logPath = work / "incus-argv.log"
       let fakeIncus = work / "incus"
@@ -60,14 +60,14 @@ suite "CLI Incus bootstrap exec-injection":
         "esac\n")
       setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
 
-      let previous = getEnv("VMH_INCUS_CMD")
-      putEnv("VMH_INCUS_CMD", fakeIncus)
-      defer: putEnv("VMH_INCUS_CMD", previous)
+      let previous = getEnv("GOSTI_INCUS_CMD")
+      putEnv("GOSTI_INCUS_CMD", fakeIncus)
+      defer: putEnv("GOSTI_INCUS_CMD", previous)
 
       let rc = runCli(@[
         "run", "--ephemeral", "--backend", "incus", "--keep",
-        "--baseline", "vmh-boot-test",
-        "--base-image", "vmh-base",
+        "--baseline", "gosti-boot-test",
+        "--base-image", "gosti-base",
         "--user-data", payloadFile])
       check rc == 0
 
@@ -75,13 +75,13 @@ suite "CLI Incus bootstrap exec-injection":
       let lines = argv.splitLines()
 
       # (a) the container was launched from the base image.
-      check "launch vmh-base vmh-boot-test" in lines
+      check "launch gosti-base gosti-boot-test" in lines
       # readiness was awaited before injecting (state poll + exec true).
-      check "list vmh-boot-test --format csv -c s" in lines
-      check "exec vmh-boot-test -- true" in lines
+      check "list gosti-boot-test --format csv -c s" in lines
+      check "exec gosti-boot-test -- true" in lines
       # (b) the payload was delivered via an in-guest `cat` fed on STDIN — the
       #     argv carries the sh -c wrapper + guest path, NOT the payload.
-      check argv.contains("exec vmh-boot-test -- sh -c umask 077 && cat > " &
+      check argv.contains("exec gosti-boot-test -- sh -c umask 077 && cat > " &
                           "'/root/garm-bootstrap.sh'")
       # (b2) the guest NETWORK was gated before the bootstrap launched: a
       #      default-route + DNS probe runs, so the script never fires its first

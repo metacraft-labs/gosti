@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-# vm-harness Tier-1 in-guest POSIX runner.
+# gosti Tier-1 in-guest POSIX runner.
 #
 # Generic primitives only — exec a command, install/uninstall an argv-trace
 # shim, write rows to RESULT.txt, finalize with the DONE sentinel. Project-
@@ -31,7 +31,7 @@
 
 set -eu
 
-VM_HARNESS_SHIM_TEMPLATE='#!/bin/sh
+GOSTI_SHIM_TEMPLATE='#!/bin/sh
 printf "%s\t%s\n" "$(date +%s%N 2>/dev/null || date +%s)" "$0 $*" >> "@TRACE_LOG_PATH@"
 exec "@REAL_BIN_PATH@" "$@"
 '
@@ -139,7 +139,7 @@ cmd_install_trace_shim() {
     cp -p "$real" "$real.real"
   fi
   tmp="${real}.shim.tmp.$$"
-  printf '%s' "$VM_HARNESS_SHIM_TEMPLATE" |
+  printf '%s' "$GOSTI_SHIM_TEMPLATE" |
     sed "s#@TRACE_LOG_PATH@#$logpath#g; s#@REAL_BIN_PATH@#${real}.real#g" \
       > "$tmp"
   chmod +x "$tmp"

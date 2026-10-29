@@ -118,7 +118,7 @@ suite "QemuWindowsArmBackend golden build":
 
   test "an overlay records the resolved golden, not the pointer":
     when defined(posix):
-      let tmp = createTempDir("vmh-qemu-win-arm-symlink-", "")
+      let tmp = createTempDir("gosti-qemu-win-arm-symlink-", "")
       defer: removeDir(tmp)
       let versioned = tmp / "win-arm-runner-0003"
       createDir(versioned)
@@ -145,7 +145,7 @@ suite "QemuWindowsArmBackend golden build":
 suite "Golden build: power-off is read off the monitor, not off SSH":
 
   test "a live guest answering the monitor is not reported as powered off":
-    let tmp = createTempDir("vmh-qwa-poweroff-live-", "")
+    let tmp = createTempDir("gosti-qwa-poweroff-live-", "")
     var cleanupComplete = false
     defer:
       if cleanupComplete: removeDir(tmp)
@@ -189,7 +189,7 @@ suite "Golden build: power-off is read off the monitor, not off SSH":
     discard done.waitForExit()
     let gonePid = done.processID
     done.close()
-    check guestPoweredOff("/nonexistent-vmh-monitor.sock", gonePid)
+    check guestPoweredOff("/nonexistent-gosti-monitor.sock", gonePid)
 
     let alive = startProcess("/bin/sh", args = @["-c", "sleep 30"],
                              options = {poUsePath})
@@ -197,7 +197,7 @@ suite "Golden build: power-off is read off the monitor, not off SSH":
       try: alive.terminate()
       except CatchableError: discard
       alive.close()
-    check not guestPoweredOff("/nonexistent-vmh-monitor.sock",
+    check not guestPoweredOff("/nonexistent-gosti-monitor.sock",
                               alive.processID)
 
   test "the power-off wait is bounded by the deadline it was given":
@@ -212,7 +212,7 @@ suite "Golden build: power-off is read off the monitor, not off SSH":
     # by the deadline it was given, not by the deadline rounded up to the
     # next poll. On a 90-minute build budget that difference is what decides
     # whether an operator gets an answer or watches a hung process.
-    check not waitForGuestPowerOff("/nonexistent-vmh-monitor.sock",
+    check not waitForGuestPowerOff("/nonexistent-gosti-monitor.sock",
                                    alive.processID,
                                    epochTime() + 1.0, pollMs = 30_000)
     let elapsed = epochTime() - start
@@ -222,7 +222,7 @@ suite "Golden build: power-off is read off the monitor, not off SSH":
 suite "Golden build: the install wait":
 
   test "the sentinel wait needs the marker, not merely a zero exit":
-    let tmp = createTempDir("vmh-qwa-sentinel-", "")
+    let tmp = createTempDir("gosti-qwa-sentinel-", "")
     defer: removeDir(tmp)
     let silent = tmp / "sshpass-silent"
     writeExecutable(silent, "#!/bin/sh\nexit 0\n")
@@ -233,7 +233,7 @@ suite "Golden build: the install wait":
     check not b.installSentinelPresent(2244)
 
   test "the sentinel wait returns as soon as the install declares itself":
-    let tmp = createTempDir("vmh-qwa-sentinel-ok-", "")
+    let tmp = createTempDir("gosti-qwa-sentinel-ok-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     createDir(tmp / "ssh")
@@ -245,7 +245,7 @@ suite "Golden build: the install wait":
     check b.waitForInstallSentinel(2245, epochTime() + 5.0, pollMs = 100)
 
   test "the sentinel wait is bounded even when the poll exceeds its deadline":
-    let tmp = createTempDir("vmh-qwa-sentinel-deadline-", "")
+    let tmp = createTempDir("gosti-qwa-sentinel-deadline-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     createDir(tmp / "ssh")
@@ -269,7 +269,7 @@ suite "Golden build: the install wait":
       check QwaInstallSentinelPath in p
 
   test "the sentinel wait probes again until the install declares itself":
-    let tmp = createTempDir("vmh-qwa-sentinel-repeat-", "")
+    let tmp = createTempDir("gosti-qwa-sentinel-repeat-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     let state = tmp / "first-probe"
@@ -297,7 +297,7 @@ suite "Golden build: the freeze watchdog":
   ## because it was not looking.
 
   test "a frozen guest is power-cycled, and the install then finishes":
-    let tmp = createTempDir("vmh-qwa-watchdog-recover-", "")
+    let tmp = createTempDir("gosti-qwa-watchdog-recover-", "")
     defer: removeDir(tmp)
     let serial = tmp / "serial.log"
     let disk = tmp / "windows.qcow2"
@@ -319,7 +319,7 @@ suite "Golden build: the freeze watchdog":
     check cycles == 1
 
   test "the allowance runs out, and the build is failed rather than faked":
-    let tmp = createTempDir("vmh-qwa-watchdog-exhaust-", "")
+    let tmp = createTempDir("gosti-qwa-watchdog-exhaust-", "")
     defer: removeDir(tmp)
     let serial = tmp / "serial.log"
     let disk = tmp / "windows.qcow2"
@@ -341,7 +341,7 @@ suite "Golden build: the freeze watchdog":
     check epochTime() - start < 25.0
 
   test "a guest that keeps moving is never power-cycled":
-    let tmp = createTempDir("vmh-qwa-watchdog-quiet-", "")
+    let tmp = createTempDir("gosti-qwa-watchdog-quiet-", "")
     defer: removeDir(tmp)
     let serial = tmp / "serial.log"
     let disk = tmp / "windows.qcow2"
@@ -363,7 +363,7 @@ suite "Golden build: the freeze watchdog":
     check cycles == 0
 
   test "the watchdog cannot outlive the build deadline":
-    let tmp = createTempDir("vmh-qwa-watchdog-deadline-", "")
+    let tmp = createTempDir("gosti-qwa-watchdog-deadline-", "")
     defer: removeDir(tmp)
     let serial = tmp / "serial.log"
     let disk = tmp / "windows.qcow2"
@@ -391,7 +391,7 @@ suite "Golden build: sysprep has to still be there a moment later":
   ## with a perfectly installed guest sitting at its desktop.
 
   test "a live sysprep is seen, and the wait returns at once":
-    let tmp = createTempDir("vmh-qwa-sysprep-live-", "")
+    let tmp = createTempDir("gosti-qwa-sysprep-live-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     createDir(tmp / "ssh")
@@ -406,7 +406,7 @@ suite "Golden build: sysprep has to still be there a moment later":
       alive.close()
     check b.sysprepRunning(2250)
     let start = epochTime()
-    check b.sysprepTookHold(2250, "/nonexistent-vmh-monitor.sock",
+    check b.sysprepTookHold(2250, "/nonexistent-gosti-monitor.sock",
                             alive.processID, epochTime() + 60.0,
                             windowSec = 60, pollMs = 5_000)
     check epochTime() - start < 10.0
@@ -414,7 +414,7 @@ suite "Golden build: sysprep has to still be there a moment later":
   test "a guest that already powered off counts as having taken hold":
     # A generalize normally runs for minutes, but the build must not fail
     # because sysprep beat the first poll to the finish line.
-    let tmp = createTempDir("vmh-qwa-sysprep-off-", "")
+    let tmp = createTempDir("gosti-qwa-sysprep-off-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     createDir(tmp / "ssh")            # deliberately NOT reporting running
@@ -426,12 +426,12 @@ suite "Golden build: sysprep has to still be there a moment later":
     let pid = gone.processID
     gone.close()
     check not b.sysprepRunning(2251)
-    check b.sysprepTookHold(2251, "/nonexistent-vmh-monitor.sock", pid,
+    check b.sysprepTookHold(2251, "/nonexistent-gosti-monitor.sock", pid,
                             epochTime() + 60.0, windowSec = 60,
                             pollMs = 5_000)
 
   test "a sysprep that died with its ssh session is caught, and bounded":
-    let tmp = createTempDir("vmh-qwa-sysprep-dead-", "")
+    let tmp = createTempDir("gosti-qwa-sysprep-dead-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     createDir(tmp / "ssh")
@@ -446,7 +446,7 @@ suite "Golden build: sysprep has to still be there a moment later":
     let start = epochTime()
     # Neither running nor powered off, and the window — not the build's whole
     # deadline — is what bounds the answer.
-    check not b.sysprepTookHold(2252, "/nonexistent-vmh-monitor.sock",
+    check not b.sysprepTookHold(2252, "/nonexistent-gosti-monitor.sock",
                                 alive.processID, epochTime() + 600.0,
                                 windowSec = 1, pollMs = 30_000)
     let elapsed = epochTime() - start
@@ -454,7 +454,7 @@ suite "Golden build: sysprep has to still be there a moment later":
     check elapsed < 20.0
 
   test "the take-hold wait is bounded by the build deadline too":
-    let tmp = createTempDir("vmh-qwa-sysprep-deadline-", "")
+    let tmp = createTempDir("gosti-qwa-sysprep-deadline-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     createDir(tmp / "ssh")
@@ -467,7 +467,7 @@ suite "Golden build: sysprep has to still be there a moment later":
       discard alive.waitForExit()
       alive.close()
     let start = epochTime()
-    check not b.sysprepTookHold(2253, "/nonexistent-vmh-monitor.sock",
+    check not b.sysprepTookHold(2253, "/nonexistent-gosti-monitor.sock",
                                 alive.processID, epochTime() - 1.0,
                                 windowSec = 600, pollMs = 100)
     check epochTime() - start < 20.0
@@ -481,14 +481,14 @@ suite "Golden build: the install media keypress prompt":
   ## trade "the install never starts" for "the install restarts forever".
 
   test "a monitor command on an absent socket fails rather than raising":
-    check not sendQemuMonitorCommand("/nonexistent-vmh-monitor.sock",
+    check not sendQemuMonitorCommand("/nonexistent-gosti-monitor.sock",
                                      "sendkey ret")
 
   test "keying STOPS once the guest starts writing to the target disk":
     # The load-bearing half. Setup's first reboot happens while the install
     # media is still ahead of the disk in BootOrder, so a key delivered then
     # restarts Setup from the ISO.
-    let tmp = createTempDir("vmh-qwa-key-progress-", "")
+    let tmp = createTempDir("gosti-qwa-key-progress-", "")
     defer: removeDir(tmp)
     let disk = tmp / "windows.qcow2"
     writeFile(disk, newString(int(QwaInstallProgressBytes) + 1))
@@ -507,7 +507,7 @@ suite "Golden build: the install media keypress prompt":
     check epochTime() - start < 2.0
 
   test "keying is bounded by its own window when nothing ever happens":
-    let tmp = createTempDir("vmh-qwa-key-window-", "")
+    let tmp = createTempDir("gosti-qwa-key-window-", "")
     defer: removeDir(tmp)
     let disk = tmp / "windows.qcow2"
     writeFile(disk, "tiny")
@@ -529,7 +529,7 @@ suite "Golden build: the install media keypress prompt":
     check elapsed < 6.0
 
   test "keying is bounded by the overall build deadline too":
-    let tmp = createTempDir("vmh-qwa-key-deadline-", "")
+    let tmp = createTempDir("gosti-qwa-key-deadline-", "")
     defer: removeDir(tmp)
     writeFile(tmp / "windows.qcow2", "tiny")
     var alive = startProcess("/bin/sh", args = @["-c", "sleep 30"],
@@ -545,7 +545,7 @@ suite "Golden build: the install media keypress prompt":
     check epochTime() - start < 2.0
 
   test "keying stops when the install boot has already died":
-    let tmp = createTempDir("vmh-qwa-key-dead-", "")
+    let tmp = createTempDir("gosti-qwa-key-dead-", "")
     defer: removeDir(tmp)
     writeFile(tmp / "windows.qcow2", "tiny")
     var dead = startProcess("/bin/sh", args = @["-c", "exit 0"],
@@ -560,7 +560,7 @@ suite "Golden build: the install media keypress prompt":
     check epochTime() - start < 2.0
 
   test "a zero window presses nothing at all":
-    let tmp = createTempDir("vmh-qwa-key-off-", "")
+    let tmp = createTempDir("gosti-qwa-key-off-", "")
     defer: removeDir(tmp)
     writeFile(tmp / "windows.qcow2", "tiny")
     check answerInstallMediaKeyPrompt(
@@ -602,7 +602,7 @@ suite "The per-job boot: the reboot lifecycle":
   test "a guest that keeps rebooting is named, not waited out":
     ## The failure mode that allowing reboots at all introduces, and the
     ## reason the window is bounded rather than simply opened.
-    let tmp = createTempDir("vmh-qwa-loop-", "")
+    let tmp = createTempDir("gosti-qwa-loop-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     let serial = tmp / QwaSerialLogName
@@ -622,7 +622,7 @@ suite "The per-job boot: the reboot lifecycle":
     check epochTime() - started < 30.0
 
   test "an unbounded wait still ends at its deadline":
-    let tmp = createTempDir("vmh-qwa-loopoff-", "")
+    let tmp = createTempDir("gosti-qwa-loopoff-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     let serial = tmp / QwaSerialLogName
@@ -652,7 +652,7 @@ suite "The per-job boot: the reboot lifecycle":
     ## this fails. And ``set-action reboot=shutdown`` really reached QEMU
     ## before the handle was returned, which is where the one-shot lifecycle
     ## guarantee now lives.
-    let tmp = createTempDir("vmh-qwa-perjob-ok-", "")
+    let tmp = createTempDir("gosti-qwa-perjob-ok-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp, sshReadyTimeoutSec = 45)
     createDir(tmp / "ssh")
@@ -698,7 +698,7 @@ suite "The per-job boot: the reboot lifecycle":
     ## The refusal path, which is the whole reason the transition is checked
     ## rather than fired and forgotten: a guest that answered SSH but can
     ## still reboot itself must NOT be handed to a job.
-    let tmp = createTempDir("vmh-qwa-perjob-refuse-", "")
+    let tmp = createTempDir("gosti-qwa-perjob-refuse-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp, sshReadyTimeoutSec = 45)
     createDir(tmp / "ssh")
@@ -746,23 +746,23 @@ suite "Golden build: the whole run":
     delEnv(FakeQemuEnv)
     delEnv(FakeSshDirEnv)
     delEnv(FakeSshLogEnv)
-    delEnv("VMH_GOLDEN_FAKE_SSH_VMDIR")
+    delEnv("GOSTI_GOLDEN_FAKE_SSH_VMDIR")
     # Keep the space precondition out of the way: it has its own suite, and
     # a busy CI host must not turn these into false failures.
-    putEnv("VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB", "0")
+    putEnv("GOSTI_QEMU_WINDOWS_ARM_MIN_FREE_GB", "0")
 
   teardown:
-    delEnv("VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB")
+    delEnv("GOSTI_QEMU_WINDOWS_ARM_MIN_FREE_GB")
     delEnv(FakeQemuEnv)
     delEnv(FakeSshDirEnv)
     delEnv(FakeSshLogEnv)
-    delEnv("VMH_GOLDEN_FAKE_SSH_VMDIR")
-    delEnv("VMH_QEMU_EFI_CODE_TEMPLATE")
-    delEnv("VMH_QEMU_EFI_VARS_TEMPLATE")
-    delEnv("VMH_QEMU_FIRMWARE_DIR")
+    delEnv("GOSTI_GOLDEN_FAKE_SSH_VMDIR")
+    delEnv("GOSTI_QEMU_EFI_CODE_TEMPLATE")
+    delEnv("GOSTI_QEMU_EFI_VARS_TEMPLATE")
+    delEnv("GOSTI_QEMU_FIRMWARE_DIR")
 
   test "a missing Windows ISO is refused before anything is allocated":
-    let tmp = createTempDir("vmh-qwa-run-noiso-", "")
+    let tmp = createTempDir("gosti-qwa-run-noiso-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     var raised = false
@@ -770,7 +770,7 @@ suite "Golden build: the whole run":
       discard b.buildWindowsArmGolden(newGoldenBuildSpec(
         buildDir = tmp / "golden", windowsIso = tmp / "absent.iso",
         autounattendIso = tmp / "absent-unattend.iso"))
-    except VmHarnessError as e:
+    except GostiError as e:
       raised = true
       check "absent.iso" in e.msg
       check "operator-supplied" in e.msg
@@ -778,7 +778,7 @@ suite "Golden build: the whole run":
     check not dirExists(tmp / "golden")
 
   test "a missing answer-file ISO names the script that builds it":
-    let tmp = createTempDir("vmh-qwa-run-nounattend-", "")
+    let tmp = createTempDir("gosti-qwa-run-nounattend-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     writeFile(tmp / "win.iso", "iso")
@@ -787,13 +787,13 @@ suite "Golden build: the whole run":
       discard b.buildWindowsArmGolden(newGoldenBuildSpec(
         buildDir = tmp / "golden", windowsIso = tmp / "win.iso",
         autounattendIso = tmp / "absent-unattend.iso"))
-    except VmHarnessError as e:
+    except GostiError as e:
       raised = true
       check "build-autounattend-iso.sh" in e.msg
     check raised
 
   test "a build into a directory already holding a golden is refused":
-    let tmp = createTempDir("vmh-qwa-run-inplace-", "")
+    let tmp = createTempDir("gosti-qwa-run-inplace-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     writeFile(tmp / "win.iso", "iso")
@@ -806,7 +806,7 @@ suite "Golden build: the whole run":
       discard b.buildWindowsArmGolden(newGoldenBuildSpec(
         buildDir = live, windowsIso = tmp / "win.iso",
         autounattendIso = tmp / "unattend.iso", diskGB = 1))
-    except VmHarnessError as e:
+    except GostiError as e:
       raised = true
       check "refusing to build a golden into" in e.msg
     check raised
@@ -816,7 +816,7 @@ suite "Golden build: the whole run":
     # A Windows install that goes wrong has no console and no SSH. If the
     # failure path tidies up, the run is undiagnosable and the next attempt
     # is a blind 60-minute retry.
-    let tmp = createTempDir("vmh-qwa-run-failstart-", "")
+    let tmp = createTempDir("gosti-qwa-run-failstart-", "")
     defer: removeDir(tmp)
     let deadQemu = tmp / "dead-qemu"
     writeExecutable(deadQemu, """#!/bin/sh
@@ -829,8 +829,8 @@ exit 1
     writeFile(tmp / "unattend.iso", "iso")
     writeFile(tmp / "code.fd", "efi code")
     writeFile(tmp / "vars.fd", "efi vars")
-    putEnv("VMH_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
-    putEnv("VMH_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
+    putEnv("GOSTI_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
+    putEnv("GOSTI_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
     let golden = tmp / "win-arm-runner-0200"
     var raised = false
     try:
@@ -838,7 +838,7 @@ exit 1
         buildDir = golden, windowsIso = tmp / "win.iso",
         autounattendIso = tmp / "unattend.iso", diskGB = 1,
         deadlineSec = 20))
-    except VmHarnessError as e:
+    except GostiError as e:
       raised = true
       check (golden / "serial.log") in e.msg
       check (golden / "qemu.log") in e.msg
@@ -860,15 +860,15 @@ exit 1
     ## framebuffer is the only artifact that says where a headless install
     ## actually stopped, so the failure path has to grab it while QEMU is
     ## still alive — once it exits there is nothing left to dump.
-    let tmp = createTempDir("vmh-qwa-run-screen-", "")
+    let tmp = createTempDir("gosti-qwa-run-screen-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     writeFile(tmp / "win.iso", "iso")
     writeFile(tmp / "unattend.iso", "iso")
     writeFile(tmp / "code.fd", "efi code")
     writeFile(tmp / "vars.fd", "efi vars")
-    putEnv("VMH_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
-    putEnv("VMH_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
+    putEnv("GOSTI_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
+    putEnv("GOSTI_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
     createDir(tmp / "ssh")            # deliberately NO sentinel file
     putEnv(FakeSshDirEnv, tmp / "ssh")
     putEnv(FakeQemuEnv, "1")
@@ -882,7 +882,7 @@ exit 1
         buildDir = golden, windowsIso = tmp / "win.iso",
         autounattendIso = tmp / "unattend.iso", diskGB = 1, cpus = 1,
         memoryMB = 64, deadlineSec = 12, keyPressWindowSec = 1))
-    except VmHarnessError as e:
+    except GostiError as e:
       raised = true
       # The message names it, and names it as the thing to read first.
       check (golden / QwaGoldenScreenshotName) in e.msg
@@ -903,20 +903,20 @@ exit 1
     ## saw when sysprep was killed with the SSH session. Before this check
     ## the build spent its entire remaining deadline waiting for a power-off
     ## that could never come, and then blamed sysprep for not shutting down.
-    let tmp = createTempDir("vmh-qwa-run-nohold-", "")
+    let tmp = createTempDir("gosti-qwa-run-nohold-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     writeFile(tmp / "win.iso", "iso")
     writeFile(tmp / "unattend.iso", "iso")
     writeFile(tmp / "code.fd", "efi code")
     writeFile(tmp / "vars.fd", "efi vars")
-    putEnv("VMH_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
-    putEnv("VMH_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
+    putEnv("GOSTI_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
+    putEnv("GOSTI_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
     createDir(tmp / "ssh")
     writeFile(tmp / "ssh" / "sentinel", "")   # the install finished...
-    # ...but NO `sysprep-running` file, and no VMH_GOLDEN_FAKE_SSH_VMDIR, so
+    # ...but NO `sysprep-running` file, and no GOSTI_GOLDEN_FAKE_SSH_VMDIR, so
     # the launch is accepted and then nothing whatsoever happens.
-    delEnv("VMH_GOLDEN_FAKE_SSH_VMDIR")
+    delEnv("GOSTI_GOLDEN_FAKE_SSH_VMDIR")
     putEnv(FakeSshDirEnv, tmp / "ssh")
     putEnv(FakeQemuEnv, "1")
     defer:
@@ -930,7 +930,7 @@ exit 1
         buildDir = golden, windowsIso = tmp / "win.iso",
         autounattendIso = tmp / "unattend.iso", diskGB = 1, cpus = 1,
         memoryMB = 64, deadlineSec = 25, keyPressWindowSec = 1))
-    except VmHarnessError as e:
+    except GostiError as e:
       raised = true
       # It has to say THIS, not "sysprep did not power the guest off": the
       # two have different fixes and only one of them is sysprep's fault.
@@ -946,41 +946,41 @@ exit 1
   test "a missing UEFI firmware template fails with the fix in the message":
     # Without firmware QEMU boots nothing at all, and an install that never
     # starts looks exactly like one that is merely slow.
-    let tmp = createTempDir("vmh-qwa-run-nofw-", "")
-    let savedCode = getEnv("VMH_QEMU_EFI_CODE")
+    let tmp = createTempDir("gosti-qwa-run-nofw-", "")
+    let savedCode = getEnv("GOSTI_QEMU_EFI_CODE")
     createDir(tmp / "empty")
-    putEnv("VMH_QEMU_FIRMWARE_DIR", tmp / "empty")
-    putEnv("VMH_QEMU_EFI_CODE_TEMPLATE", tmp / "absent.fd")
-    delEnv("VMH_QEMU_EFI_CODE")
+    putEnv("GOSTI_QEMU_FIRMWARE_DIR", tmp / "empty")
+    putEnv("GOSTI_QEMU_EFI_CODE_TEMPLATE", tmp / "absent.fd")
+    delEnv("GOSTI_QEMU_EFI_CODE")
     defer:
       removeDir(tmp)
-      delEnv("VMH_QEMU_FIRMWARE_DIR")
-      if savedCode.len > 0: putEnv("VMH_QEMU_EFI_CODE", savedCode)
+      delEnv("GOSTI_QEMU_FIRMWARE_DIR")
+      if savedCode.len > 0: putEnv("GOSTI_QEMU_EFI_CODE", savedCode)
     var raised = false
     try:
       stageGoldenFirmware(tmp)
-    except VmHarnessError as e:
+    except GostiError as e:
       raised = true
-      check "VMH_QEMU_EFI_CODE_TEMPLATE" in e.msg
+      check "GOSTI_QEMU_EFI_CODE_TEMPLATE" in e.msg
       check "edk2-aarch64-code.fd" in e.msg
     check raised
 
   test "an explicit firmware directory is used instead of the search list":
-    let tmp = createTempDir("vmh-qwa-run-fw-", "")
-    let savedCode = getEnv("VMH_QEMU_EFI_CODE")
-    let savedVars = getEnv("VMH_QEMU_EFI_VARS")
+    let tmp = createTempDir("gosti-qwa-run-fw-", "")
+    let savedCode = getEnv("GOSTI_QEMU_EFI_CODE")
+    let savedVars = getEnv("GOSTI_QEMU_EFI_VARS")
     createDir(tmp / "fw")
     writeFile(tmp / "fw" / "edk2-aarch64-code.fd", "code")
     writeFile(tmp / "fw" / "edk2-arm-vars.fd", "vars")
     createDir(tmp / "build")
-    putEnv("VMH_QEMU_FIRMWARE_DIR", tmp / "fw")
-    delEnv("VMH_QEMU_EFI_CODE")
-    delEnv("VMH_QEMU_EFI_VARS")
+    putEnv("GOSTI_QEMU_FIRMWARE_DIR", tmp / "fw")
+    delEnv("GOSTI_QEMU_EFI_CODE")
+    delEnv("GOSTI_QEMU_EFI_VARS")
     defer:
       removeDir(tmp)
-      delEnv("VMH_QEMU_FIRMWARE_DIR")
-      if savedCode.len > 0: putEnv("VMH_QEMU_EFI_CODE", savedCode)
-      if savedVars.len > 0: putEnv("VMH_QEMU_EFI_VARS", savedVars)
+      delEnv("GOSTI_QEMU_FIRMWARE_DIR")
+      if savedCode.len > 0: putEnv("GOSTI_QEMU_EFI_CODE", savedCode)
+      if savedVars.len > 0: putEnv("GOSTI_QEMU_EFI_VARS", savedVars)
     stageGoldenFirmware(tmp / "build")
     # A per-build, writable vars file: Windows Setup writes its boot entry
     # into it, and a shared one would be written by every guest at once.
@@ -1000,22 +1000,22 @@ exit 1
     ## sshpass, and power-off is observed on the monitor while the QEMU
     ## process is still alive — so the assertion cannot pass by accident of
     ## the process having died.
-    let tmp = createTempDir("vmh-qwa-run-ok-", "")
+    let tmp = createTempDir("gosti-qwa-run-ok-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     writeFile(tmp / "win.iso", "pretend windows iso")
     writeFile(tmp / "unattend.iso", "pretend answer iso")
     writeFile(tmp / "code.fd", "efi code")
     writeFile(tmp / "vars.fd", "efi vars")
-    putEnv("VMH_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
-    putEnv("VMH_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
+    putEnv("GOSTI_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
+    putEnv("GOSTI_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
     createDir(tmp / "ssh")
     writeFile(tmp / "ssh" / "sentinel", "")
     putEnv(FakeSshDirEnv, tmp / "ssh")
     putEnv(FakeQemuEnv, "1")
 
     let golden = tmp / "win-arm-runner-0300"
-    putEnv("VMH_GOLDEN_FAKE_SSH_VMDIR", golden)
+    putEnv("GOSTI_GOLDEN_FAKE_SSH_VMDIR", golden)
 
     # keyPressWindowSec is shortened from the shipped 180s only so the suite
     # stays fast: the fake guest never writes to the disk, so the early exit
@@ -1070,7 +1070,7 @@ exit 1
     check m["diskGB"].getInt == 1
     # A second build into the same directory is refused, which is what makes
     # a rebuild an addition rather than an overwrite.
-    expect VmHarnessError:
+    expect GostiError:
       discard b.buildWindowsArmGolden(newGoldenBuildSpec(
         buildDir = golden, windowsIso = tmp / "win.iso",
         autounattendIso = tmp / "unattend.iso", diskGB = 1))
@@ -1085,15 +1085,15 @@ exit 1
     ## freezeSec is 1 rather than the shipped 600 only so the suite stays
     ## fast; the shipped value is pinned in "the shipped freeze bound is the
     ## measured one".
-    let tmp = createTempDir("vmh-qwa-run-frozen-", "")
+    let tmp = createTempDir("gosti-qwa-run-frozen-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     writeFile(tmp / "win.iso", "pretend windows iso")
     writeFile(tmp / "unattend.iso", "pretend answer iso")
     writeFile(tmp / "code.fd", "efi code")
     writeFile(tmp / "vars.fd", "efi vars")
-    putEnv("VMH_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
-    putEnv("VMH_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
+    putEnv("GOSTI_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
+    putEnv("GOSTI_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
     createDir(tmp / "ssh")
     # NO sentinel up front: only a power cycle can produce one here.
     putEnv(FakeSshDirEnv, tmp / "ssh")
@@ -1105,7 +1105,7 @@ exit 1
       delEnv(FakeSwtpmLogEnv)
 
     let golden = tmp / "win-arm-runner-0301"
-    putEnv("VMH_GOLDEN_FAKE_SSH_VMDIR", golden)
+    putEnv("GOSTI_GOLDEN_FAKE_SSH_VMDIR", golden)
 
     let produced = b.buildWindowsArmGolden(newGoldenBuildSpec(
       buildDir = golden, windowsIso = tmp / "win.iso",
@@ -1130,21 +1130,21 @@ exit 1
     ## the build FAILS. A half-installed disk must never be finalized, and
     ## the message has to say power cycles were spent so the next operator
     ## reads "the guest kept freezing" and not "the answer file is wrong".
-    let tmp = createTempDir("vmh-qwa-run-frozen-dead-", "")
+    let tmp = createTempDir("gosti-qwa-run-frozen-dead-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     writeFile(tmp / "win.iso", "pretend windows iso")
     writeFile(tmp / "unattend.iso", "pretend answer iso")
     writeFile(tmp / "code.fd", "efi code")
     writeFile(tmp / "vars.fd", "efi vars")
-    putEnv("VMH_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
-    putEnv("VMH_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
+    putEnv("GOSTI_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
+    putEnv("GOSTI_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
     createDir(tmp / "ssh")
     putEnv(FakeSshDirEnv, tmp / "ssh")
     putEnv(FakeQemuEnv, "1")
     delEnv(FakeFreezeEnv)   # a guest that is simply never done
     let golden = tmp / "win-arm-runner-0302"
-    putEnv("VMH_GOLDEN_FAKE_SSH_VMDIR", golden)
+    putEnv("GOSTI_GOLDEN_FAKE_SSH_VMDIR", golden)
 
     var msg = ""
     try:
@@ -1153,7 +1153,7 @@ exit 1
         autounattendIso = tmp / "unattend.iso", recipeDir = recipeDir(),
         diskGB = 1, cpus = 1, memoryMB = 64, deadlineSec = 60,
         keyPressWindowSec = 0, freezeSec = 1, maxPowerCycles = 1))
-    except VmHarnessError as e:
+    except GostiError as e:
       msg = e.msg
     check msg.len > 0
     check "1 power cycle(s) were spent on a frozen guest, of 1 allowed" in msg

@@ -1,18 +1,18 @@
-# vm-harness serve — remoting daemon
+# gosti serve — remoting daemon
 
-`vm-harness serve` is an authenticated network front-end that exposes this
+`gosti serve` is an authenticated network front-end that exposes this
 host's VM/container lifecycle operations to a remote controller. It is the
 **uniform network access point** for every backend (incus, libvirt, Hyper-V,
 tart, …) so any host's VMs can be driven from a central controller, such as a
 central GARM placing jobs on capability pools.
 
 It is a *thin front-end, not a reimplementation*: every operation is executed
-by the **same `vm-harness` binary** the CLI runs. The daemon adds only the
+by the **same `gosti` binary** the CLI runs. The daemon adds only the
 network endpoint, the auth check, and output streaming.
 
 ## Why HTTP/JSON (not gRPC)
 
-- vm-harness is dependency-light (`vm_harness.nimble` requires only `nim`).
+- gosti is dependency-light (`gosti.nimble` requires only `nim`).
   HTTP/1.1 + JSON needs only `std/net` + `std/json`, already used across the
   CLI and backends. gRPC would add protobuf tooling + a Nim gRPC library to
   every build.
@@ -21,7 +21,7 @@ network endpoint, the auth check, and output streaming.
   an **auth-method** abstraction (AH's key-file / password / agent) — we take
   the bearer-token shape — and **capability tags** on a host — we expose a
   backend/capability list on `/v1/info`, and the full capability manifest on
-  `/v1/manifest`. AH drives hosts over **system SSH**; vm-harness deliberately
+  `/v1/manifest`. AH drives hosts over **system SSH**; gosti deliberately
   ships its own daemon so one protocol front-ends every backend uniformly.
 
 ## Protocol v1
@@ -47,10 +47,10 @@ can drive). It is the source a controller derives runner labels from. See
 detection rules, the enrollment/identity/revocation model, and the
 label-derivation contract.
 
-`argv` is a full vm-harness CLI invocation *without* the program name, e.g.
+`argv` is a full gosti CLI invocation *without* the program name, e.g.
 `["run","--backend","incus","--baseline","job-42","--ephemeral", ...]`. The
 daemon prepends its configured worker executable and runs it, so the executed
-backend code is byte-for-byte the local `vm-harness` path.
+backend code is byte-for-byte the local `gosti` path.
 
 The bearer token is therefore an **operator/controller credential**, not a
 per-workflow credential: an authenticated caller can invoke host-mutating
@@ -95,7 +95,7 @@ call paths.
 - **Bearer token.** mTLS client-certificate auth is not implemented. The
   token is provisioned via
   `--auth-token-file` (agenix / systemd `LoadCredential` friendly),
-  `--auth-token`, or `$VMH_SERVE_TOKEN`.
+  `--auth-token`, or `$GOSTI_SERVE_TOKEN`.
 - **Bind to a NetBird overlay IP only, never a public interface.** Over
   NetBird (WireGuard) the bearer token travels encrypted at the network
   layer. The control channel is authenticated and must never be exposed
@@ -107,7 +107,7 @@ call paths.
 ## Running the daemon
 
 ```sh
-vm-harness serve --listen 100.72.0.5:8873 --auth-token-file /run/creds/vmh
+gosti serve --listen 100.72.0.5:8873 --auth-token-file /run/creds/gosti
 # readiness / health: the bound port is written to --port-file when listening.
 ```
 
@@ -162,7 +162,7 @@ its slot instead of holding it indefinitely.
 
 These three layers bound the damage but cannot bound the OUTAGE if the daemon
 wedges for an unanticipated reason. That is the deployment's job: the
-`services.vm-harness-serve` modules in `metacraft-labs/devops-modules` ship a health watchdog
+`services.gosti-serve` modules in `metacraft-labs/devops-modules` ship a health watchdog
 (a systemd timer on Linux, a launchd `StartInterval` job on darwin) that probes
 the listener and restarts it after repeated failures.
 
@@ -208,7 +208,7 @@ to a vanished peer never returns. Measured on high-mem-server: seven handler
 threads at ~91% CPU each, 225,086 failed `sendto` calls in 5 s, and 16
 unreaped workers (each spinning handler never reached its `waitpid`). The same
 loop also resends from offset 0 after a partial write, which would corrupt the
-stream. Gated by `t_vmharness_serve_client_disconnect_no_spin`.
+stream. Gated by `t_gosti_serve_client_disconnect_no_spin`.
 
 ## Driving a remote host
 
@@ -216,21 +216,21 @@ Any operational subcommand gains a `--remote <host:port>` flag that forwards
 it to a daemon and relays the streamed output + exit code:
 
 ```sh
-export VMH_SERVE_TOKEN=$(cat /run/creds/vmh)
-vm-harness --remote 100.72.0.5:8873 probe
-vm-harness --remote 100.72.0.5:8873 run --ephemeral --backend incus \
-  --baseline job-42 --base-image vmh-base \
+export GOSTI_SERVE_TOKEN=$(cat /run/creds/gosti)
+gosti --remote 100.72.0.5:8873 probe
+gosti --remote 100.72.0.5:8873 run --ephemeral --backend incus \
+  --baseline job-42 --base-image gosti-base \
   --incus-security-nesting --incus-nested-kvm -- true
 ```
 
 Library consumers use `ServeClient` directly:
 
 ```nim
-import vm_harness
+import gosti
 let c = newServeClient("100.72.0.5:8873", token)
 let info = c.info()                          # capability report
 let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
-                          "--baseline", "job-42", "--base-image", "vmh-base",
+                          "--baseline", "job-42", "--base-image", "gosti-base",
                           "--", "true"],
                         proc(ev: ExecEvent) =
                           if ev.kind == ekLog: echo ev.line)
@@ -240,7 +240,7 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
 
 - `tests/unit/t_serve_protocol.nim` — pure wire-contract checks (universal
   layer; in `just test` and the `repro test` catalog).
-- `tests/e2e/t_vmharness_serve_roundtrip.nim` — the end-to-end gate. A remote
+- `tests/e2e/t_gosti_serve_roundtrip.nim` — the end-to-end gate. A remote
   client drives provision → run(exec probe) → destroy against a real daemon
   over the authenticated endpoint using the sanctioned **noop** backend;
   asserts no residue, byte-equivalence to the local `run` path, and that an
@@ -249,12 +249,12 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   argv, local pre-start ordering, and exact cleanup without requiring a host
   daemon. Hermetic via a no-threads self-exec topology (the test binary
   re-execs itself as daemon and as CLI worker). In `just test`.
-- `tests/e2e/t_vmharness_serve_concurrency.nim` — a slow `/v1/exec` must not
+- `tests/e2e/t_gosti_serve_concurrency.nim` — a slow `/v1/exec` must not
   serialize unrelated connections. In `just test`.
-- `tests/e2e/t_vmharness_serve_survives_a_hung_request.nim` — three layers: one HUNG exec does not stop a concurrent request; a
+- `tests/e2e/t_gosti_serve_survives_a_hung_request.nim` — three layers: one HUNG exec does not stop a concurrent request; a
   FULLY SATURATED pool answers 503 immediately instead of letting connections
   rot in the backlog; and the daemon recovers once the hangs drain. Falsifiable
-  in both directions — `VMH_HUNG_TEST_THREADS=1` makes layer 1 fail
+  in both directions — `GOSTI_HUNG_TEST_THREADS=1` makes layer 1 fail
   (serial-equivalent), and the old accept-in-every-handler daemon passes
   layer 1 but fails layer 2. Hermetic (the worker is a self-exec hang/quick
   role). Before any timed probe, each hanging worker must acknowledge its
@@ -263,10 +263,10 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   Startup failure fails the fixture; requests are not retried. The 40-second
   hangs and all 2.5-second response bounds remain unchanged. In `just test`.
   Its HOST tier,
-  `t_vmharness_serve_survives_a_hung_request_host.nim`, is READ-ONLY and
+  `t_gosti_serve_survives_a_hung_request_host.nim`, is READ-ONLY and
   asserts that a DEPLOYED listener answers and that its accept backlog is not
   saturated; `just test-host`, skips loudly with no deployed daemon.
-- `tests/e2e/t_vmharness_serve_client_disconnect_no_spin.nim` — the
+- `tests/e2e/t_gosti_serve_client_disconnect_no_spin.nim` — the
   disconnect contract above. Clients abandon a chatty exec (more output than a
   pipe buffer holds) mid-stream; asserts the daemon stays idle while the worker
   finishes (CPU time over a fixed window), every worker completes, and after a
@@ -274,13 +274,13 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   still answers. Falsifiable: routing the writes back through std/net's
   `send(Socket, string)` makes every assertion fail. Hermetic (self-exec
   worker). In `just test`.
-- `tests/e2e/t_vmharness_serve_roundtrip_incus.nim` — the same remote path
+- `tests/e2e/t_gosti_serve_roundtrip_incus.nim` — the same remote path
   against a **real** incus ephemeral container, including authenticated
   selection of the pre-start nesting/KVM policy and guest mode verification.
   Host-gated (`just test-host`), self-skips without usable Incus/KVM; such a
   prerequisite skip is visible but is not claimed as real-host coverage.
 
-- `tests/e2e/t_vmharness_serve_enrollment.nim` — the enrollment/identity
+- `tests/e2e/t_gosti_serve_enrollment.nim` — the enrollment/identity
   model and `GET /v1/manifest` (hermetic, `--backend noop`). See
   [serve-enrollment.md](serve-enrollment.md).
 
@@ -302,17 +302,17 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   Hyper-V ephemeral clone the daemon drives is
   `run --ephemeral --backend hyperv` (host lifecycle: New-VHD/New-VM from a
   golden VHDX → boot → JIT-probe → Remove-VM, no residue). Gate
-  `t_vmharness_serve_win_hyperv` (`just test-host`, Windows + Hyper-V + a
+  `t_gosti_serve_win_hyperv` (`just test-host`, Windows + Hyper-V + a
   golden VHDX); the clone logic is unit-tested by `t_hyperv_ephemeral_clone`.
-- **macOS / tart**: the nix-darwin/launchd module `services.vm-harness-serve`
-  (`modules/vm-harness-serve/darwin.nix` in `metacraft-labs/devops-modules`)
+- **macOS / tart**: the nix-darwin/launchd module `services.gosti-serve`
+  (`modules/gosti-serve/darwin.nix` in `metacraft-labs/devops-modules`)
   runs the daemon as a root launchd job bound to the NetBird overlay only, and
   drops the per-job tart WORKER to the console user via `--worker-exe` (a
   `launchctl asuser … sudo -E -u #<uid>` wrapper — Tart links AppKit even under
-  `--no-graphics` and refuses uid 0). Gate `t_vmharness_serve_macos_tart`
+  `--no-graphics` and refuses uid 0). Gate `t_gosti_serve_macos_tart`
   (`just test-host`, macOS + tart + sshpass): a remote client drives a per-job
   ephemeral tart clone (`run --backend tart-{linux-arm,macos} --baseline
   <golden> --ephemeral-prefix <p>` → boot → in-guest probe → destroy, no
   residue).
-- **Linux / systemd**: the `services.vm-harness-serve` module (`modules/vm-harness-serve/default.nix`) in the same
+- **Linux / systemd**: the `services.gosti-serve` module (`modules/gosti-serve/default.nix`) in the same
   repository, which also ships the health watchdog described above.

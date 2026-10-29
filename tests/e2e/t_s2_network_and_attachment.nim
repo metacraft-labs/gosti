@@ -7,17 +7,17 @@
 ## production topology must come up with no network access to anything
 ## outside the host.
 ##
-## Model: network attachment is a SIBLING `vm_harness.nic` resource (a NIC
+## Model: network attachment is a SIBLING `gosti.nic` resource (a NIC
 ## device that attaches a container to a managed network), NOT a container
-## attribute. This keeps `vm_harness.container` byte-for-byte unchanged (an
+## attribute. This keeps `gosti.container` byte-for-byte unchanged (an
 ## existing container declaration compiles + behaves identically — the S2
 ## non-regression contract) and expresses attachment as first-class graph
 ## edges: a nic `dependsOn` BOTH its container and its network.
 ##
 ## What this pins:
 ##
-##   1. REGISTRATION: importing `vm_harness/repro/resources` registers the new
-##      `vm_harness.network` (rdHostBound) + `vm_harness.nic` (rdVolatile)
+##   1. REGISTRATION: importing `gosti/repro/resources` registers the new
+##      `gosti.network` (rdHostBound) + `gosti.nic` (rdVolatile)
 ##      providers, and their attrs marshallers round-trip.
 ##
 ##   2. GRAPH: the typed `network(...)`, `container(...)`, `nic(...)` wrappers
@@ -44,9 +44,9 @@ import std/[os, options, tables, strutils, unittest]
 import repro_resources
 import repro_project_dsl
 
-import vm_harness/repro/resources as vmh
-import vm_harness/backends/incus
-import vm_harness/types            # VmHandle
+import gosti/repro/resources as gosti
+import gosti/backends/incus
+import gosti/types            # VmHandle
 
 # ---------------------------------------------------------------------------
 # Throwaway, PID-tagged names + the CIDR under test.
@@ -63,7 +63,7 @@ let cidr = "10.211." & $(pid mod 250) & ".1/24"
 const LiveBridges = ["incusbr0", "lxdbr0"]
 
 proc incusUsable(): bool =
-  let b = newIncusBackend()   # honours VMH_INCUS_CMD
+  let b = newIncusBackend()   # honours GOSTI_INCUS_CMD
   try: b.probeAvailability()
   except CatchableError: false
 
@@ -80,33 +80,33 @@ proc bestEffortTeardown() =
 suite "S2: network + NIC attachment as reprobuild resources":
 
   test "importing the module registers the network + nic providers":
-    check isResourceProviderRegistered(vmh.TypeNetwork)
-    check isResourceProviderRegistered(vmh.TypeNic)
-    check lookupResourceProvider(vmh.TypeNetwork).determinism == rdHostBound
-    check lookupResourceProvider(vmh.TypeNic).determinism == rdVolatile
-    check lookupResourceProvider(vmh.TypeNetwork).driver.apply != nil
-    check lookupResourceProvider(vmh.TypeNic).driver.apply != nil
+    check isResourceProviderRegistered(gosti.TypeNetwork)
+    check isResourceProviderRegistered(gosti.TypeNic)
+    check lookupResourceProvider(gosti.TypeNetwork).determinism == rdHostBound
+    check lookupResourceProvider(gosti.TypeNic).determinism == rdVolatile
+    check lookupResourceProvider(gosti.TypeNetwork).driver.apply != nil
+    check lookupResourceProvider(gosti.TypeNic).driver.apply != nil
 
   test "network + nic attrs round-trip; nic dependsOn container + network":
     resetDesiredResources()
-    let net = vmh.network(netName, cidr = cidr, config = @["ipv4.dhcp=false"])
-    let c = vmh.container(containerName, baseImage = "vmh-base", profiles = @[])
-    discard vmh.nic("nic0", container = c.address, network = net.address,
+    let net = gosti.network(netName, cidr = cidr, config = @["ipv4.dhcp=false"])
+    let c = gosti.container(containerName, baseImage = "gosti-base", profiles = @[])
+    discard gosti.nic("nic0", container = c.address, network = net.address,
                     device = nicDevice,
                     dependsOn = @[c.address, net.address])
     let g = collectedResources()
     check g.len == 3
     # network round-trips.
     let nInst = g[0]
-    check nInst.typeId == vmh.TypeNetwork
-    let nBack = TypedExtensionBox[vmh.NetworkAttrs](
+    check nInst.typeId == gosti.TypeNetwork
+    let nBack = TypedExtensionBox[gosti.NetworkAttrs](
       unmarshalAttrs(nInst.typeId, marshalAttrs(nInst.attrs))).val
     check nBack.cidr == cidr
     check nBack.config == @["ipv4.dhcp=false"]
     # nic round-trips + depends on both container and network.
     let nicInst = g[2]
-    check nicInst.typeId == vmh.TypeNic
-    let nicBack = TypedExtensionBox[vmh.NicAttrs](
+    check nicInst.typeId == gosti.TypeNic
+    let nicBack = TypedExtensionBox[gosti.NicAttrs](
       unmarshalAttrs(nicInst.typeId, marshalAttrs(nicInst.attrs))).val
     check nicBack.container == containerName
     check nicBack.network == netName
@@ -117,17 +117,17 @@ suite "S2: network + NIC attachment as reprobuild resources":
 
   test "reconcile creates the network + attaches the container on real incus":
     resetDesiredResources()
-    let net = vmh.network(netName, cidr = cidr, config = @[])
-    let c = vmh.container(containerName, baseImage = "vmh-base", profiles = @[])
-    discard vmh.nic("nic0", container = c.address, network = net.address,
+    let net = gosti.network(netName, cidr = cidr, config = @[])
+    let c = gosti.container(containerName, baseImage = "gosti-base", profiles = @[])
+    discard gosti.nic("nic0", container = c.address, network = net.address,
                     device = nicDevice, dependsOn = @[c.address, net.address])
     let desired = collectedResources()
     check desired.len == 3
 
     if not incusUsable():
       stderr.writeLine "  [s2] incus unusable -> asserting graph/topo only"
-      check desired[0].typeId == vmh.TypeNetwork
-      check desired[2].typeId == vmh.TypeNic
+      check desired[0].typeId == gosti.TypeNetwork
+      check desired[2].typeId == gosti.TypeNic
       check containerName in desired[2].dependsOn
       check netName in desired[2].dependsOn
       skip()

@@ -5,7 +5,7 @@
 ## just-freed descriptor numbers, deterministically modeling another request's
 ## actual allocation. The old merged-stderr cleanup closes those live files.
 import std/[os, posix, strutils, unittest]
-include ../../src/vm_harness/serve/capability
+include ../../src/gosti/serve/capability
 
 when isMainModule:
   let args = commandLineParams()

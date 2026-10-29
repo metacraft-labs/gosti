@@ -18,7 +18,7 @@
 ## snapshot that looks fine and then BOOTS on restore instead of resuming.
 
 import std/[os, strutils, unittest]
-import vm_harness
+import gosti
 
 const DomblklistSample = """
  Type   Device   Target   Source

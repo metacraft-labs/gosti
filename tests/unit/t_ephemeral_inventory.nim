@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 ## t_ephemeral_inventory — `ephemeral-list` and the verified incus teardown.
 ##
-## Gates the two vm-harness halves of the GARM instance-lifecycle fix:
+## Gates the two gosti halves of the GARM instance-lifecycle fix:
 ##
 ##   (A) `ephemeral-list` makes `run --ephemeral --keep` instances VISIBLE, and
 ##       fails CLOSED. The remote GARM provider answered ListInstances with an
@@ -29,7 +29,7 @@
 ##
 ## MOCK JUSTIFICATION (required by the workspace test policy). `incus` and
 ## `virsh` are replaced by small shell scripts on the backend's own command
-## seam (`VMH_INCUS_CMD`, and `virsh` resolved through PATH). This is the
+## seam (`GOSTI_INCUS_CMD`, and `virsh` resolved through PATH). This is the
 ## established pattern of t_cli_incus.nim. It is necessary because the failure
 ## being gated — a ZFS destroy that is transiently busy under load, and an
 ## incus/libvirt daemon that is unreachable — cannot be produced on demand on
@@ -40,9 +40,9 @@
 ## afterwards" is checked, not assumed.
 
 import std/[os, strutils, tables, tempfiles, unittest]
-import vm_harness/cli
-import vm_harness/ephemeral_inventory
-import vm_harness/backends/incus
+import gosti/cli
+import gosti/ephemeral_inventory
+import gosti/backends/incus
 
 proc writeExe(path, body: string) =
   writeFile(path, body)
@@ -186,10 +186,10 @@ suite "ephemeral inventory: value logic":
 when defined(linux):
   suite "ephemeral-list (CLI)":
     test "incus: kept containers are listed with their state":
-      let work = createTempDir("vmh-eph-list-incus", "")
+      let work = createTempDir("gosti-eph-list-incus", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-a,RUNNING\ngarm-b,STOPPED\n")
-      withEnv("VMH_INCUS_CMD", fakeIncus(work, 0)):
+      withEnv("GOSTI_INCUS_CMD", fakeIncus(work, 0)):
         let inv = ephemeralInventoryFor("incus")
         check inv.ok
         check inv.entries == @[EphemeralEntry(name: "garm-a", state: "running"),
@@ -197,17 +197,17 @@ when defined(linux):
         check runCli(@["ephemeral-list", "--backend", "incus"]) == 0
 
     test "incus: an unreachable daemon FAILS the verb instead of listing nothing":
-      let work = createTempDir("vmh-eph-list-incus-down", "")
+      let work = createTempDir("gosti-eph-list-incus-down", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-a,RUNNING\n")
-      withEnv("VMH_INCUS_CMD", fakeIncus(work, 0, listFails = true)):
+      withEnv("GOSTI_INCUS_CMD", fakeIncus(work, 0, listFails = true)):
         let inv = ephemeralInventoryFor("incus")
         check not inv.ok
         check inv.entries.len == 0
         check runCli(@["ephemeral-list", "--backend", "incus"]) != 0
 
     test "libvirt: ephemeral domains are visible, and virsh failure fails closed":
-      let work = createTempDir("vmh-eph-list-libvirt", "")
+      let work = createTempDir("gosti-eph-list-libvirt", "")
       defer: removeDir(work)
       # `virsh --connect <uri> list [--all] --name`
       writeExe(work / "virsh", "#!/bin/sh\n" &
@@ -227,13 +227,13 @@ when defined(linux):
         check not down.ok
         check runCli(@["ephemeral-list", "--backend", "libvirt"]) != 0
 
-    test "vm-harness-run backends list their kept-instance records":
-      let work = createTempDir("vmh-eph-list-vmrun", "")
+    test "gosti-run backends list their kept-instance records":
+      let work = createTempDir("gosti-eph-list-vmrun", "")
       defer: removeDir(work)
       createDir(work / "tart-linux-arm")
       writeFile(work / "tart-linux-arm" / "garm-t1.json",
-                """{"schema":"vm-harness/ephemeral-handle/1","baseline":"garm-t1"}""")
-      withEnv("VMH_EPHEMERAL_STATE_DIR", work):
+                """{"schema":"gosti/ephemeral-handle/1","baseline":"garm-t1"}""")
+      withEnv("GOSTI_EPHEMERAL_STATE_DIR", work):
         let inv = ephemeralInventoryFor("tart-linux-arm")
         check inv.ok
         check inv.entries == @[EphemeralEntry(name: "garm-t1", state: "running")]
@@ -251,12 +251,12 @@ when defined(linux):
 
   suite "attribution labels":
     test "a pool sees only its own instances; stale and unlabelled never match":
-      let work = createTempDir("vmh-eph-labels", "")
+      let work = createTempDir("gosti-eph-labels", "")
       defer: removeDir(work)
       writeFile(work / "containers",
         "garm-p1a,RUNNING\ngarm-p2a,RUNNING\ngarm-legacy,RUNNING\ndurable-vm,RUNNING\n")
-      withEnv("VMH_EPHEMERAL_LABEL_DIR", work / "labels"):
-        withEnv("VMH_INCUS_CMD", fakeIncus(work, 0)):
+      withEnv("GOSTI_EPHEMERAL_LABEL_DIR", work / "labels"):
+        withEnv("GOSTI_INCUS_CMD", fakeIncus(work, 0)):
           check runCli(@["ephemeral-label", "--backend", "incus", "--baseline",
             "garm-p1a", "--label", "garm-pool=P1", "--label", "garm-controller=C"]) == 0
           check runCli(@["ephemeral-label", "--backend", "incus", "--baseline",
@@ -286,11 +286,11 @@ when defined(linux):
       # clone path is how a retry after a failed disk delete (VM already gone)
       # still finds the disk. So a teardown that did not verifiably succeed
       # must keep the record.
-      let work = createTempDir("vmh-eph-disks", "")
+      let work = createTempDir("gosti-eph-disks", "")
       defer: removeDir(work)
       let n = "repro-eph-hyperv-j1"
       let disk = "D:\\golden\\" & n & ".vhdx"
-      withEnv("VMH_EPHEMERAL_LABEL_DIR", work / "labels"):
+      withEnv("GOSTI_EPHEMERAL_LABEL_DIR", work / "labels"):
         check loadDiskRecord("hyperv", n) == ""
         saveDiskRecord("hyperv", n, disk)
         check loadDiskRecord("hyperv", n) == disk
@@ -318,20 +318,20 @@ when defined(linux):
 
   suite "ephemeral-destroy --backend incus (verified teardown)":
     test "a transiently busy delete is retried until the container is gone":
-      let work = createTempDir("vmh-eph-destroy-busy", "")
+      let work = createTempDir("gosti-eph-destroy-busy", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-busy,STOPPED\ngarm-other,RUNNING\n")
-      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 1)):
+      withEnv("GOSTI_INCUS_CMD", fakeIncus(work, busyDeletes = 1)):
         check runCli(@["ephemeral-destroy", "--backend", "incus",
                        "--baseline", "garm-busy"]) == 0
       check deleteAttempts(work) == 2
       check readFile(work / "containers") == "garm-other,RUNNING\n"
 
     test "a container that outlives the budget is a FAILURE, not success":
-      let work = createTempDir("vmh-eph-destroy-stuck", "")
+      let work = createTempDir("gosti-eph-destroy-stuck", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-stuck,STOPPED\n")
-      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 1000)):
+      withEnv("GOSTI_INCUS_CMD", fakeIncus(work, busyDeletes = 1000)):
         var slept: seq[int]
         let ib = IncusBackend(newIncusBackend(@[work / "incus"]))
         expect CatchableError:
@@ -349,7 +349,7 @@ when defined(linux):
     # This process cannot see other namespaces; the host's root guard can, and
     # publishes them. The error must name the holder when the guard has.
     test "a busy delete that outlives the budget names the holder the guard found":
-      let work = createTempDir("vmh-eph-destroy-pinned", "")
+      let work = createTempDir("gosti-eph-destroy-pinned", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-pinned,STOPPED\n")
       writeFile(work / "pins.json", """{"generated": 0, "success": true, "pins": [
@@ -358,8 +358,8 @@ when defined(linux):
         {"container": "garm-pinned", "namespace": "mnt:[4026535684]", "kind": "process",
          "pid": 3191976, "comm": "ah", "uid": 1007, "unit": "agent-harbor-cred.scope",
          "age_seconds": 172800}]}""")
-      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 1000)):
-        withEnv("VMH_INCUS_BUSY_DATASET_REPORT", work / "pins.json"):
+      withEnv("GOSTI_INCUS_CMD", fakeIncus(work, busyDeletes = 1000)):
+        withEnv("GOSTI_INCUS_BUSY_DATASET_REPORT", work / "pins.json"):
           let ib = IncusBackend(newIncusBackend(@[work / "incus"]))
           var msg = ""
           try:
@@ -373,11 +373,11 @@ when defined(linux):
           check "x.service" notin msg
 
     test "without a guard report the busy error is unchanged":
-      let work = createTempDir("vmh-eph-destroy-noreport", "")
+      let work = createTempDir("gosti-eph-destroy-noreport", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-pinned,STOPPED\n")
-      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 1000)):
-        withEnv("VMH_INCUS_BUSY_DATASET_REPORT", work / "absent.json"):
+      withEnv("GOSTI_INCUS_CMD", fakeIncus(work, busyDeletes = 1000)):
+        withEnv("GOSTI_INCUS_BUSY_DATASET_REPORT", work / "absent.json"):
           check busyDatasetHolders("garm-pinned") == ""
           let ib = IncusBackend(newIncusBackend(@[work / "incus"]))
           var msg = ""
@@ -390,7 +390,7 @@ when defined(linux):
           check "held by" notin msg
         # A malformed report enriches nothing and never raises.
         writeFile(work / "bad.json", "{not json")
-        withEnv("VMH_INCUS_BUSY_DATASET_REPORT", work / "bad.json"):
+        withEnv("GOSTI_INCUS_BUSY_DATASET_REPORT", work / "bad.json"):
           check busyDatasetHolders("garm-pinned") == ""
 
     # ── H7: teardown ORDERING ────────────────────────────────────────────────
@@ -402,10 +402,10 @@ when defined(linux):
     # fallback, which is the pair that matters — a stop-first that cannot fall
     # back would turn an unstoppable container into one nobody ever deletes.
     test "a RUNNING container is stopped and confirmed before a plain delete":
-      let work = createTempDir("vmh-eph-destroy-running", "")
+      let work = createTempDir("gosti-eph-destroy-running", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-run,RUNNING\n")
-      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 0)):
+      withEnv("GOSTI_INCUS_CMD", fakeIncus(work, busyDeletes = 0)):
         check runCli(@["ephemeral-destroy", "--backend", "incus",
                        "--baseline", "garm-run"]) == 0
       check stopAttempts(work) == 1
@@ -415,10 +415,10 @@ when defined(linux):
       check readFile(work / "containers") == ""
 
     test "a container that will not stop still gets the --force fallback":
-      let work = createTempDir("vmh-eph-destroy-nostop", "")
+      let work = createTempDir("gosti-eph-destroy-nostop", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-stubborn,RUNNING\n")
-      withEnv("VMH_INCUS_CMD",
+      withEnv("GOSTI_INCUS_CMD",
               fakeIncus(work, busyDeletes = 0, refuseStop = true)):
         let ib = IncusBackend(newIncusBackend(@[work / "incus"]))
         # Injected sleeper so the settle budget is consumed instantly.
@@ -430,10 +430,10 @@ when defined(linux):
       check readFile(work / "containers") == ""
 
     test "an already-STOPPED container is deleted without a redundant stop":
-      let work = createTempDir("vmh-eph-destroy-stopped", "")
+      let work = createTempDir("gosti-eph-destroy-stopped", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-idle,STOPPED\n")
-      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 0)):
+      withEnv("GOSTI_INCUS_CMD", fakeIncus(work, busyDeletes = 0)):
         check runCli(@["ephemeral-destroy", "--backend", "incus",
                        "--baseline", "garm-idle"]) == 0
       check stopAttempts(work) == 0
@@ -441,19 +441,19 @@ when defined(linux):
       check deleteAttempts(work) == 1
 
     test "an absent container is success without issuing a delete":
-      let work = createTempDir("vmh-eph-destroy-absent", "")
+      let work = createTempDir("gosti-eph-destroy-absent", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-other,RUNNING\n")
-      withEnv("VMH_INCUS_CMD", fakeIncus(work, 0)):
+      withEnv("GOSTI_INCUS_CMD", fakeIncus(work, 0)):
         check runCli(@["ephemeral-destroy", "--backend", "incus",
                        "--baseline", "garm-gone"]) == 0
       check deleteAttempts(work) == 0
 
     test "an incus that cannot answer is not 'already gone'":
-      let work = createTempDir("vmh-eph-destroy-down", "")
+      let work = createTempDir("gosti-eph-destroy-down", "")
       defer: removeDir(work)
       writeFile(work / "containers", "garm-x,STOPPED\n")
-      withEnv("VMH_INCUS_CMD", fakeIncus(work, 0, listFails = true)):
+      withEnv("GOSTI_INCUS_CMD", fakeIncus(work, 0, listFails = true)):
         let ib = IncusBackend(newIncusBackend(@[work / "incus"]))
         expect CatchableError:
           ib.destroyContainerVerified("garm-x", budgetSec = 5,

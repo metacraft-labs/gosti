@@ -26,7 +26,7 @@
 ## integration tests lean on.
 
 import std/[json, os, tables, tempfiles, unittest]
-import vm_harness
+import gosti
 
 proc params(name = ""): CrudParams =
   ## Bare params with only a name; individual tests fill the rest.
@@ -182,7 +182,7 @@ suite "CRUD façade over mock — snapshots persist + restore is consistent":
 
   test "restore rolls the guest filesystem back to snapshot time":
     discard runCrud(session, "create_vm", params("vm1"))
-    let host = createTempDir("vmh-mock-crud-", "")
+    let host = createTempDir("gosti-mock-crud-", "")
     defer: removeDir(host)
     writeFile(host / "a.txt", "AAA")
     writeFile(host / "b.txt", "BBB")

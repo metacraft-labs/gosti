@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import std/[tables, unittest]
-import vm_harness/[ssh, process_capture, types]
+import gosti/[ssh, process_capture, types]
 
 when defined(posix):
   import std/[os, posix]

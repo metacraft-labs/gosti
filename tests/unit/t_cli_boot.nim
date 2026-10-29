@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import std/[os, tempfiles, unittest]
-import vm_harness/cli
-import vm_harness/types
+import gosti/cli
+import gosti/types
 
 suite "CLI boot media":
   test "boot flags parse without overloading gate command arguments":
@@ -53,11 +53,11 @@ suite "CLI boot media":
   test "default boot artifacts are isolated between CLI processes":
     let first = resolveBootOutputDir("", 101)
     let second = resolveBootOutputDir("", 202)
-    check first == getTempDir() / "vm-harness-boot-101"
-    check second == getTempDir() / "vm-harness-boot-202"
+    check first == getTempDir() / "gosti-boot-101"
+    check second == getTempDir() / "gosti-boot-202"
     check first != second
 
-    let explicit = getTempDir() / "vm-harness-explicit-output"
+    let explicit = getTempDir() / "gosti-explicit-output"
     check resolveBootOutputDir(explicit, 303) == absolutePath(explicit)
 
   test "invalid boot generation and graphics are rejected":
@@ -134,7 +134,7 @@ suite "CLI boot media":
     check resolveBootBackendId(opts, bmkQcow2, hpLinux) == biLibvirt
 
   test "content-addressed output directories select their newest image":
-    let root = createTempDir("vmh-cli-boot", "")
+    let root = createTempDir("gosti-cli-boot", "")
     defer: removeDir(root)
     let older = root / "aaa-reproos-installed.qcow2"
     let newer = root / "bbb-reproos-installed.qcow2"

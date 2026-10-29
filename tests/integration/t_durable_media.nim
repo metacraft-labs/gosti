@@ -4,10 +4,10 @@
 ## They model lifecycle failures deterministically; they do not claim live VM coverage.
 import std/[json, os, osproc, sequtils, strutils, tables, tempfiles, times,
             unittest, xmlparser, xmltree]
-import vm_harness/[cli, instances, process_capture, ssh, types]
+import gosti/[cli, instances, process_capture, ssh, types]
 
 proc fixture(tool: string, args: seq[string]): int =
-  let root = getEnv("VMH_FIXTURE_ROOT")
+  let root = getEnv("GOSTI_FIXTURE_ROOT")
   let statePath = root / "hypervisor.json"
   var state = parseJson(readFile(statePath))
   state["calls"].add(%*{"tool": tool, "args": args})
@@ -47,15 +47,15 @@ proc fixture(tool: string, args: seq[string]): int =
     state["domains"][name] = %*{"uuid": id, "state": "running", "disk": disk,
       "serial": serial, "xml": xml, "port": 0, "nvram": nvram}
     state["boots"] = %(state["boots"].getInt() + 1)
-    if getEnv("VMH_FIXTURE_FAIL") == "create": return 1
+    if getEnv("GOSTI_FIXTURE_FAIL") == "create": return 1
     writeFile(serial, "READY\n")
     return 0
   of "ssh":
     writeFile(root / "ssh-argv.json", $(%args))
-    if getEnv("VMH_FIXTURE_FAIL") == "ssh":
+    if getEnv("GOSTI_FIXTURE_FAIL") == "ssh":
       stderr.writeLine("REMOTE HOST IDENTIFICATION HAS CHANGED")
       return 255
-    if getEnv("VMH_FIXTURE_HOLD") == "yes":
+    if getEnv("GOSTI_FIXTURE_HOLD") == "yes":
       writeFile(root / "ssh-started", "")
       sleep(2000)
     if args[^1] == "hostname":
@@ -73,7 +73,7 @@ proc fixture(tool: string, args: seq[string]): int =
     if args == @["--version"]: echo "11.7"; return 0
     if args.len < 3: return 2
     let action = args[2]
-    if getEnv("VMH_FIXTURE_FAIL") == "list" and action == "list": return 1
+    if getEnv("GOSTI_FIXTURE_FAIL") == "list" and action == "list": return 1
     if action == "list":
       for name, domain in state["domains"]:
         echo (if "--uuid" in args: domain["uuid"].getStr() else: name)
@@ -97,10 +97,10 @@ proc fixture(tool: string, args: seq[string]): int =
     of "domstate": echo domain["state"].getStr()
     of "dominfo": discard
     of "dumpxml":
-      if getEnv("VMH_FIXTURE_FAIL") == "dumpxml": return 1
+      if getEnv("GOSTI_FIXTURE_FAIL") == "dumpxml": return 1
       echo domain["xml"].getStr()
     of "shutdown", "destroy":
-      if getEnv("VMH_FIXTURE_FAIL") == "stop": return 1
+      if getEnv("GOSTI_FIXTURE_FAIL") == "stop": return 1
       domain["state"] = %"shut off"
       domain["port"] = %0
     of "start":
@@ -109,7 +109,7 @@ proc fixture(tool: string, args: seq[string]): int =
       file.write("RESTART\n")
       file.close()
     of "undefine":
-      if getEnv("VMH_FIXTURE_FAIL") == "undefine": return 1
+      if getEnv("GOSTI_FIXTURE_FAIL") == "undefine": return 1
       if "--nvram" in args: removeFile(domain["nvram"].getStr())
       if "--tpm" in args: removeFile(root / (domain["uuid"].getStr() & ".tpm"))
       state["domains"].delete(name)
@@ -118,7 +118,7 @@ proc fixture(tool: string, args: seq[string]): int =
         if domain["port"].getInt() > 0:
           echo "TCP[HOST_FORWARD] 9 127.0.0.1 " & $domain["port"].getInt() & " 10.0.2.15 22"
       else:
-        if getEnv("VMH_FIXTURE_FAIL") == "forward": echo "Could not set up host forwarding rule"; return 0
+        if getEnv("GOSTI_FIXTURE_FAIL") == "forward": echo "Could not set up host forwarding rule"; return 0
         let port = args[^1].split(':')[2].split('-')[0]
         domain["port"] = %parseInt(port)
     of "screenshot": writeFile(args[4], "fixture-png")
@@ -144,7 +144,7 @@ type Fixture = object
   env: Table[string, string]
 
 proc setup(): Fixture =
-  result.root = createTempDir("vmh-durable-", "")
+  result.root = createTempDir("gosti-durable-", "")
   let bin = result.root / "bin"
   createDir(bin)
   for tool in ["virsh", "virt-install", "qemu-img", "ssh"]:
@@ -156,12 +156,12 @@ proc setup(): Fixture =
   writeFile(result.root / "source.qcow2", "caller-owned-installed-disk")
   writeFile(result.root / "id_ed25519", "caller-owned-key")
   writeFile(result.root / "known_hosts", "caller-owned-trust")
-  result.env = {"VMH_FIXTURE_ROOT": result.root,
+  result.env = {"GOSTI_FIXTURE_ROOT": result.root,
     "HOME": result.root, "PATH": bin & ":" & getEnv("PATH"),
     "LIBVIRT_DEFAULT_URI": "qemu:///session"}.toTable()
 
 proc cliCommand(): seq[string] =
-  let external = getEnv("VMH_TEST_CLI")
+  let external = getEnv("GOSTI_TEST_CLI")
   if external.len > 0: @[external] else: @[getAppFilename(), "cli"]
 
 proc run(f: Fixture, args: seq[string], extra = initTable[string, string]()): ExecResult =
@@ -197,7 +197,7 @@ suite "durable libvirt CLI (fresh process fixtures)":
       check not data["receipt_exists"].getBool()
       let boot = f.run(f.bootArgs())
       check boot.exitCode == 0
-      check f.run(f.action("status"), {"VMH_FIXTURE_FAIL": "list"}.toTable()).exitCode != 0
+      check f.run(f.action("status"), {"GOSTI_FIXTURE_FAIL": "list"}.toTable()).exitCode != 0
       writeFile(f.root / "harness/instances/dev/instance.json", "broken")
       check f.run(f.action("status")).exitCode != 0
 
@@ -261,10 +261,10 @@ suite "durable libvirt CLI (fresh process fixtures)":
         if args[i] in ["--name", "--state-dir"]: i += 2
         else: ordinary.add(args[i]); inc i
       ordinary.add(@["--", "hostname"])
-      let failed = f.run(ordinary, {"VMH_FIXTURE_FAIL": "ssh"}.toTable())
+      let failed = f.run(ordinary, {"GOSTI_FIXTURE_FAIL": "ssh"}.toTable())
       check failed.exitCode != 0
       check parseJson(readFile(f.root / "hypervisor.json"))["domains"].len == 0
-      let named = f.run(f.bootArgs(), {"VMH_FIXTURE_FAIL": "ssh"}.toTable())
+      let named = f.run(f.bootArgs(), {"GOSTI_FIXTURE_FAIL": "ssh"}.toTable())
       check named.exitCode != 0
       check f.receipt()["phase"].getStr() == "failed"
       let status = f.run(f.action("status"))
@@ -277,7 +277,7 @@ suite "durable libvirt CLI (fresh process fixtures)":
       for failure in ["create", "forward"]:
         let f = setup()
         defer: removeDir(f.root)
-        check f.run(f.bootArgs(), {"VMH_FIXTURE_FAIL": failure}.toTable()).exitCode != 0
+        check f.run(f.bootArgs(), {"GOSTI_FIXTURE_FAIL": failure}.toTable()).exitCode != 0
         check f.receipt()["phase"].getStr() == "failed"
         let data = parseJson(f.run(f.action("status")).stdout)
         check data["backend_state"].getStr() == "shut off"
@@ -288,7 +288,7 @@ suite "durable libvirt CLI (fresh process fixtures)":
     when defined(linux):
       let f = setup()
       defer: removeDir(f.root)
-      check f.run(f.bootArgs(), {"VMH_FIXTURE_FAIL": "dumpxml"}.toTable()).exitCode != 0
+      check f.run(f.bootArgs(), {"GOSTI_FIXTURE_FAIL": "dumpxml"}.toTable()).exitCode != 0
       let data = parseJson(f.run(f.action("status")).stdout)
       check data["state"].getStr() == "failed"
       check data["backend_state"].getStr() == "shut off"
@@ -346,8 +346,8 @@ suite "durable libvirt CLI (fresh process fixtures)":
       let f = setup()
       defer: removeDir(f.root)
       require f.run(f.bootArgs()).exitCode == 0
-      check f.run(f.action("stop"), {"VMH_FIXTURE_FAIL": "stop"}.toTable()).exitCode != 0
-      check f.run(f.action("destroy"), {"VMH_FIXTURE_FAIL": "undefine"}.toTable()).exitCode != 0
+      check f.run(f.action("stop"), {"GOSTI_FIXTURE_FAIL": "stop"}.toTable()).exitCode != 0
+      check f.run(f.action("destroy"), {"GOSTI_FIXTURE_FAIL": "undefine"}.toTable()).exitCode != 0
       check fileExists(f.receipt()["active_disk"].getStr())
       check f.receipt()["phase"].getStr() == "failed"
 
@@ -390,7 +390,7 @@ suite "durable libvirt CLI (fresh process fixtures)":
       check "busy" in busy.stderr
       let reader = loadInstance(f.root / "harness", "dev", "", readOnly = true)
       defer: reader.close()
-      expect VmHarnessError: reader.stop()
+      expect GostiError: reader.stop()
 
   test "operation lock is bounded and retained through exec and interactive SSH":
     when defined(linux):
@@ -401,7 +401,7 @@ suite "durable libvirt CLI (fresh process fixtures)":
         if fileExists(f.root / "ssh-started"): removeFile(f.root / "ssh-started")
         let arguments = f.action(verb, (if verb == "exec": @["--", "true"] else: @[]))
         # env(1) launches the real dispatcher in a separate process.
-        let envArgs = f.env.pairs.toSeq().mapIt(it[0] & "=" & it[1]) & @["VMH_FIXTURE_HOLD=yes"]
+        let envArgs = f.env.pairs.toSeq().mapIt(it[0] & "=" & it[1]) & @["GOSTI_FIXTURE_HOLD=yes"]
         let p = startProcess("env", args = envArgs & cliCommand() & arguments,
                              options = {poUsePath, poStdErrToStdOut})
         defer: p.close()

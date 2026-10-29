@@ -5,12 +5,12 @@
 #
 # Microsoft publishes official Windows 11 Arm64 ISOs, but the final
 # download URL is browser/session generated and not stable enough for a
-# brittle scraper. This helper validates VMH_WIN11_ARM_ISO when supplied;
+# brittle scraper. This helper validates GOSTI_WIN11_ARM_ISO when supplied;
 # otherwise it prints the official manual download path.
 #
 # Target: ./build/win11-arm64.iso
 #
-# Override with VMH_WIN11_ARM_ISO=/path/to/existing.iso to skip the
+# Override with GOSTI_WIN11_ARM_ISO=/path/to/existing.iso to skip the
 # manual step entirely.
 
 set -euo pipefail
@@ -22,19 +22,19 @@ OFFICIAL_URL="https://www.microsoft.com/en-us/software-download/windows11arm64"
 # shellcheck source=../lib/validate-uefi-iso.sh
 . "${SCRIPT_DIR}/../lib/validate-uefi-iso.sh"
 
-if [[ -n "${VMH_WIN11_ARM_ISO:-}" ]]; then
-  echo "fetch-iso: VMH_WIN11_ARM_ISO=${VMH_WIN11_ARM_ISO} — skipping download."
-  if [[ ! -f "${VMH_WIN11_ARM_ISO}" ]]; then
-    echo "fetch-iso: error — ${VMH_WIN11_ARM_ISO} does not exist." >&2
+if [[ -n "${GOSTI_WIN11_ARM_ISO:-}" ]]; then
+  echo "fetch-iso: GOSTI_WIN11_ARM_ISO=${GOSTI_WIN11_ARM_ISO} — skipping download."
+  if [[ ! -f "${GOSTI_WIN11_ARM_ISO}" ]]; then
+    echo "fetch-iso: error — ${GOSTI_WIN11_ARM_ISO} does not exist." >&2
     exit 1
   fi
   # The UTM/qemu virt Win11-on-ARM domain is UEFI-only (AAVMF); a
   # BIOS-only ISO boots to nothing. Fail fast with a clear cause.
-  validate_uefi_iso "${VMH_WIN11_ARM_ISO}" \
-    "the Windows 11 Arm64 ISO (${VMH_WIN11_ARM_ISO})"
+  validate_uefi_iso "${GOSTI_WIN11_ARM_ISO}" \
+    "the Windows 11 Arm64 ISO (${GOSTI_WIN11_ARM_ISO})"
   mkdir -p "${BUILD_DIR}"
-  ln -sf "${VMH_WIN11_ARM_ISO}" "${ISO_PATH}"
-  echo "fetch-iso: using existing ISO at ${VMH_WIN11_ARM_ISO}"
+  ln -sf "${GOSTI_WIN11_ARM_ISO}" "${ISO_PATH}"
+  echo "fetch-iso: using existing ISO at ${GOSTI_WIN11_ARM_ISO}"
   echo "fetch-iso: linked ${ISO_PATH}"
   exit 0
 fi
@@ -63,7 +63,7 @@ Manual step:
   3. Download the ISO.
   4. Either move/link it to ./build/win11-arm64.iso, or re-run this script with:
 
-       VMH_WIN11_ARM_ISO=/path/to/Win11_Arm64.iso ./fetch-iso.sh
+       GOSTI_WIN11_ARM_ISO=/path/to/Win11_Arm64.iso ./fetch-iso.sh
 
 EOF
 

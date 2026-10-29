@@ -29,7 +29,7 @@ backends' numbers are comparable rather than merely adjacent.
 
 ## What the primitives are
 
-Implemented in `src/vm_harness/backends/libvirt.nim`:
+Implemented in `src/gosti/backends/libvirt.nim`:
 
 | method | `virsh` invocation |
 | --- | --- |
@@ -212,7 +212,7 @@ Two independent runs. The gate interleaves the arms so both share host load
 (the ratio is the claim); the bench decomposes the warm arm into revert vs
 resume (the diagnosis is the value).
 
-**Gate, `VMH_LIBVIRT_WARM_REPS=10`, interleaved, `load1` 11 → 38:**
+**Gate, `GOSTI_LIBVIRT_WARM_REPS=10`, interleaved, `load1` 11 → 38:**
 
 | arm | per-rep ms | p50 |
 | --- | --- | --- |
@@ -220,7 +220,7 @@ resume (the diagnosis is the value).
 | cold: `restoreSnapshot` (disk-only) + boot → ready | 75227, 82331, 72189, 48103, 46594, 98365, 63705, 85606, 67098, 98651 | **73.7 s** |
 | **ratio (cold ÷ warm)** | | **1.57×** |
 
-**Bench (`vm-harness-bench-snapshot-revert`), 5 iterations, `load1` 38 → 71:**
+**Bench (`gosti-bench-snapshot-revert`), 5 iterations, `load1` 38 → 71:**
 
 | phase | per-iteration ms | p50 |
 | --- | --- | --- |
@@ -430,16 +430,16 @@ asserts resume-not-boot plus the timing thresholds:
 
 ```
 export LIBVIRT_DEFAULT_URI=qemu:///system
-export VMH_LIBVIRT_WARM_DOMAIN=wr0-warm-scratch
-export VMH_LIBVIRT_WARM_GUEST_OS=windows
-export VMH_LIBVIRT_WARM_SSH_USER=admin
-export VMH_LIBVIRT_WARM_SSH_PASSWORD=…      # or …_SSH_KEY
-export VMH_LIBVIRT_WARM_REPS=10
-export VMH_LIBVIRT_WARM_STATE_DIR=/storage/wr0-bench
+export GOSTI_LIBVIRT_WARM_DOMAIN=wr0-warm-scratch
+export GOSTI_LIBVIRT_WARM_GUEST_OS=windows
+export GOSTI_LIBVIRT_WARM_SSH_USER=admin
+export GOSTI_LIBVIRT_WARM_SSH_PASSWORD=…      # or …_SSH_KEY
+export GOSTI_LIBVIRT_WARM_REPS=10
+export GOSTI_LIBVIRT_WARM_STATE_DIR=/storage/wr0-bench
 nim r --hints:off --path:src tests/e2e/t_libvirt_live_snapshot_restore.nim
 ```
 
-**[2026-09-05]** The gate is now guest-OS-aware: `VMH_LIBVIRT_WARM_GUEST_OS=windows`
+**[2026-09-05]** The gate is now guest-OS-aware: `GOSTI_LIBVIRT_WARM_GUEST_OS=windows`
 substitutes `(Get-CimInstance Win32_OperatingSystem).LastBootUpTime` for
 Linux's `boot_id` and PowerShell for the marker/sentinel primitives, so the
 semantic arms and the timing arms run against the **same** Windows guest in
@@ -450,7 +450,7 @@ necessary. `sshpass` must be on `PATH`.
 JSON shape and the same median, which is what makes them comparable:
 
 ```
-build/bin/vm-harness-bench-snapshot-revert \
+build/bin/gosti-bench-snapshot-revert \
   --backend libvirt --vm wr0-warm-scratch --baseline wr0-warm-scratch \
   --hot-name wr0-warm --iterations 10 --output warm.json
 
@@ -543,4 +543,4 @@ benchmark, but a change to the 81 MB/s memory-image reload identified in
 `snapshot-revert --running` under ~10 s for a 2.6 GiB memstate and the
 arithmetic changes completely, because the other half of the cycle — the
 guest's 1.7 s return to SSH-ready — already clears the budget with room to
-spare. See the comment on the selector in `src/vm_harness/pool.nim`.
+spare. See the comment on the selector in `src/gosti/pool.nim`.

@@ -8,7 +8,7 @@
 ## authored).
 
 import std/[os, sequtils, strutils, tempfiles, unittest]
-import vm_harness
+import gosti
 
 suite "parseScriptVerdict":
   test "PASS verdict":
@@ -55,7 +55,7 @@ suite "parseScriptStep":
     check s.name == "gate-run"
     check s.status == "FAIL exit=2"
 
-  test "vm-harness native step form":
+  test "gosti native step form":
     let s = parseScriptStep("step: revert  status: ok  elapsed_ms: 12345")
     check s.name == "revert"
     check s.status == "ok"
@@ -130,7 +130,7 @@ VERDICT: FAIL exit=1
 
 suite "readScriptResult":
   test "reads RESULT.txt and DONE sentinel from disk":
-    let dir = createTempDir("vmh-parser-", "")
+    let dir = createTempDir("gosti-parser-", "")
     defer: removeDir(dir)
     writeFile(dir / "RESULT.txt", "step: a  status: ok\nVERDICT: PASS\n")
     writeFile(dir / "DONE", "done\n")
@@ -141,7 +141,7 @@ suite "readScriptResult":
     check r.steps[0].name == "a"
 
   test "missing files yield empty unknown result":
-    let dir = createTempDir("vmh-parser-empty-", "")
+    let dir = createTempDir("gosti-parser-empty-", "")
     defer: removeDir(dir)
     let r = readScriptResult(dir)
     check not r.done

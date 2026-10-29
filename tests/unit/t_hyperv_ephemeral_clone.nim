@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 ## Unit tests for the Hyper-V per-job EPHEMERAL clone PowerShell builder
 ## (`buildEphemeralCloneCommand`) — the host-lifecycle primitive RA4's
-## `t_vmharness_serve_win_hyperv` gate drives on win-ci-bare-001.
+## `t_gosti_serve_win_hyperv` gate drives on win-ci-bare-001.
 ##
 ## Like `t_hyperv_boot_media`, these assert on the emitted PowerShell text,
 ## so they run on any host with no Hyper-V role, no VM, no elevation — the
@@ -16,13 +16,13 @@
 ## guards that make teardown unable to touch a long-lived VM or the golden.
 
 import std/[os, strutils, unittest]
-import vm_harness
+import gosti
 
-# The namespace guards read VMH_HYPERV_EPH_PREFIX at call time, and these
+# The namespace guards read GOSTI_HYPERV_EPH_PREFIX at call time, and these
 # assertions pin the DEFAULT prefix. A host that sets it machine-wide (the
 # serve box win-ci-bare-001 sets it to `garm-`) would otherwise fail three
 # cases that are correct. Run against the default, whatever the host says.
-delEnv("VMH_HYPERV_EPH_PREFIX")
+delEnv("GOSTI_HYPERV_EPH_PREFIX")
 
 proc win11Spec(): HyperVEphemeralCloneSpec =
   ## A spec shaped like a per-job clone of the Windows 11 Hyper-V golden.
@@ -221,8 +221,8 @@ suite "Hyper-V ephemeral teardown + enumeration (remote ephemeral-destroy / ephe
     # The old script `exit 0`-ed as soon as Get-VM came back empty, so a
     # retry after `Remove-VM` succeeded but the disk delete failed reported
     # success and leaked the disk for good.
-    check "if (-not $vm) { Write-Output \"vmh-destroy: $vmName absent\"; exit 0 }" notin script
-    let absentBranch = body.find("vmh-destroy: VM $vmName absent")
+    check "if (-not $vm) { Write-Output \"gosti-destroy: $vmName absent\"; exit 0 }" notin script
+    let absentBranch = body.find("gosti-destroy: VM $vmName absent")
     check absentBranch > 0
     check body.find("Get-ChildItem -LiteralPath $d -File", absentBranch) > absentBranch
     check body.find("per-job disk(s) of $vmName still exist", absentBranch) > absentBranch
@@ -256,7 +256,7 @@ suite "Hyper-V ephemeral teardown + enumeration (remote ephemeral-destroy / ephe
     let bare = buildEphemeralDestroyCommand(name)
     check "$diskDir = ''" in bare
     check ("$diskStem = '" & name & "'") in bare
-    check "if ($dirs.Count -eq 0) { Write-Output \"vmh-destroy: $vmName absent, no per-job disk recorded\"; exit 0 }" in bare
+    check "if ($dirs.Count -eq 0) { Write-Output \"gosti-destroy: $vmName absent, no per-job disk recorded\"; exit 0 }" in bare
 
   test "a recorded clone path splits on its Windows separator on any host":
     check splitWindowsPath("D:\\golden\\garm-1.vhdx") == (dir: "D:\\golden", file: "garm-1.vhdx")

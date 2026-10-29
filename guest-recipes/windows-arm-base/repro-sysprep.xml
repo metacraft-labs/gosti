@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  vm-harness Windows-on-ARM SysPrep answer file (M3).
+  gosti Windows-on-ARM SysPrep answer file (M3).
 
   Used by step 5 of the windows-arm-base recipe to generalize the
   installed Windows image so subsequent UTM clones each get a fresh
@@ -60,7 +60,7 @@
           <LocalAccount wcm:action="add">
             <Name>admin</Name>
             <Group>Administrators</Group>
-            <Description>vm-harness Windows-ARM golden admin user (post-SysPrep)</Description>
+            <Description>gosti Windows-ARM golden admin user (post-SysPrep)</Description>
             <Password>
               <Value>repro-windows-arm</Value>
               <PlainText>true</PlainText>
@@ -126,7 +126,7 @@
         </SynchronousCommand>
       </FirstLogonCommands>
 
-      <RegisteredOwner>vm-harness</RegisteredOwner>
+      <RegisteredOwner>gosti</RegisteredOwner>
       <RegisteredOrganization>Metacraft Labs</RegisteredOrganization>
       <TimeZone>UTC</TimeZone>
     </component>

@@ -1,11 +1,11 @@
-# vm-harness serve on Windows, under reprobuild (reusable recipe)
+# gosti serve on Windows, under reprobuild (reusable recipe)
 
-This is the **general, company-agnostic** recipe for running `vm-harness serve`
+This is the **general, company-agnostic** recipe for running `gosti serve`
 (the remoting daemon — see [serve.md](serve.md)) as a Windows service on a
 **reprobuild-managed** host (i.e. a box whose system scope is realised by
 `repro infra apply` against a `*.nim` profile, *not* by NixOS / nix-darwin).
 
-It is the reprobuild counterpart of the NixOS `services.vm-harness-serve`
+It is the reprobuild counterpart of the NixOS `services.gosti-serve`
 module that Linux/darwin hosts get. The two express the same shape — a
 hardened, NetBird-only serve daemon with agent-provisioned auth material —
 through the deployment system each host actually uses. This recipe is
@@ -16,7 +16,7 @@ paths, golden, switch, and NetBird IP.
 
 ## What the daemon does on a Windows host
 
-`vm-harness serve --backend hyperv` front-ends this host's **Hyper-V**
+`gosti serve --backend hyperv` front-ends this host's **Hyper-V**
 lifecycle over an authenticated HTTP/JSON endpoint. The per-job ephemeral
 model it drives (`run --ephemeral --backend hyperv`) is:
 
@@ -38,9 +38,9 @@ substitute your own constants.
 1. **Machine environment** (`windowsRegistryValueHKLM`, `kind = string`, under
    `…\Session Manager\Environment`) — the per-job Hyper-V knobs the serve
    *workers* inherit from the service's process environment:
-   `VMH_HYPERV_SWITCH` (the vSwitch the per-job NIC connects to so
+   `GOSTI_HYPERV_SWITCH` (the vSwitch the per-job NIC connects to so
    cloudbase-init / the JIT bootstrap reaches the runner-manager metadata
-   endpoint) and `VMH_HYPERV_CRED_CACHE` (the PowerShell-Direct credential
+   endpoint) and `GOSTI_HYPERV_CRED_CACHE` (the PowerShell-Direct credential
    cache used for the in-guest probe). The golden itself is supplied per-job by
    the client as `--golden-image`, so it need not be ambient.
 
@@ -55,7 +55,7 @@ substitute your own constants.
    `sc.exe` accepts arguments appended to binPath:
 
    ```
-   "C:\dev-deps\vm-harness\bin\vm-harness.exe" serve \
+   "C:\dev-deps\gosti\bin\gosti.exe" serve \
      --listen <BIND>:<PORT> --auth-token-file "<TOKEN_PATH>" --backend hyperv
    ```
 
@@ -92,16 +92,16 @@ substitute your own constants.
 - The Hyper-V role features enabled (`Microsoft-Hyper-V-Hypervisor`,
   `-Services`, `-Management-PowerShell`). A reboot is required before the
   hypervisor is live.
-- A `vm-harness` binary in the managed dev-deps tree. Like the `repro` binary
+- A `gosti` binary in the managed dev-deps tree. Like the `repro` binary
   on such a box, its provisioning (and the golden VHDX + credential-cache
   pipeline) is a bootstrap concern this recipe does not declare.
 
 ## Verifying it
 
-The end-to-end gate is `t_vmharness_serve_win_hyperv`
-(`tests/e2e/t_vmharness_serve_win_hyperv.nim`): a remote client drives the
+The end-to-end gate is `t_gosti_serve_win_hyperv`
+(`tests/e2e/t_gosti_serve_win_hyperv.nim`): a remote client drives the
 full New-VM-from-golden → boot → JIT-probe → Remove-VM cycle through the
 daemon and asserts no residue + 401 on bad credentials. It self-skips off
-Windows / without Hyper-V / without `$VMH_HYPERV_GOLDEN`, and runs under
+Windows / without Hyper-V / without `$GOSTI_HYPERV_GOLDEN`, and runs under
 `just test-host`. The host-lifecycle clone/PowerShell logic is unit-tested
 off-host by `t_hyperv_ephemeral_clone` (asserts on the emitted PowerShell).

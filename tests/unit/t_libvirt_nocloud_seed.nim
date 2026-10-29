@@ -25,7 +25,7 @@
 ## definition", which is exactly the GOSTI2 deliverable.
 
 import std/[strutils, os, tempfiles, unittest]
-import vm_harness
+import gosti
 
 const SampleUserData =
   "#cloud-config\n" &
@@ -49,7 +49,7 @@ suite "libvirt NoCloud seed — build + round-trip":
     check "meta-data" in blob
 
   test "writeNoCloudIso writes a non-empty seed file with the same payload":
-    let dir = createTempDir("vmh-seed-", "")
+    let dir = createTempDir("gosti-seed-", "")
     defer: removeDir(dir)
     let path = dir / "seed.iso"
     writeNoCloudIso(path, SampleUserData, "instance-id: ci-2\n")

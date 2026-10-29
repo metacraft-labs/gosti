@@ -15,5 +15,5 @@ Notes on how a particular backend is implemented and measured:
 
 The libvirt backend's operator guide is [`../libvirt.md`](../libvirt.md).
 The other backends (Hyper-V, WSL, Tart, UTM, Lima, QEMU Windows-ARM) have no
-separate note; their source in `src/vm_harness/backends/` and
+separate note; their source in `src/gosti/backends/` and
 [`../architecture.md`](../architecture.md) are the reference.

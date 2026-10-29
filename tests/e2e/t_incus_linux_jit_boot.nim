@@ -22,7 +22,7 @@
 ## ``t_windows_golden_jit_boot`` — but simpler: cloud-init is native, the
 ## runner is a staged tarball, no sysprep / config-drive ISO.
 ##
-##   * a container launched from the ``vmh-linux-runner`` image consumes an
+##   * a container launched from the ``gosti-linux-runner`` image consumes an
 ##     INJECTED cloud-init user-data (delivered through the IM1 IncusBackend
 ##     seam ``incus config set <name> cloud-init.user-data ...``) carrying
 ##     GARM's Linux JIT bootstrap;
@@ -42,12 +42,12 @@
 ## cleanly when Incus / the runner image / tooling isn't present.
 ##
 ## Config (env):
-##   VMH_INCUS_CMD    incus invocation (default incus; use "sudo -n incus"
+##   GOSTI_INCUS_CMD    incus invocation (default incus; use "sudo -n incus"
 ##                    when the incus-admin group is not active in the session)
-##   VMH_RUNNER_ALIAS runner image alias (default vmh-linux-runner)
+##   GOSTI_RUNNER_ALIAS runner image alias (default gosti-linux-runner)
 ##
-## Run (on a Linux host with Incus + the vmh-linux-runner image):
-##   export VMH_INCUS_CMD="sudo -n incus"
+## Run (on a Linux host with Incus + the gosti-linux-runner image):
+##   export GOSTI_INCUS_CMD="sudo -n incus"
 ##   nim r --hints:off tests/e2e/t_incus_linux_jit_boot.nim
 
 import std/[os, osproc, strutils, unittest]
@@ -61,12 +61,12 @@ let driver = scriptDir / "run-linux-jit-gate.sh"
 
 let incusCmd =
   block:
-    let e = getEnv("VMH_INCUS_CMD")
+    let e = getEnv("GOSTI_INCUS_CMD")
     if e.len > 0: e else: "incus"
 let runnerAlias =
   block:
-    let e = getEnv("VMH_RUNNER_ALIAS")
-    if e.len > 0: e else: "vmh-linux-runner"
+    let e = getEnv("GOSTI_RUNNER_ALIAS")
+    if e.len > 0: e else: "gosti-linux-runner"
 
 proc incusUsable(): bool =
   ## ``<incusCmd> info`` succeeds ⇒ the daemon is reachable.
@@ -87,7 +87,7 @@ suite "t_incus_linux_jit_boot":
       echo "[skip] python3 absent"; skip()
     elif not incusUsable():
       echo "[skip] incus not reachable via '" & incusCmd &
-        "' (set VMH_INCUS_CMD=\"sudo -n incus\" if the incus-admin group " &
+        "' (set GOSTI_INCUS_CMD=\"sudo -n incus\" if the incus-admin group " &
         "is not active in this session)"
       skip()
     elif not imagePresent():

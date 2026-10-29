@@ -30,8 +30,8 @@ def main():
         raise RuntimeError("REPRO_BIN must select a built native repro CLI")
     repro = str(Path(repro).resolve(strict=True))
     source = Path(__file__).resolve().parents[2]
-    evidence = Path(tempfile.mkdtemp(prefix="vmh-pcre-native-graph-"))
-    project = evidence / "vm-harness"
+    evidence = Path(tempfile.mkdtemp(prefix="gosti-pcre-native-graph-"))
+    project = evidence / "gosti"
     project.mkdir()
     print(f"PCRE graph evidence: {evidence}", flush=True)
     for name in ("repro.nim", "config.nims"):
@@ -54,7 +54,7 @@ def main():
     nim = shutil.which("nim", path=env.get("PATH"))
     if not nim:
         raise RuntimeError("the native graph bootstrap environment must provide Nim")
-    missing = run([nim, "check", "--hints:off", "src/vm_harness/cli.nim"],
+    missing = run([nim, "check", "--hints:off", "src/gosti/cli.nim"],
                   "missing-pcre-fails-closed", expected=1)
     if "require pcre-config on the compile action PATH" not in missing.stderr:
         raise RuntimeError("missing PCRE did not produce the expected build error")
@@ -62,10 +62,10 @@ def main():
     # Separate invocations prevent another selected edge from supplying a
     # missing identity through the union of a whole-graph tool environment.
     for label, target, output in (
-        ("cli", "vm_harness.cli.build", "build/bin/vm-harness"),
-        ("bench", "vm_harness.snapshot_revert_bench.build",
-         "build/bin/vm-harness-bench-snapshot-revert"),
-        ("test", "vm_harness.test_build.t_durable_media", "build/test-bin/t_durable_media"),
+        ("cli", "gosti.cli.build", "build/bin/gosti"),
+        ("bench", "gosti.snapshot_revert_bench.build",
+         "build/bin/gosti-bench-snapshot-revert"),
+        ("test", "gosti.test_build.t_durable_media", "build/test-bin/t_durable_media"),
     ):
         print(f"Building narrow graph target: {target}", flush=True)
         run([repro, "build", ".#" + target, "--tool-provisioning=nix", "--daemon=off",
@@ -77,17 +77,17 @@ def main():
 
     clean_runtime = env.copy()
     clean_runtime.pop("LD_LIBRARY_PATH", None)
-    result = run([str(project / "build/bin/vm-harness"), "instance", "status",
+    result = run([str(project / "build/bin/gosti"), "instance", "status",
                   "pcre-runtime-probe", "--state-dir", str(evidence / "state"),
                   "--log-format", "json"], "status-without-ld", clean_runtime)
     status = json.loads(result.stdout)
     assert status["state"] == "absent" and status["receipt_exists"] is False, status
-    clean_runtime["VMH_TEST_CLI"] = str(project / "build/bin/vm-harness")
+    clean_runtime["GOSTI_TEST_CLI"] = str(project / "build/bin/gosti")
     run([str(project / "build/test-bin/t_durable_media")], "test-without-ld", clean_runtime)
-    binary = project / "build/bin/vm-harness"
+    binary = project / "build/bin/gosti"
     # Path mode also supports declared pinned Nix fallback for missing tools.
     # Verify that metadata bootstrapping does not prevent that resolution.
-    run([repro, "build", ".#vm_harness.cli.build",
+    run([repro, "build", ".#gosti.cli.build",
          "--tool-provisioning=path", "--daemon=off", "--progress=quiet",
          "--measure=none", f"--action-cache-root={evidence / 'cache'}"],
         "path-mode-pinned-fallback")

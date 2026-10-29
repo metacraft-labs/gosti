@@ -14,7 +14,7 @@ through the deployment system each host actually uses.
 
 It exists as the network-layer companion to
 [serve-windows-reprobuild.md](serve-windows-reprobuild.md): that recipe runs
-`vm-harness serve` **NetBird-only** (single-address bind + overlay-scoped
+`gosti serve` **NetBird-only** (single-address bind + overlay-scoped
 firewall), which is only reachable once the host is a NetBird peer. This recipe
 is how a reprobuild-managed Windows host becomes one.
 
@@ -109,6 +109,6 @@ test should assert on (the fetch guard, the flat-root extract, the
 install/start/up/record sequence). On-host,
 after an apply: `netbird status` reports `Connected`, `Get-Service NetBird`
 is `Running`, and the overlay-IP marker file holds a `100.x` address. A service
-bound to that overlay IP (e.g. `vm-harness serve`, per
+bound to that overlay IP (e.g. `gosti serve`, per
 [serve-windows-reprobuild.md](serve-windows-reprobuild.md)) then becomes
 reachable from peers the control-plane policy permits.

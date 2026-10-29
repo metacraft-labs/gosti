@@ -6,7 +6,7 @@
 ## and reaping are real; guest TPM commands remain in the existing host tests.
 
 import std/[monotimes, net, os, posix, strutils, tempfiles, times, unittest]
-import vm_harness
+import gosti
 
 if paramCount() > 0 and paramStr(1) == "socket":
   writeFile("helper.pid", $getCurrentProcessId())
@@ -60,7 +60,7 @@ suite "QEMU Windows ARM swtpm startup":
     defer:
       if fileExists(root / "helper.pid"):
         stopFixture(parseInt(readFile(root / "helper.pid")))
-    expect VmHarnessError:
+    expect GostiError:
       discard backend.startSwtpmInBackground(root, timeoutMs = 10_000)
     require fileExists(root / "helper.pid")
     let pid = parseInt(readFile(root / "helper.pid"))
@@ -77,7 +77,7 @@ suite "QEMU Windows ARM swtpm startup":
     var message = ""
     try:
       discard backend.startSwtpmInBackground(root)
-    except VmHarnessError as e:
+    except GostiError as e:
       message = e.msg
     check "exited before creating socket" in message
     check (getMonoTime() - started).inSeconds < 20

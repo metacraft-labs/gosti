@@ -21,8 +21,8 @@
 ## how the follower treats such a failure.
 
 import std/[os, osproc, posix, strutils, tables, tempfiles, unittest]
-import vm_harness/types
-import vm_harness/detached_bootstrap
+import gosti/types
+import gosti/detached_bootstrap
 
 proc runCleanSession(cmd: seq[string]): (string, int) =
   ## Run argv with only stdio inherited, as sshd starts a session. Not
@@ -70,7 +70,7 @@ method execInGuest*(b: LocalShellBackend, vm: VmHandle,
   ExecResult(exitCode: code, stdout: output, stderr: "")
 
 proc scriptWith(body: string): (string, string) =
-  let dir = createTempDir("vmh-detach-script-", "-test")
+  let dir = createTempDir("gosti-detach-script-", "-test")
   let path = dir / "garm-bootstrap.sh"
   writeFile(path, "#!/bin/sh\n" & body & "\n")
   (dir, path)

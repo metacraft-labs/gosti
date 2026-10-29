@@ -9,12 +9,12 @@
 ## coverage is sufficient.
 
 import std/[os, strutils, tempfiles, unittest]
-import vm_harness/types
-import vm_harness/output
+import gosti/types
+import gosti/output
 
 suite "OutputEnvelope":
   test "newOutputEnvelope creates fresh files and removes stale DONE":
-    let dir = createTempDir("vmh-env-", "")
+    let dir = createTempDir("gosti-env-", "")
     defer: removeDir(dir)
     # Pre-create a stale DONE sentinel from a "prior run".
     writeFile(dir / "DONE", "STALE\n")
@@ -27,7 +27,7 @@ suite "OutputEnvelope":
     check not env.isComplete()
 
   test "logProvision appends timestamped lines":
-    let dir = createTempDir("vmh-env-", "")
+    let dir = createTempDir("gosti-env-", "")
     defer: removeDir(dir)
     let env = newOutputEnvelope(dir)
     env.logProvision("hello world")
@@ -39,7 +39,7 @@ suite "OutputEnvelope":
     check 'Z' in content
 
   test "writeCommandRun renders the canonical header and uniques names":
-    let dir = createTempDir("vmh-env-", "")
+    let dir = createTempDir("gosti-env-", "")
     defer: removeDir(dir)
     let env = newOutputEnvelope(dir)
     env.writeCommandRun(@["/bin/echo", "hello"],
@@ -57,7 +57,7 @@ suite "OutputEnvelope":
     check "hello" in first
 
   test "recordStep + finalize produce the expected RESULT.txt + DONE":
-    let dir = createTempDir("vmh-env-", "")
+    let dir = createTempDir("gosti-env-", "")
     defer: removeDir(dir)
     let env = newOutputEnvelope(dir)
     env.recordStep("revert", ssOk, 1234)
@@ -73,7 +73,7 @@ suite "OutputEnvelope":
     check env.isComplete()
 
   test "finalize is idempotent":
-    let dir = createTempDir("vmh-env-", "")
+    let dir = createTempDir("gosti-env-", "")
     defer: removeDir(dir)
     let env = newOutputEnvelope(dir)
     env.finalize(vPass)

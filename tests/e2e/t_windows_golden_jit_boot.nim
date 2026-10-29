@@ -29,17 +29,17 @@
 ## isn't present.
 ##
 ## Config (env):
-##   VMH_WIN_GOLDEN      cloudbase-init golden qcow2
+##   GOSTI_WIN_GOLDEN      cloudbase-init golden qcow2
 ##                       (default /storage/iso/golden-win11-cloudbase.qcow2)
-##   VMH_OVMF_CODE       OVMF code fd
+##   GOSTI_OVMF_CODE       OVMF code fd
 ##                       (default /run/libvirt/nix-ovmf/edk2-x86_64-code.fd)
-##   VMH_OVMF_VARS       OVMF vars template
+##   GOSTI_OVMF_VARS       OVMF vars template
 ##                       (default /run/libvirt/nix-ovmf/edk2-i386-vars.fd)
-##   VMH_GUEST_PASSWORD  guest admin password (default repro-windows-x64)
+##   GOSTI_GUEST_PASSWORD  guest admin password (default repro-windows-x64)
 ##   LIBVIRT_DEFAULT_URI libvirt URI (default qemu:///system)
 ##
 ## Run (on the runner host, /dev/kvm + a system libvirtd + the golden):
-##   export VMH_GUEST_PASSWORD=repro-windows-x64
+##   export GOSTI_GUEST_PASSWORD=repro-windows-x64
 ##   nim r --hints:off --path:src tests/e2e/t_windows_golden_jit_boot.nim
 
 import std/[os, osproc, strutils, unittest]
@@ -57,13 +57,13 @@ when not defined(linux):
 let scriptDir = currentSourcePath().parentDir / "windows-jit"
 let driver = scriptDir / "run-windows-jit-gate.sh"
 
-let golden = getEnv("VMH_WIN_GOLDEN",
+let golden = getEnv("GOSTI_WIN_GOLDEN",
   "/storage/iso/golden-win11-cloudbase.qcow2")
-let ovmfCode = getEnv("VMH_OVMF_CODE",
+let ovmfCode = getEnv("GOSTI_OVMF_CODE",
   "/run/libvirt/nix-ovmf/edk2-x86_64-code.fd")
-let ovmfVars = getEnv("VMH_OVMF_VARS",
+let ovmfVars = getEnv("GOSTI_OVMF_VARS",
   "/run/libvirt/nix-ovmf/edk2-i386-vars.fd")
-let guestPw = getEnv("VMH_GUEST_PASSWORD", "repro-windows-x64")
+let guestPw = getEnv("GOSTI_GUEST_PASSWORD", "repro-windows-x64")
 
 proc haveTool(t: string): bool = findExe(t).len > 0
 
@@ -93,10 +93,10 @@ suite "t_windows_golden_jit_boot":
             (haveTool("genisoimage") or haveTool("xorriso"))):
       echo "[skip] prerequisites not satisfied"; skip()
     else:
-      putEnv("VMH_WIN_GOLDEN", golden)
-      putEnv("VMH_OVMF_CODE", ovmfCode)
-      putEnv("VMH_OVMF_VARS", ovmfVars)
-      putEnv("VMH_GUEST_PASSWORD", guestPw)
+      putEnv("GOSTI_WIN_GOLDEN", golden)
+      putEnv("GOSTI_OVMF_CODE", ovmfCode)
+      putEnv("GOSTI_OVMF_VARS", ovmfVars)
+      putEnv("GOSTI_GUEST_PASSWORD", guestPw)
       # Run the driver in the foreground; stream its output.
       let (output, exitCode) = execCmdEx(
         "bash " & quoteShell(driver),

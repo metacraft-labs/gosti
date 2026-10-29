@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-# vm-harness Tier-1 in-guest PowerShell runner.
+# gosti Tier-1 in-guest PowerShell runner.
 #
 # Generic primitives only — exec a command, install/uninstall an argv-trace
 # shim, write rows to RESULT.txt, finalize with the DONE sentinel. Project-

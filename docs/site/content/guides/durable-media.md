@@ -109,7 +109,7 @@ Persisted fields:
 | `instance_id` | Actual libvirt UUID, not a separate lease ID |
 | `backend` | `libvirt` |
 | `libvirt_uri` | Recorded connection URI, reused on every operation |
-| `domain_name` | `vmh-media-UUID` |
+| `domain_name` | `gosti-media-UUID` |
 | `phase` | creating, starting, running, stopping, stopped, destroying, destroyed, failed |
 | `source_image` | Absolute caller-owned QCOW2 path |
 | `active_disk` | Absolute owned writable overlay path |

@@ -31,7 +31,7 @@ not target microVM-grade sub-second cold starts. See the
 
 Every backend implements the same set of lifecycle methods. Your code talks to
 the `VmBackend` interface and never to a specific hypervisor's CLI. The core
-methods (defined in `src/vm_harness/types.nim`, mirrored from the design
+methods (defined in `src/gosti/types.nim`, mirrored from the design
 reference §3.2) are:
 
 | Method | What it does | Budget |

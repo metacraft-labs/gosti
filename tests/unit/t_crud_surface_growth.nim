@@ -30,8 +30,8 @@
 ## returns the same ExecResult schema; the wrap is invisible to the contract.
 
 import std/[json, options, os, strutils, tables, tempfiles, unittest]
-import vm_harness
-import vm_harness/cli
+import gosti
+import gosti/cli
 
 proc params(name = ""): CrudParams =
   CrudParams(name: name, guestOs: goLinux, guestArch: gaX86_64,
@@ -43,7 +43,7 @@ proc params(name = ""): CrudParams =
 
 suite "CRUD surface growth — flags parse off the crud argv":
   test "create_vm flags: --user-data / --mount (repeatable) / --ssh-user":
-    let ud = createTempDir("vmh-pr3-", "")
+    let ud = createTempDir("gosti-pr3-", "")
     defer: removeDir(ud)
     let udFile = ud / "user-data.yaml"
     writeFile(udFile, "#cloud-config\nruncmd:\n  - echo agent\n")
@@ -163,7 +163,7 @@ suite "CRUD surface growth — create_vm --user-data/--mount BACKEND-AWARE guard
   let honoring: VmBackend = newLibvirtBackend() ## honorsUserData()=true
 
   test "--user-data is backend-unavailable (exit 4) for a non-honoring backend":
-    let ud = createTempDir("vmh-fc-", "")
+    let ud = createTempDir("gosti-fc-", "")
     defer: removeDir(ud)
     let udFile = ud / "cloud.yaml"
     writeFile(udFile, "#cloud-config\nruncmd:\n  - /opt/agent/bootstrap.sh\n")
@@ -180,7 +180,7 @@ suite "CRUD surface growth — create_vm --user-data/--mount BACKEND-AWARE guard
     check "user-data" in r.json["error"]["message"].getStr
 
   test "--user-data is ALLOWED (guard passes) for a backend that honors it":
-    let ud = createTempDir("vmh-ok-", "")
+    let ud = createTempDir("gosti-ok-", "")
     defer: removeDir(ud)
     let udFile = ud / "cloud.yaml"
     writeFile(udFile, "#cloud-config\nruncmd:\n  - /opt/agent/bootstrap.sh\n")

@@ -93,14 +93,14 @@ $pwshExe = Join-Path $InstallDir 'pwsh.exe'
 Write-Host 'assert-pwsh-provisioned: verifying the golden is fit to capture'
 
 # -- 1. provisioning failure marker ------------------------------------------
-$failMarker = 'C:\Windows\Temp\vmh-pwsh-provision-failed'
+$failMarker = 'C:\Windows\Temp\gosti-pwsh-provision-failed'
 if (Test-Path -LiteralPath $failMarker) {
   $why = ''
   try { $why = (Get-Content -LiteralPath $failMarker -Raw).Trim() } catch { }
   Bad "provision-pwsh.ps1 recorded a failure: $why"
-  $logPath = 'C:\Windows\Temp\vmh-pwsh-provision.log'
+  $logPath = 'C:\Windows\Temp\gosti-pwsh-provision.log'
   if (Test-Path -LiteralPath $logPath) {
-    Write-Host '  ---- tail of vmh-pwsh-provision.log ----'
+    Write-Host '  ---- tail of gosti-pwsh-provision.log ----'
     Get-Content -LiteralPath $logPath -Tail 25 | ForEach-Object { Write-Host "  | $_" }
   }
 } else {
@@ -169,7 +169,7 @@ if (-not $haveExe) {
   # Named with $PID so concurrent runs cannot truncate each other's probe, and
   # removed in a `finally` so the gate leaves no residue in an image about to
   # be captured for the whole fleet.
-  $probeScript = "C:\Windows\Temp\vmh-pwsh-gate-probe-$PID.ps1"
+  $probeScript = "C:\Windows\Temp\gosti-pwsh-gate-probe-$PID.ps1"
   $probe = @()
   try {
     $probeBody = @(
@@ -231,7 +231,7 @@ if ($problems.Count -gt 0) {
   Write-Host 'fails with "pwsh: command not found" -- as does every step that shells'
   Write-Host 'out to pwsh.exe directly, such as the dev-exec.cmd trampoline that'
   Write-Host 'setup-dev-env generates. Re-run guest-recipes/lib/provision-pwsh.ps1 in'
-  Write-Host 'the guest (elevated) and inspect C:\Windows\Temp\vmh-pwsh-provision.log.'
+  Write-Host 'the guest (elevated) and inspect C:\Windows\Temp\gosti-pwsh-provision.log.'
   exit 1
 }
 

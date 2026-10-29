@@ -8,7 +8,7 @@
 ## synthetic baseline; they never boot QEMU.
 
 import std/[os, osproc, streams, strutils, tempfiles, unittest]
-import vm_harness
+import gosti
 when defined(windows):
   import std/winlean
 
@@ -37,7 +37,7 @@ suite "qemu-windows-arm ephemeral disk: overlay mode":
       skip()
     else:
       let img = qemuImgPath
-      let root = createTempDir("vmh-overlay-", "")
+      let root = createTempDir("gosti-overlay-", "")
       defer: removeDir(root)
       let base = root / "baseline"
       let inst = root / "inst"
@@ -63,7 +63,7 @@ suite "qemu-windows-arm ephemeral disk: overlay mode":
       check getFileSize(inst / QwaOverlayDiskName) < 1_048_576
 
   test "qwaDiskImagePath prefers the overlay, falls back to the base disk":
-    let root = createTempDir("vmh-diskpath-", "")
+    let root = createTempDir("gosti-diskpath-", "")
     defer: removeDir(root)
     createDir(root)
     # No disk files yet → falls back to the base name.
@@ -74,7 +74,7 @@ suite "qemu-windows-arm ephemeral disk: overlay mode":
     check qwaDiskImagePath(root) == root / QwaOverlayDiskName
 
   test "buildQemuWindowsArmArgs boots from the overlay when present":
-    let root = createTempDir("vmh-args-", "")
+    let root = createTempDir("gosti-args-", "")
     defer: removeDir(root)
     createDir(root)
     writeFile(root / QwaBaseDiskName, "x")
@@ -88,7 +88,7 @@ suite "qemu-windows-arm ephemeral disk: overlay mode":
     if qemuImgPath.len == 0:
       skip()
     else:
-      let root = createTempDir("vmh-clone-", "")
+      let root = createTempDir("gosti-clone-", "")
       defer: removeDir(root)
       let base = root / "baseline"
       let inst = root / "inst"
@@ -139,7 +139,7 @@ suite "qemu-windows-arm per-instance liveness lock":
 
   test "a held lock reports the owner alive; releasing reports it dead":
     when defined(posix):
-      let root = createTempDir("vmh-lock-", "")
+      let root = createTempDir("gosti-lock-", "")
       defer: removeDir(root)
       let b = newQemuWindowsArmBackend()
       let name = "repro-vm-qemu-windows-arm-1700000000000-4242"
@@ -154,7 +154,7 @@ suite "qemu-windows-arm per-instance liveness lock":
       skip()
 
   test "legacy dir without a lock falls back to the PID in the name":
-    let root = createTempDir("vmh-legacy-", "")
+    let root = createTempDir("gosti-legacy-", "")
     defer: removeDir(root)
     # A definitely-dead PID (very large) → owner dead.
     let deadDir = ephemeralDirFor(root, "repro-vm-qemu-windows-arm-1700000000000-2147480000")

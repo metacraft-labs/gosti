@@ -78,14 +78,14 @@ Write-Host 'make-iso: oscdimg not on PATH; using in-box IMAPI2'
 # New-ISOFile snippet takes the address of a local, which needs
 # -CompilerParameters and an unsafe block); Marshal.AllocHGlobal does the
 # same job in safe code and compiles under the in-box csc.
-if (-not ('VmHarness.IsoStreamWriter' -as [type])) {
+if (-not ('Gosti.IsoStreamWriter' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 
-namespace VmHarness {
+namespace Gosti {
   public static class IsoStreamWriter {
     public static void Write(string path, object comStream, int blockSize, int totalBlocks) {
       IStream stream = (IStream)comStream;
@@ -125,7 +125,7 @@ try {
     $fsi.Root.AddTree($SourceDir, $false)
 
     $img = $fsi.CreateResultImage()
-    [VmHarness.IsoStreamWriter]::Write(
+    [Gosti.IsoStreamWriter]::Write(
         $OutputPath, $img.ImageStream, $img.BlockSize, $img.TotalBlocks)
 } finally {
     [void][Runtime.InteropServices.Marshal]::ReleaseComObject($fsi)

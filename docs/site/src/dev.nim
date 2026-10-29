@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## Live-reloading dev server for the vm-harness docs site.
+## Live-reloading dev server for the gosti docs site.
 ##
 ## Serves this site's own `content/` plus its themed assets (`assets/style.css`
 ## with the Metacraft token CSS prepended, and the `static/` fonts & icons -- the
@@ -9,7 +9,7 @@
 ## `dev_server` WebSocket live-reload channel.
 ##
 ## The dev server is root-hosted (no basePath) so dev URLs are `/getting_started/…`
-## directly; the production build adds the `/vm-harness` project-Pages prefix.
+## directly; the production build adds the `/gosti` project-Pages prefix.
 ## Driven by `just dev-docs` (server) + `just open-docs` (browser); optional
 ## first arg is the port (default 8000), second the host (default loopback).
 
@@ -26,7 +26,7 @@ proc newDocsDevServer*(contentDir = "content";
   ## scaffold, wiring the shared design-system token provider for hot reload.
   ## Exposed so a test can drive the exact `just dev-docs` wiring without binding
   ## a socket.
-  docsDevServer(vmhDocsConfig("/"), contentDir = contentDir, assetsDirs = assetsDirs,
+  docsDevServer(gostiDocsConfig("/"), contentDir = contentDir, assetsDirs = assetsDirs,
                 tokensCssProvider = (proc(): string = docsTokensCssLive()),
                 watchPaths = @[docsDesignSystemPath],
                 clientEntry = "src/main.nim")
@@ -38,7 +38,7 @@ when isMainModule:
     elif existsEnv("AH_DEV_HOST"): getEnv("AH_DEV_HOST")
     else: "127.0.0.1"
   let server = newDocsDevServer()
-  stdout.writeLine "vm-harness docs dev server -> http://" & host & ":" & $port &
+  stdout.writeLine "gosti docs dev server -> http://" & host & ":" & $port &
     "  (watching content/ + shared design system, live reload on; Ctrl-C to stop)"
   stdout.flushFile()
   waitFor serve(server, port, host = host)

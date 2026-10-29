@@ -7,7 +7,7 @@ running a self-hosted GitHub Actions runner (`windows-runner-001` in the
 examples below).
 
 The implementation lives at
-[`src/vm_harness/backends/libvirt.nim`](../../src/vm_harness/backends/libvirt.nim);
+[`src/gosti/backends/libvirt.nim`](../../src/gosti/backends/libvirt.nim);
 the consumer-facing recipe at
 [`guest-recipes/windows-x64-base/`](../../guest-recipes/windows-x64-base/).
 
@@ -39,7 +39,7 @@ instead of seeing a silent no-op.
 
 The narrow, load-bearing use case is:
 
-1. An operator runs `vm-harness provision` on a Linux host with KVM +
+1. An operator runs `gosti provision` on a Linux host with KVM +
    libvirtd.
 2. The harness invokes `virt-install` against the Win11 ISO + the
    autounattend ISO + the virtio-win driver ISO and waits for the
@@ -50,7 +50,7 @@ The narrow, load-bearing use case is:
    registers with the org, and starts the service).
 4. The harness marks the domain `virsh autostart` so the runner
    survives a host reboot.
-5. `vm-harness run --backend libvirt --baseline windows-runner-001 --
+5. `gosti run --backend libvirt --baseline windows-runner-001 --
    <cmd>` against the running domain executes `<cmd>` over SSH and
    harvests output the same way every other backend does.
 
@@ -63,7 +63,7 @@ is `revertToBaseline + execInGuest + copyFromGuest`.
 
 ```bash
 # On any host with libvirtd + KVM:
-vm-harness provision \
+gosti provision \
     --backend libvirt \
     --recipe windows-x64-base \
     --name windows-runner-001 \
@@ -96,31 +96,30 @@ paths.
 The flags `--recipe`, `--name`, `--vcpu`, `--memory-gb`,
 `--network-bridge`, and `--first-boot-script` are the canonical
 libvirt surface — `parseCliOpts` resolves them at parse time
-(see `src/vm_harness/cli.nim`) and threads them through into
+(see `src/gosti/cli.nim`) and threads them through into
 `BaselineSpec.recipeDir / firstBootScript / networkBridge`. The
 `LibvirtBackend.provisionBaseline` method then invokes the recipe's
 `build-autounattend-iso.sh --first-boot-script <path>` before
 `virt-install`, so a single invocation produces the per-VM
 autounattend ISO and starts the install in one step.
 
-Aliases preserved for compatibility with the historical vm-harness
-surface: `--vcpu` ≡ `--cpus`, `--memory-gb` ≡ `--memory-mb` (× 1024),
+Flag aliases: `--vcpu` ≡ `--cpus`, `--memory-gb` ≡ `--memory-mb` (× 1024),
 `--name` ≡ `--baseline` (must agree if both are passed).
 
 ### Run a one-shot command in the guest
 
 ```bash
-vm-harness run \
+gosti run \
     --backend libvirt \
     --baseline windows-runner-001 \
-    --output-dir /tmp/vmh-run-$(date +%s) \
+    --output-dir /tmp/gosti-run-$(date +%s) \
     -- powershell.exe -NoProfile -Command "Get-Service actions.runner.*"
 ```
 
 ### Probe what's available on this host
 
 ```bash
-vm-harness probe
+gosti probe
 # Expected on a libvirt host:
 #   {"id":"libvirt","available":true,"host":"linux", ...}
 ```
@@ -156,6 +155,6 @@ virsh --connect qemu:///system shutdown windows-runner-001
 
 ## Related files
 
-- [`src/vm_harness/backends/libvirt.nim`](../../src/vm_harness/backends/libvirt.nim) — the backend implementation.
+- [`src/gosti/backends/libvirt.nim`](../../src/gosti/backends/libvirt.nim) — the backend implementation.
 - [`tests/integration/t_libvirt_backend.nim`](../../tests/integration/t_libvirt_backend.nim) — no-live-virsh smoke test.
 - [`guest-recipes/windows-x64-base/`](../../guest-recipes/windows-x64-base/) — the autounattend + helper scripts that produce the Win11 x64 baseline.

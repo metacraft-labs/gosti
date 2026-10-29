@@ -8,7 +8,7 @@
 ## substitution.
 
 import std/[strutils, os, tempfiles, unittest]
-import vm_harness/guest_scripts
+import gosti/guest_scripts
 
 suite "guest scripts":
   test "PosixRunner is non-empty and includes every subcommand":
@@ -28,7 +28,7 @@ suite "guest scripts":
     check "Invoke-Finalize" in WindowsRunner
 
   test "writeGuestRunner produces an identical file on disk":
-    let dir = createTempDir("vmh-gs-", "")
+    let dir = createTempDir("gosti-gs-", "")
     defer: removeDir(dir)
     writeGuestRunner(grPosix, dir / "runner.sh")
     let written = readFile(dir / "runner.sh")

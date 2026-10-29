@@ -153,12 +153,12 @@ and resume → SSH-ready 1.7 s. The guest is not the problem; the whole cost is
 re-reading the 2.61 GiB memory image at ~81 MB/s, against ~668 MB/s for
 Hyper-V's comparable image. Getting that reload under ~10 s would invert the
 arithmetic, because the resume half already clears the budget. The rationale
-is recorded at the selection in `src/vm_harness/pool.nim`; full numbers are in
+is recorded at the selection in `src/gosti/pool.nim`; full numbers are in
 [`per-backend-notes/libvirt-snapshot-benchmarks.md`](per-backend-notes/libvirt-snapshot-benchmarks.md).
 
 ### incus — undecided, and blocked on storage
 
-The primitives exist (`src/vm_harness/backends/incus.nim`). Two things stop
+The primitives exist (`src/gosti/backends/incus.nim`). Two things stop
 a selection, so the code defaults to `clone-per-task`:
 
 1. **A container has no boot to skip.** It starts in about a second, so

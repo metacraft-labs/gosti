@@ -567,8 +567,8 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
     # which is only safe because the gate below refuses to capture the image.
     let script = readLib("provision-pwsh.ps1")
     const label = "provision-pwsh.ps1"
-    script.mustContain("vmh-pwsh-provision-failed", label)
-    script.mustContain("vmh-pwsh-provision-done", label)
+    script.mustContain("gosti-pwsh-provision-failed", label)
+    script.mustContain("gosti-pwsh-provision-done", label)
     # The last statement of the catch block, so no path out of it can carry a
     # non-zero status back to Windows Setup.
     checkpoint label & ": the catch block must end with `exit 0`"
@@ -601,7 +601,7 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
     # mechanism at length and quotes the same registry key, so a whole-file
     # `contains` stays green even with the check itself removed.
     let gateCode = gate.codeOnly()
-    gateCode.mustContain("vmh-pwsh-provision-failed", label & " (code)")
+    gateCode.mustContain("gosti-pwsh-provision-failed", label & " (code)")
     gateCode.mustContain(MachineEnvKey, label & " (code)")
     gateCode.mustContain("DoNotExpandEnvironmentNames", label & " (code)")
     gateCode.mustContain("RegistryValueKind]::ExpandString", label & " (code)")
@@ -691,7 +691,7 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
     const label = "build-sysprep-golden.sh"
     let buildCode = build.codeOnly()
     buildCode.mustContain("assert-pwsh-provisioned.ps1", label & " (code)")
-    buildCode.mustContain("VMH_SKIP_PWSH_GATE", label & " (code)")
+    buildCode.mustContain("GOSTI_SKIP_PWSH_GATE", label & " (code)")
 
     # The gate's failure must ABORT the build, not warn and continue -- and the
     # abort must be the one guarding the GATE RUN, not the incidental
@@ -739,7 +739,7 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
     #
     #     Get-MpPreference -> ExclusionPath:
     #       C:\pwsh
-    #       C:\Windows\Temp\vmh-pwsh-extract-6752
+    #       C:\Windows\Temp\gosti-pwsh-extract-6752
     #
     # The second one is this script's own PID-named staging directory. It is
     # added before the extract and never removed, so it is CAPTURED into the
@@ -762,7 +762,7 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
 
     # Non-vacuity: this test is meaningless if the staging path is gone or
     # renamed, so locate it first and fail loudly rather than pass on nothing.
-    let stagingLines = script.codeLinesWith("vmh-pwsh-extract-")
+    let stagingLines = script.codeLinesWith("gosti-pwsh-extract-")
     checkpoint label & ": lines naming the staging directory: " & $stagingLines.len
     check stagingLines.len > 0
 
@@ -818,7 +818,7 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
 ##
 ##     Get-MpPreference -> ExclusionPath:
 ##       C:\pwsh
-##       C:\Windows\Temp\vmh-pwsh-extract-6752
+##       C:\Windows\Temp\gosti-pwsh-extract-6752
 ##
 ## weeks after the recipe was correct, and every `eph-win-x64` clone inherited
 ## it. Nothing anywhere refused to ship that image -- which is precisely how it
@@ -835,9 +835,9 @@ suite "Windows goldens ship no Defender exclusion that outlived its directory":
   const DefenderGate = "assert-defender-exclusions-sane.ps1"
 
   test "the Defender gate asserts an invariant, not the one PID that was found":
-    # The stale rule was `vmh-pwsh-extract-6752`. The NEXT one will carry a
+    # The stale rule was `gosti-pwsh-extract-6752`. The NEXT one will carry a
     # different PID, from a different run, possibly from a recipe that does not
-    # exist yet. A gate that greps for 6752 -- or for `vmh-pwsh-extract-` --
+    # exist yet. A gate that greps for 6752 -- or for `gosti-pwsh-extract-` --
     # would pass the next golden while it shipped the same hole.
     check fileExists(libFile(DefenderGate))
     let gate = readLib(DefenderGate)
@@ -856,7 +856,7 @@ suite "Windows goldens ship no Defender exclusion that outlived its directory":
     # header explains the incident and names both, which is why this runs
     # against codeOnly() rather than the whole file.
     code.mustNotContain("6752", label & " (code)")
-    code.mustNotContain("vmh-pwsh-extract", label & " (code)")
+    code.mustNotContain("gosti-pwsh-extract", label & " (code)")
 
     # Finding a stale rule must FAIL the gate, not merely narrate it. The
     # script has several `exit 1`s (the non-vacuity refusals), so asserting
@@ -933,7 +933,7 @@ suite "Windows goldens ship no Defender exclusion that outlived its directory":
     let code = build.codeOnly()
 
     code.mustContain(DefenderGate, label & " (code)")
-    code.mustContain("VMH_SKIP_DEFENDER_GATE", label & " (code)")
+    code.mustContain("GOSTI_SKIP_DEFENDER_GATE", label & " (code)")
 
     # The gate must be RUN, not merely copied in. Anchor on the invocation.
     let runs = code.codeLinesWith("-File C:\\Windows\\Temp\\" & DefenderGate)

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## integration_vm_harness_lima_lifecycle (M5 verification).
+## integration_gosti_lima_lifecycle (M5 verification).
 ##
 ## Exercises every ``LimaBackend`` method against a real Lima-managed
 ## Ubuntu Linux guest. The test asserts:
@@ -19,18 +19,18 @@
 ## - ``stopAndCleanup`` deletes the ephemeral; ``limactl ls`` no
 ##   longer reports it.
 ##
-## Skips cleanly on non-macOS hosts (where vm-harness's Lima support
+## Skips cleanly on non-macOS hosts (where gosti's Lima support
 ## is gated) and when ``limactl`` isn't on PATH.
 
 import std/[options, os, strutils, tables, tempfiles, unittest]
-import vm_harness
+import gosti
 
 when not defined(macosx):
   echo "[skip] t_lima_lifecycle: integration test requires a macOS host"
   quit(0)
 
-# Tunable via VMH_LIMA_BOOT_TIMEOUT for CI runners with slower disk.
-let envBootTimeout = getEnv("VMH_LIMA_BOOT_TIMEOUT", "240")
+# Tunable via GOSTI_LIMA_BOOT_TIMEOUT for CI runners with slower disk.
+let envBootTimeout = getEnv("GOSTI_LIMA_BOOT_TIMEOUT", "240")
 
 proc makeBackend(): LimaBackend =
   result = newLimaBackend(
@@ -72,22 +72,22 @@ suite "LimaBackend lifecycle (Ubuntu Linux guest)":
       # 1. execInGuest with env carries the environment through
       #    limactl shell.
       let r = b.execInGuest(vm,
-        env = {"VMH_TEST_KEY": "vmh-test-value"}.toTable,
-        cmd = @["/bin/sh", "-c", "echo $VMH_TEST_KEY; uname -s"],
+        env = {"GOSTI_TEST_KEY": "gosti-test-value"}.toTable,
+        cmd = @["/bin/sh", "-c", "echo $GOSTI_TEST_KEY; uname -s"],
         timeoutSec = 30)
       check r.exitCode == 0
-      check "vmh-test-value" in r.stdout
+      check "gosti-test-value" in r.stdout
       check "Linux" in r.stdout
 
       # 2. copyToGuest + copyFromGuest round-trip.
-      let tmpDir = createTempDir("vmh-lima-copy-", "")
+      let tmpDir = createTempDir("gosti-lima-copy-", "")
       defer: removeDir(tmpDir)
       let srcPath = tmpDir / "payload.txt"
       let dstPath = tmpDir / "harvested.txt"
-      let payload = "vm-harness-lima-roundtrip-" & $getCurrentProcessId()
+      let payload = "gosti-lima-roundtrip-" & $getCurrentProcessId()
       writeFile(srcPath, payload)
-      b.copyToGuest(vm, srcPath, "/tmp/vmh-payload.txt")
-      b.copyFromGuest(vm, "/tmp/vmh-payload.txt", dstPath)
+      b.copyToGuest(vm, srcPath, "/tmp/gosti-payload.txt")
+      b.copyFromGuest(vm, "/tmp/gosti-payload.txt", dstPath)
       check fileExists(dstPath)
       check readFile(dstPath) == payload
 
@@ -97,7 +97,7 @@ suite "LimaBackend lifecycle (Ubuntu Linux guest)":
       #    verify the trace log captures one invocation.
       let shim = ArgvTraceShim(
         wrappedBinaryName: "id",
-        traceLogPath: "/tmp/vmh-lima-shim-" & $getCurrentProcessId() & ".log")
+        traceLogPath: "/tmp/gosti-lima-shim-" & $getCurrentProcessId() & ".log")
       b.installArgvTraceShim(vm, shim)
       let r2 = b.execInGuest(vm, initTable[string, string](),
                              @["/usr/local/bin/id", "-u"],

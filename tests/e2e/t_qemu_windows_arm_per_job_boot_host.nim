@@ -41,21 +41,21 @@
 ##
 ## The golden is located in this order:
 ##
-##   VMH_WINDOWS_ARM_GOLDEN=<dir>   an explicit golden directory
+##   GOSTI_WINDOWS_ARM_GOLDEN=<dir>   an explicit golden directory
 ##   <state dir>/golden/win-arm-runner   the promoted pointer
 ##
-## where ``<state dir>`` is ``VM_HARNESS_QEMU_WINDOWS_ARM_STATE_DIR`` or the
+## where ``<state dir>`` is ``GOSTI_QEMU_WINDOWS_ARM_STATE_DIR`` or the
 ## per-user default. On m3 that pointer is
-## ``/private/var/lib/vm-harness/qemu-windows-arm/golden/win-arm-runner``.
+## ``/private/var/lib/gosti/qemu-windows-arm/golden/win-arm-runner``.
 ##
 ## MOCKING NOTE (workspace policy). Nothing is mocked. Real QEMU, real swtpm,
 ## real OpenSSH into a real Windows guest, the real backend methods.
 
 import std/[os, strutils, tables, unittest]
-import vm_harness
+import gosti
 
 const
-  GoldenEnv = "VMH_WINDOWS_ARM_GOLDEN"
+  GoldenEnv = "GOSTI_WINDOWS_ARM_GOLDEN"
 
 proc candidateGolden(): string =
   if getEnv(GoldenEnv).len > 0:

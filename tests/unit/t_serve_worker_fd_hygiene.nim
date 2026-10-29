@@ -30,7 +30,7 @@
 ## stdout stage is never reached.
 
 import std/[os, osproc, streams, unittest]
-import vm_harness
+import gosti
 
 when isMainModule:
   let params = commandLineParams()

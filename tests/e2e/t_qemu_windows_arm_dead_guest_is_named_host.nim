@@ -41,17 +41,17 @@
 ##
 ## The golden is located in this order:
 ##
-##   VMH_WINDOWS_ARM_GOLDEN=<dir>   an explicit golden directory
+##   GOSTI_WINDOWS_ARM_GOLDEN=<dir>   an explicit golden directory
 ##   <state dir>/golden/win-arm-runner   the promoted pointer
 ##
 ## MOCKING NOTE (workspace policy). Nothing is mocked. Real QEMU, real swtpm, a
 ## real overlay of a real golden, the real wait the run path uses.
 
 import std/[os, strutils, tables, times, unittest]
-import vm_harness
+import gosti
 
 const
-  GoldenEnv = "VMH_WINDOWS_ARM_GOLDEN"
+  GoldenEnv = "GOSTI_WINDOWS_ARM_GOLDEN"
   DeadGuestBudgetSec = 120.0
     ## The measured pre-MA8 failure on this exact reproducer was 338s against
     ## a 300s SSH deadline. The check needs about one poll interval after the

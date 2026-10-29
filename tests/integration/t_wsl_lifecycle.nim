@@ -4,7 +4,7 @@
 ##
 ## *STATUS: pending* — this test REQUIRES a Windows host with WSL2
 ## installed and the Ubuntu rootfs tarball already cached at
-## ``$VMH_WSL_ROOTFS`` (defaults to
+## ``$GOSTI_WSL_ROOTFS`` (defaults to
 ## ``D:\metacraft\wsl-m69-posix-cache\ubuntu-jammy-...rootfs.tar.gz``).
 ## On non-Windows hosts the test exits early.
 ##
@@ -12,19 +12,19 @@
 ## ``t_hyperv_lifecycle.nim`` in shape.
 
 import std/[os, strutils, tables, tempfiles, unittest]
-import vm_harness
+import gosti
 
 when not defined(windows):
   echo "[skip] t_wsl_lifecycle: integration test requires a Windows host"
   quit(0)
 
-suite "integration_vm_harness_wsl_lifecycle":
+suite "integration_gosti_wsl_lifecycle":
   setup:
-    let rootfs = getEnv("VMH_WSL_ROOTFS",
+    let rootfs = getEnv("GOSTI_WSL_ROOTFS",
                         DefaultRootfsTarballPath)
-    let stateDir = getEnv("VMH_WSL_STATE_ROOT",
+    let stateDir = getEnv("GOSTI_WSL_STATE_ROOT",
                          DefaultInstallRootDir)
-    let backend = newWslBackend(distroPrefix = "vmh-it-wsl",
+    let backend = newWslBackend(distroPrefix = "gosti-it-wsl",
                                 rootfsTarballPath = rootfs,
                                 installRootDir = stateDir)
 
@@ -40,7 +40,7 @@ suite "integration_vm_harness_wsl_lifecycle":
     var vm: VmHandle
     try:
       vm = backend.revertToBaseline("ubuntu")
-      check vm.name.startsWith("vmh-it-wsl-")
+      check vm.name.startsWith("gosti-it-wsl-")
       let r = backend.execInGuest(vm, initTable[string, string](),
                                   @["whoami"])
       check r.exitCode == 0
@@ -58,7 +58,7 @@ suite "integration_vm_harness_wsl_lifecycle":
       check r.exitCode == 0
       check r.stdout.strip() == "test-value"
 
-      let host = createTempDir("vmh-wsl-", "")
+      let host = createTempDir("gosti-wsl-", "")
       defer: removeDir(host)
       writeFile(host / "send.txt", "hello-from-host")
       backend.copyToGuest(vm, host / "send.txt", "/tmp/from-host.txt")
@@ -76,7 +76,7 @@ suite "integration_vm_harness_wsl_lifecycle":
         ArgvTraceShim(wrappedBinaryName: "useradd",
                       traceLogPath: "/tmp/useradd-trace.log"))
       let r = backend.execInGuest(vm, initTable[string, string](),
-                                  @["useradd", "-m", "vmh-test-user"])
+                                  @["useradd", "-m", "gosti-test-user"])
       # We don't care about exit code (useradd may need privileges); we
       # do care that the trace log gained at least one row.
       let tail = backend.execInGuest(vm, initTable[string, string](),

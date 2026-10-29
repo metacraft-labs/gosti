@@ -68,9 +68,9 @@ existing per-cell layout.
 * `02-<cmd>-run.txt` (the captured stdout/stderr of the gate binary) is
   NOT captured here because its contents are dominated by the test
   framework's own output (`std/unittest`), which is byte-stable per
-  Nim version but irrelevant to vm-harness's correctness gate. The
+  Nim version but irrelevant to gosti's correctness gate. The
   Rust port wraps native `repro` binaries — the framework's output
-  is the gate's responsibility, not vm-harness's.
+  is the gate's responsibility, not gosti's.
 
 ## Refresh procedure
 
@@ -82,6 +82,6 @@ nim c -r --threads:on tests/e2e/macos-phase5/run_cross_backend_matrix.nim
 
 Captured 2026-06-01 against:
 - host: macOS arm64 (M-series), nim 2.2.4, zig 0.16.0
-- vm-harness: /Users/zahary/metacraft/vm-harness (build/bin/vm-harness)
+- gosti: /Users/zahary/metacraft/gosti (build/bin/gosti)
 - tart-linux-arm golden: ghcr.io/cirruslabs/ubuntu:latest
 - lima image: default template:_images/ubuntu-lts

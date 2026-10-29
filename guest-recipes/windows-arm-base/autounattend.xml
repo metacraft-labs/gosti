@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  vm-harness Windows-on-ARM golden image autounattend.xml (M3).
+  gosti Windows-on-ARM golden image autounattend.xml (M3).
 
   Drives Windows 11 Arm64 Setup from first boot through
   to a desktop with OpenSSH server enabled and admin auto-logon. Mirrors
@@ -26,9 +26,9 @@
       the Windows capability is unavailable. The helper also installs
       the ARM64 VirtIO NetKVM driver with pnputil when staged, so direct
       QEMU virtio-net boots can receive hostfwd SSH. Durable diagnostics
-      go to C:\Windows\Temp\vmh-openssh-provision.log. OpenSSH or staged
+      go to C:\Windows\Temp\gosti-openssh-provision.log. OpenSSH or staged
       NetKVM install failure writes
-      C:\Windows\Temp\vmh-openssh-provision-failed instead of the
+      C:\Windows\Temp\gosti-openssh-provision-failed instead of the
       install-done sentinel.
       The Hyper-V harness deliberately removes OpenSSH because its
       transport is PSDirect; the UTM harness deliberately installs it
@@ -40,7 +40,7 @@
     - Writes C:\Windows\Temp\repro-install-done as the "install
       finished" sentinel so the recipe scripts can poll for completion.
       NOTE: the sentinel is gated on OpenSSH only, not on Git — a Git
-      failure leaves C:\Windows\Temp\vmh-git-provision-failed and is
+      failure leaves C:\Windows\Temp\gosti-git-provision-failed and is
       checked separately before SysPrep (README §"Verify before
       SysPrep").
     - Copies repro-sysprep.xml to C:\ for the manual step-5 SysPrep
@@ -55,7 +55,7 @@
 
   These match the UtmBackend defaults (newUtmBackend sshUser=admin,
   sshPassword=repro-windows-arm). Override by setting
-  VMH_UTM_SSH_USER / VMH_UTM_SSH_PASSWORD in the test environment and
+  GOSTI_UTM_SSH_USER / GOSTI_UTM_SSH_PASSWORD in the test environment and
   by editing this file before running the recipe.
 -->
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
@@ -161,8 +161,8 @@
           <WillShowUI>OnError</WillShowUI>
         </ProductKey>
         <AcceptEula>true</AcceptEula>
-        <FullName>repro-vm-harness</FullName>
-        <Organization>vm-harness</Organization>
+        <FullName>repro-gosti</FullName>
+        <Organization>gosti</Organization>
       </UserData>
     </component>
   </settings>
@@ -283,7 +283,7 @@
           <LocalAccount wcm:action="add">
             <Name>admin</Name>
             <Group>Administrators</Group>
-            <Description>vm-harness Windows-ARM golden admin user</Description>
+            <Description>gosti Windows-ARM golden admin user</Description>
             <Password>
               <Value>repro-windows-arm</Value>
               <PlainText>true</PlainText>
@@ -365,7 +365,7 @@
              desktop without sshd does not look provisioned. -->
         <SynchronousCommand wcm:action="add">
           <Order>3</Order>
-          <CommandLine><![CDATA[powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-openssh.ps1'; if (Test-Path -LiteralPath $p) { & $p } else { Set-Content -LiteralPath 'C:\Windows\Temp\vmh-openssh-provision-failed' -Value 'provision-openssh.ps1 not found' -Encoding UTF8 -Force }; exit 0"]]></CommandLine>
+          <CommandLine><![CDATA[powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-openssh.ps1'; if (Test-Path -LiteralPath $p) { & $p } else { Set-Content -LiteralPath 'C:\Windows\Temp\gosti-openssh-provision-failed' -Value 'provision-openssh.ps1 not found' -Encoding UTF8 -Force }; exit 0"]]></CommandLine>
           <Description>Provision OpenSSH Server with diagnostics</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
@@ -390,12 +390,12 @@
 
              The helper is idempotent, pins the PortableGit version and
              SHA-256, uses the arm64 asset, and writes
-             C:\Windows\Temp\vmh-git-provision-failed on failure. It
+             C:\Windows\Temp\gosti-git-provision-failed on failure. It
              exits 0 either way so it cannot wedge the sentinel step
              below; see README §"Verify before SysPrep". -->
         <SynchronousCommand wcm:action="add">
           <Order>4</Order>
-          <CommandLine><![CDATA[powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-git.ps1'; if (Test-Path -LiteralPath $p) { & $p -Arch arm64 } else { Set-Content -LiteralPath 'C:\Windows\Temp\vmh-git-provision-failed' -Value 'provision-git.ps1 not found' -Encoding UTF8 -Force }; exit 0"]]></CommandLine>
+          <CommandLine><![CDATA[powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-git.ps1'; if (Test-Path -LiteralPath $p) { & $p -Arch arm64 } else { Set-Content -LiteralPath 'C:\Windows\Temp\gosti-git-provision-failed' -Value 'provision-git.ps1 not found' -Encoding UTF8 -Force }; exit 0"]]></CommandLine>
           <Description>Install Git for Windows on the machine PATH</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
@@ -421,13 +421,13 @@
              The helper is idempotent, pins the PowerShell version and
              SHA-256, uses the arm64 asset, verifies the checksum before
              extracting, proves the interpreter runs, and writes
-             C:\Windows\Temp\vmh-pwsh-provision-failed on failure. It
+             C:\Windows\Temp\gosti-pwsh-provision-failed on failure. It
              exits 0 either way so it cannot wedge the sentinel step
              below; run ../lib/assert-pwsh-provisioned.ps1 (staged on C:
              by the specialize pass) before the manual SysPrep. -->
         <SynchronousCommand wcm:action="add">
           <Order>5</Order>
-          <CommandLine><![CDATA[powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-pwsh.ps1'; if (Test-Path -LiteralPath $p) { & $p -Arch arm64 } else { Set-Content -LiteralPath 'C:\Windows\Temp\vmh-pwsh-provision-failed' -Value 'provision-pwsh.ps1 not found' -Encoding UTF8 -Force }; exit 0"]]></CommandLine>
+          <CommandLine><![CDATA[powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-pwsh.ps1'; if (Test-Path -LiteralPath $p) { & $p -Arch arm64 } else { Set-Content -LiteralPath 'C:\Windows\Temp\gosti-pwsh-provision-failed' -Value 'provision-pwsh.ps1 not found' -Encoding UTF8 -Force }; exit 0"]]></CommandLine>
           <Description>Install PowerShell 7 on the machine PATH</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
@@ -444,17 +444,17 @@
         <!-- 7. Marker file the recipe scripts poll for. Written only if
              OpenSSH provisioning did not leave a failure marker and the
              sshd service is running. If OpenSSH is unavailable, inspect
-             C:\Windows\Temp\vmh-openssh-provision.log and
-             C:\Windows\Temp\vmh-openssh-provision-failed. -->
+             C:\Windows\Temp\gosti-openssh-provision.log and
+             C:\Windows\Temp\gosti-openssh-provision-failed. -->
         <SynchronousCommand wcm:action="add">
           <Order>7</Order>
-          <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "if ((Test-Path -LiteralPath 'C:\Windows\Temp\vmh-openssh-provision-failed') -or ((Get-Service -Name sshd -ErrorAction SilentlyContinue).Status -ne 'Running')) { exit 0 }; Set-Content -LiteralPath 'C:\Windows\Temp\repro-install-done' -Value 'install-done' -Encoding ASCII -Force; exit 0"</CommandLine>
+          <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "if ((Test-Path -LiteralPath 'C:\Windows\Temp\gosti-openssh-provision-failed') -or ((Get-Service -Name sshd -ErrorAction SilentlyContinue).Status -ne 'Running')) { exit 0 }; Set-Content -LiteralPath 'C:\Windows\Temp\repro-install-done' -Value 'install-done' -Encoding ASCII -Force; exit 0"</CommandLine>
           <Description>Write install-done sentinel after OpenSSH is ready</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
       </FirstLogonCommands>
 
-      <RegisteredOwner>vm-harness</RegisteredOwner>
+      <RegisteredOwner>gosti</RegisteredOwner>
       <RegisteredOrganization>Metacraft Labs</RegisteredOrganization>
       <TimeZone>UTC</TimeZone>
     </component>

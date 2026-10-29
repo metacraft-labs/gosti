@@ -8,8 +8,10 @@ order: 0
 The stable, documented contract surface of Gosti.
 
 - [CLI reference](/reference/cli-reference) — every subcommand and flag,
-  verified against `src/vm_harness/cli.nim`.
+  verified against `src/gosti/cli.nim`.
 - [Parameters catalog](/reference/parameters) — the documented, stable
-  parameter contract: the `VMH_RUNNER_*` runner-image recipe seams and the
+  parameter contract: the `GOSTI_RUNNER_*` runner-image recipe seams and the
   `incus*` GARM provider options that consumers set. This is the surface
   downstream repos build policy against.
+- [Glossary](/reference/glossary) — the terms these pages use, and the names
+  Gosti used before it was renamed.

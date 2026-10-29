@@ -61,7 +61,7 @@ proc overlaySize(vmDir: string): int64 =
 
 suite "qemu-windows-arm per-job disk size":
   test "a golden smaller than the request is grown and C: is extended":
-    let tmp = createTempDir("vmh-qwa-disk-", "")
+    let tmp = createTempDir("gosti-qwa-disk-", "")
     defer: removeDir(tmp)
     let b = diskBackend(tmp)
     writeFile(tmp / "volume", $(2 * GiB))
@@ -77,7 +77,7 @@ suite "qemu-windows-arm per-job disk size":
       b.stopAndCleanup(vm, deleteVm = true)
 
   test "a C: that does not grow fails the instance by name":
-    let tmp = createTempDir("vmh-qwa-disk-", "")
+    let tmp = createTempDir("gosti-qwa-disk-", "")
     defer: removeDir(tmp)
     let b = diskBackend(tmp)
     writeFile(tmp / "volume", "1000")
@@ -98,7 +98,7 @@ suite "qemu-windows-arm per-job disk size":
     check left.len == 0
 
   test "an explicit size below the golden's is refused before anything runs":
-    let tmp = createTempDir("vmh-qwa-disk-", "")
+    let tmp = createTempDir("gosti-qwa-disk-", "")
     defer: removeDir(tmp)
     let b = diskBackend(tmp)
     b.provisionBaseline(BaselineSpec(name: "win-arm-runner",
@@ -119,7 +119,7 @@ suite "qemu-windows-arm per-job disk size":
     check b.qemuPids.len == 0
 
   test "a defaulted size below the golden's keeps the golden's":
-    let tmp = createTempDir("vmh-qwa-disk-", "")
+    let tmp = createTempDir("gosti-qwa-disk-", "")
     defer: removeDir(tmp)
     let b = diskBackend(tmp)
     b.provisionBaseline(BaselineSpec(name: "win-arm-runner",

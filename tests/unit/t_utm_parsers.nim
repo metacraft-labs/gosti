@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## unit_vm_harness_utm_parsers (M3 supplemental).
+## unit_gosti_utm_parsers (M3 supplemental).
 ##
 ## Pure parser unit tests for the ``utmctl`` output formats consumed by
 ## ``UtmBackend``. Both ``utmctl list`` and ``utmctl ip-address`` emit
@@ -10,7 +10,7 @@
 ## warnings interleaved with real rows.
 
 import std/[os, times, unittest]
-import vm_harness
+import gosti
 
 suite "utm output parsers":
   test "parseUtmListOutput: empty input -> no rows":
@@ -97,7 +97,7 @@ NOTE: utmctl does not work ...
 
   test "probeAvailability: silent hung utmctl returns false promptly":
     when defined(macosx):
-      let script = getTempDir() / "vmh-utmctl-hang-" &
+      let script = getTempDir() / "gosti-utmctl-hang-" &
                    $getCurrentProcessId() & ".sh"
       writeFile(script, "#!/bin/sh\nexec /bin/sleep 5\n")
       try:
