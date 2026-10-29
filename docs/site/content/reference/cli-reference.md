@@ -9,7 +9,7 @@ slug: cli-reference
 The `gosti` binary is built by `just build` to `build/bin/gosti` and
 installed by the Nix package to `$out/bin/gosti`. Run `gosti --help`
 for the built-in usage text. This page documents every subcommand and flag as
-verified against `src/vm_harness/cli.nim`.
+verified against `src/gosti/cli.nim`.
 
 ```
 gosti <subcommand> [flags] [-- <command args>]
@@ -108,7 +108,7 @@ command after `--` are required.
 libvirt (CoW-clone VM) or incus (fresh container). Launch a fresh clone, probe
 it, destroy it leaving no residue.
 
-- incus: `run --ephemeral --backend incus --baseline <container> [--base-image <alias>] [--user-data <file>] [--incus-security-nesting] [--incus-nested-kvm] -- <probe cmd>`. Default base image `vmh-base`; `--user-data` injects cloud-init (the JIT seam); the probe defaults to `true`. The capability flags are trusted-controller options configured before first start; nested KVM implies nesting.
+- incus: `run --ephemeral --backend incus --baseline <container> [--base-image <alias>] [--user-data <file>] [--incus-security-nesting] [--incus-nested-kvm] -- <probe cmd>`. Default base image `gosti-base`; `--user-data` injects cloud-init (the JIT seam); the probe defaults to `true`. The capability flags are trusted-controller options configured before first start; nested KVM implies nesting.
 - libvirt: `run --ephemeral --baseline <vm> --golden-image <qcow2> [--user-data <file>] [--kernel/-initrd/-kernel-cmdline ...] [--uefi-loader/-uefi-nvram-template ...] -- [expected-serial-marker]`. A positional arg after `--` is an expected serial boot-marker substring.
 - `--keep`: clone + boot (UEFI) and leave the domain running (no probe/teardown); reclaim it later with `ephemeral-destroy`. Used to drive an out-of-band in-guest probe (e.g. the Windows JIT bootstrap over SSH).
 
@@ -228,7 +228,7 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--ephemeral` | Run one per-job CoW-clone VM / fresh container, then destroy it. |
 | `--keep` | libvirt: with `--ephemeral`, leave the domain running for an out-of-band probe; reclaim with `ephemeral-destroy`. |
 | `--golden-image <path>` | libvirt: golden qcow2 the overlay is cloned from. Requires `--ephemeral`. |
-| `--base-image <alias>` | incus: base image alias the container launches from (default `vmh-base`). |
+| `--base-image <alias>` | incus: base image alias the container launches from (default `gosti-base`). |
 | `--incus-security-nesting` | Incus ephemeral runs only: before first start, enable `security.nesting` and the fixed mknod/setxattr intercepts needed by unprivileged nested containers. Default off. |
 | `--incus-nested-kvm` | Incus ephemeral runs only: before first start, imply nesting and attach the fixed host `/dev/kvm` → guest `/dev/kvm` unix-char device at mode `0666`; verify that exact guest mode and a real read/write open before returning. Default off. |
 | `--kernel` / `--initrd` / `--kernel-cmdline` | libvirt: optional direct-kernel-boot for the tiny-Linux golden. |
@@ -279,14 +279,14 @@ gets special treatment.
 
 ## Environment variables
 
-Beyond flags, several backends and recipes read `VMH_*` environment variables
+Beyond flags, several backends and recipes read `GOSTI_*` environment variables
 (tool paths, credentials, timeouts, golden/ISO locations) and the recipes take
-`VMH_RUNNER_*` build seams. These are catalogued in the
+`GOSTI_RUNNER_*` build seams. These are catalogued in the
 [Parameters catalog](/reference/parameters). The most commonly used from the CLI:
 
-- `VMH_INCUS_CMD` — override the incus invocation, e.g. `"sudo -n incus"`.
-- `VMH_RECIPES_DIR` — override where `--recipe <id>` is resolved from.
-- `VMH_TART_CMD` — override the `tart` binary path (also honored by `prune`).
+- `GOSTI_INCUS_CMD` — override the incus invocation, e.g. `"sudo -n incus"`.
+- `GOSTI_RECIPES_DIR` — override where `--recipe <id>` is resolved from.
+- `GOSTI_TART_CMD` — override the `tart` binary path (also honored by `prune`).
 
 The two Incus capability flags are accepted only with
 `run --ephemeral --backend incus`. They are host privileges selected by a local

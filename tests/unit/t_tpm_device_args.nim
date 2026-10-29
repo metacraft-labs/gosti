@@ -22,7 +22,7 @@
 ## real value types and reads the real argv they return.
 
 import std/[strutils, unittest]
-import vm_harness
+import gosti
 
 proc idx(args: seq[string], needle: string): int =
   result = -1
@@ -47,7 +47,7 @@ proc baseLaunch(): QemuBootLaunch =
     vmName: "repro-test-boot-qemu-1-abc",
     diskPath: "/tmp/overlay.qcow2",
     diskFormat: "qcow2",
-    serialSocketPath: "/tmp/vmh-qb-1.sock",
+    serialSocketPath: "/tmp/gosti-qb-1.sock",
     serialLogPath: "/tmp/artifacts/serial.log",
     cpus: 2,
     memoryMB: 1024,
@@ -55,7 +55,7 @@ proc baseLaunch(): QemuBootLaunch =
 
 proc baseBootMedia(): BootMediaSpec =
   BootMediaSpec(
-    name: "vmh-boot-1",
+    name: "gosti-boot-1",
     kind: bmkQcow2,
     mediaPath: "/tmp/golden.qcow2",
     cpus: 2,
@@ -67,13 +67,13 @@ proc baseBootMedia(): BootMediaSpec =
 suite "qemu-boot vTPM argv":
   test "a TPM socket produces the chardev/tpmdev/device trio":
     var l = baseLaunch()
-    l.tpmSocketPath = "/tmp/vmh-qb-tpm-1.sock"
+    l.tpmSocketPath = "/tmp/gosti-qb-tpm-1.sock"
     let args = buildQemuBootArgs(l)
 
     # The three arguments must agree on the ids that wire them together;
     # a trio that names three different ids is a QEMU startup error, not
     # a TPM-less guest, so assert the wiring and not merely the presence.
-    check containsSubstring(args, "socket,id=chrtpm,path=/tmp/vmh-qb-tpm-1.sock")
+    check containsSubstring(args, "socket,id=chrtpm,path=/tmp/gosti-qb-tpm-1.sock")
     check valueAfter(args, "-tpmdev") == "emulator,id=tpm0,chardev=chrtpm"
     check "tpm-tis,tpmdev=tpm0" in args
 
@@ -83,7 +83,7 @@ suite "qemu-boot vTPM argv":
     # On x86_64 that name does not exist and QEMU exits during device
     # realisation, so this is a real regression this gate must catch.
     var l = baseLaunch()
-    l.tpmSocketPath = "/tmp/vmh-qb-tpm-1.sock"
+    l.tpmSocketPath = "/tmp/gosti-qb-tpm-1.sock"
     let args = buildQemuBootArgs(l)
     check not containsSubstring(args, "tpm-tis-device")
 
@@ -99,7 +99,7 @@ suite "qemu-boot vTPM argv":
     # the CPU or the serial wiring, which would make every other boot
     # gate's evidence non-comparable across the flag.
     var withTpm = baseLaunch()
-    withTpm.tpmSocketPath = "/tmp/vmh-qb-tpm-1.sock"
+    withTpm.tpmSocketPath = "/tmp/gosti-qb-tpm-1.sock"
     let plain = buildQemuBootArgs(baseLaunch())
     let tpm = buildQemuBootArgs(withTpm)
     check tpm.len == plain.len + 6

@@ -1,8 +1,8 @@
-# vm-harness
+# gosti
 
 ## What this repo is (read before hand-rolling anything VM-related)
 
-`vm-harness` is **the** cross-platform VM lifecycle library + CLI for this
+`gosti` is **the** cross-platform VM lifecycle library + CLI for this
 workspace. If your task involves **booting, provisioning, driving, or recording
 a guest OS** — Linux, macOS, or Windows (incl. Windows-on-ARM) — use this repo.
 **Do not hand-roll `qemu`/`swtpm`/`tart`/`limactl`/`autounattend.xml` yourself;**
@@ -11,12 +11,12 @@ it's already implemented, tested, and golden here.
 What it gives you, behind one `VmBackend` abstraction (`--backend auto` picks per
 host×guest):
 
-- **Backends** (`src/vm_harness/backends/`): `tart` (macOS + Linux-ARM guests on
+- **Backends** (`src/gosti/backends/`): `tart` (macOS + Linux-ARM guests on
   Apple Silicon), `utm` + `qemu_windows_arm` (Windows-on-ARM), `lima` (Linux),
   `libvirt` (Linux/Windows x64 via QEMU/KVM), `hyperv`, `wsl`, `incus`, `noop`.
 - **Lifecycle primitives**: boot / ephemeral clone + fast per-gate revert /
   exec-in-guest / copy files in-and-out / snapshot-restore / serial capture /
-  standardized output envelope. Driven via `vm-harness {provision,run,instance,
+  standardized output envelope. Driven via `gosti {provision,run,instance,
   probe,shell,backends,snapshot,baseline}` (see README "CLI reference").
 - **Guest OS install recipes** (`guest-recipes/`): the one-time "how to build a
   golden guest" scripts. Notably **`guest-recipes/windows-arm-base/`** — the
@@ -27,13 +27,13 @@ host×guest):
   In-guest bootstrap lives in `guest-scripts/`.
 
 **Consuming from another repo?** Depend on the Nim library or shell out to the
-`vm-harness` CLI for guest lifecycle, and keep only your task-specific logic on
+`gosti` CLI for guest lifecycle, and keep only your task-specific logic on
 top (per the three-tier ownership below). The Rust port is `agent-harbor`
 `crates/ah-vm`.
 
 ## Which guide do you want?
 
-- **To _use_ vm-harness** (drive VMs from the CLI or from your own harness code,
+- **To _use_ gosti** (drive VMs from the CLI or from your own harness code,
   set its parameters, author a guest recipe) → read the **user guide**, published at
   <https://metacraft-labs.github.io/gosti/> from the Markdown in
   [`docs/site/content/`](docs/site/content/). Start with
@@ -41,13 +41,13 @@ top (per the three-tier ownership below). The Rust port is `agent-harbor`
   parameter contract consumers depend on is the
   [Parameters catalog](docs/site/content/reference/parameters.md).
 
-- **To _enhance / develop_ vm-harness itself** → the developing guide follows
+- **To _enhance / develop_ gosti itself** → the developing guide follows
   below, and the canonical internal architecture reference is
   [`docs/contributors/architecture.md`](docs/contributors/architecture.md).
 
-## Developing vm-harness
+## Developing gosti
 
-Backend implementations live in `src/vm_harness/backends/`, guest bootstrap
+Backend implementations live in `src/gosti/backends/`, guest bootstrap
 assets live in `guest-scripts/` and `guest-recipes/`, and tests are split across
 `tests/unit/`, `tests/integration/`, and `tests/e2e/`.
 
@@ -76,7 +76,7 @@ that the Windows golden is sysprepped.
 
 ## Three-tier ownership (what belongs here vs. in a consumer)
 
-vm-harness ships **generic primitives only**; consumers compose them and never
+gosti ships **generic primitives only**; consumers compose them and never
 push their logic down into it:
 
 - **Tier 1 — this library**: VM lifecycle + generic in-guest scripts + guest
@@ -87,7 +87,7 @@ push their logic down into it:
   desktop-recording session that drives GUI apps + Playwright + a screen
   capture — that lives in the consumer, driving Tier-1 lifecycle here).
 
-vm-harness never imports Tier 2 or Tier 3 code.
+gosti never imports Tier 2 or Tier 3 code.
 
 Follow the organisation's shared development policies, especially its
 repository requirements, CI workflow standards and Nix flake conventions.

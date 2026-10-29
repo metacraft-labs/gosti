@@ -29,7 +29,7 @@
 ## pending a maintenance window).
 
 import std/[strutils, unittest]
-import vm_harness
+import gosti
 
 proc mkPool(alg: PoolAlgorithm, size: int = 2): Pool =
   let b = newNoopBackend()

@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## vm-harness docs -- thin SSG entry.
+## gosti docs -- thin SSG entry.
 ##
 ## Calls the framework's own `buildSite` with this site's `content/` dir and its
 ## own `DocsConfig`, passing NO explicit manifest -- letting the framework's
 ## default (`buildManifestFromContent`) auto-discover the route table (and its
 ## nav order, via each page's `order:` front matter) from the migrated
-## vm-harness user guide.
+## gosti user guide.
 ##
 ## The shared Metacraft docs token layer (`theme_tokens.metacraftDocsTokenLayer`)
 ## is emitted to CSS and PREPENDED onto `assets/style.css` via
@@ -15,7 +15,7 @@
 ## AFTER the hash/purge pass so the stylesheet's `url(/assets/...)` refs and the
 ## content's `/assets/...` image refs resolve to real files.
 ##
-## `DocsConfig.basePath` ("/vm-harness", set in docs_config) makes `buildSite`
+## `DocsConfig.basePath` ("/gosti", set in docs_config) makes `buildSite`
 ## prefix every internal root-relative URL for GitHub project-Pages hosting.
 
 when defined(js):
@@ -31,7 +31,7 @@ when isMainModule:
   # prepended onto the composed stylesheet (framework default; this site ships
   # no `style.css` of its own) + this site's JS mount entry compiled into the
   # hashed `assets/app.js` + `static/` copied verbatim.
-  let n = buildDocsSite(vmhDocsConfig(),
+  let n = buildDocsSite(gostiDocsConfig(),
                         docsTokensCss = metacraftDocsTokensCss(),
                         clientEntry = "src/main.nim")
   # Emit any legacy-URL redirect stubs (none today). Runs AFTER buildDocsSite

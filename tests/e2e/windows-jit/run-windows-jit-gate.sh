@@ -14,10 +14,10 @@
 #      URL + the JWT.
 #   3. Start the mock GARM metadata+runner server (JWT-authorized routes).
 #   4. Boot a fresh per-job CoW clone of the golden via the REAL
-#      `vm-harness run --ephemeral --keep` CLI with the config-drive ISO
+#      `gosti run --ephemeral --keep` CLI with the config-drive ISO
 #      injected (cloudbase-init ConfigDrive datasource) + UEFI (OVMF).
 #      `--keep` leaves the domain running for the in-guest probe; teardown
-#      goes through `vm-harness ephemeral-destroy`. The VM lifecycle
+#      goes through `gosti ephemeral-destroy`. The VM lifecycle
 #      (clone / config-drive build / UEFI boot / teardown) is thus the
 #      shipped CLI code path, not an inline virsh reimplementation.
 #   5. Wait for the guest to boot; SSH in (password) and drive the bootstrap
@@ -32,7 +32,7 @@
 #            Actions server (Location.GetConnectionData) and attempted to
 #            create a runner session (i.e. reached the "configured /
 #            listening for one job" phase).
-#   7. Tear the clone down (vm-harness ephemeral stopAndCleanup) — assert
+#   7. Tear the clone down (gosti ephemeral stopAndCleanup) — assert
 #      NO residual domain / overlay / config-drive ISO / nvram.
 #
 # The production windows-runner-001 domain is NEVER touched: the clone runs
@@ -40,28 +40,28 @@
 # separate config-drive.
 #
 # Env (required):
-#   VMH_WIN_GOLDEN        cloudbase-init golden qcow2
-#   VMH_OVMF_CODE         OVMF code firmware (edk2-x86_64-code.fd)
-#   VMH_OVMF_VARS         OVMF vars template (edk2-i386-vars.fd)
-#   VMH_GUEST_PASSWORD    guest admin password
+#   GOSTI_WIN_GOLDEN        cloudbase-init golden qcow2
+#   GOSTI_OVMF_CODE         OVMF code firmware (edk2-x86_64-code.fd)
+#   GOSTI_OVMF_VARS         OVMF vars template (edk2-i386-vars.fd)
+#   GOSTI_GUEST_PASSWORD    guest admin password
 # Env (optional):
-#   VMH_GATE_NAME         domain/job name        (default m3-jit-gate)
-#   VMH_MOCK_PORT         mock server port       (default 8099)
-#   VMH_MOCK_HOST         host IP the guest uses (default 192.168.122.1)
+#   GOSTI_GATE_NAME         domain/job name        (default m3-jit-gate)
+#   GOSTI_MOCK_PORT         mock server port       (default 8099)
+#   GOSTI_MOCK_HOST         host IP the guest uses (default 192.168.122.1)
 #   LIBVIRT_DEFAULT_URI   libvirt URI            (default qemu:///system)
-#   VMH_HARNESS           path to `vm-harness`   (default: build via nim)
+#   GOSTI_HARNESS           path to `gosti`   (default: build via nim)
 #
 # NOTE (honest): the gate invokes the bootstrap over SSH rather than relying
 # on cloudbase-init's own first-boot run, so the probe is deterministic and
 # does not depend on cloudbase-init's boot timing. A SEPARATE assertion
-# (VMH_VERIFY_CLOUDBASE=1) verifies cloudbase-init itself consumes the
+# (GOSTI_VERIFY_CLOUDBASE=1) verifies cloudbase-init itself consumes the
 # config-drive + runs the userdata (slower; run when validating the golden).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-GATE_NAME="${VMH_GATE_NAME:-m3-jit-gate}"
-MOCK_PORT="${VMH_MOCK_PORT:-8099}"
-MOCK_HOST="${VMH_MOCK_HOST:-192.168.122.1}"
+GATE_NAME="${GOSTI_GATE_NAME:-m3-jit-gate}"
+MOCK_PORT="${GOSTI_MOCK_PORT:-8099}"
+MOCK_HOST="${GOSTI_MOCK_HOST:-192.168.122.1}"
 URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 WORK="$(mktemp -d /tmp/m3-gate.XXXXXX)"
 JIT_DIR="$WORK/jit"
@@ -90,11 +90,11 @@ trap cleanup EXIT
 # --- prerequisites / self-skip -------------------------------------------
 require_env() {
   local ok=1
-  for v in VMH_WIN_GOLDEN VMH_OVMF_CODE VMH_OVMF_VARS VMH_GUEST_PASSWORD; do
+  for v in GOSTI_WIN_GOLDEN GOSTI_OVMF_CODE GOSTI_OVMF_VARS GOSTI_GUEST_PASSWORD; do
     if [[ -z "${!v:-}" ]]; then echo "[m3-gate][skip] $v not set"; ok=0; fi
   done
   [[ "$ok" == "1" ]] || return 1
-  for f in "$VMH_WIN_GOLDEN" "$VMH_OVMF_CODE" "$VMH_OVMF_VARS"; do
+  for f in "$GOSTI_WIN_GOLDEN" "$GOSTI_OVMF_CODE" "$GOSTI_OVMF_VARS"; do
     if [[ ! -f "$f" ]]; then echo "[m3-gate][skip] missing file: $f"; return 1; fi
   done
   [[ -c /dev/kvm ]] || { echo "[m3-gate][skip] /dev/kvm absent"; return 1; }
@@ -162,36 +162,36 @@ done
 log "mock up (authorized cert-bundle -> 200)"
 
 # --- 4. boot a fresh CoW clone with the config-drive injected ------------
-# Drive the REAL vm-harness CLI: `run --ephemeral --keep` clones a fresh
+# Drive the REAL gosti CLI: `run --ephemeral --keep` clones a fresh
 # CoW overlay off the golden, builds + attaches the config-2 ISO from
 # --user-data/--meta-data, boots UEFI (OVMF via --uefi-loader/--uefi-nvram-
 # template), and LEAVES THE DOMAIN RUNNING so we can SSH in and drive the
-# JIT bootstrap. Teardown goes through `vm-harness ephemeral-destroy`
+# JIT bootstrap. Teardown goes through `gosti ephemeral-destroy`
 # (same ephemeral stopAndCleanup: destroy + undefine --nvram + remove
 # overlay/config-drive/nvram). This exercises the SHIPPED CLI code path
 # (buildConfigDriveIso + buildEphemeralDomainXml UEFI + attach + boot +
 # teardown) end-to-end, not an inline virsh reimplementation.
-log "booting fresh ephemeral clone '$GATE_NAME' via real vm-harness CLI (UEFI + config-drive)"
+log "booting fresh ephemeral clone '$GATE_NAME' via real gosti CLI (UEFI + config-drive)"
 
-# Resolve the harness binary. Prefer $VMH_HARNESS, then a nix build result,
+# Resolve the harness binary. Prefer $GOSTI_HARNESS, then a nix build result,
 # then build it once from source via nim.
-HARNESS="${VMH_HARNESS:-}"
+HARNESS="${GOSTI_HARNESS:-}"
 if [[ -z "$HARNESS" ]]; then
-  if [[ -x "$SCRIPT_DIR/../../../result/bin/vm-harness" ]]; then
-    HARNESS="$SCRIPT_DIR/../../../result/bin/vm-harness"
-  elif command -v vm-harness >/dev/null; then
-    HARNESS="$(command -v vm-harness)"
+  if [[ -x "$SCRIPT_DIR/../../../result/bin/gosti" ]]; then
+    HARNESS="$SCRIPT_DIR/../../../result/bin/gosti"
+  elif command -v gosti >/dev/null; then
+    HARNESS="$(command -v gosti)"
   else
-    log "no prebuilt vm-harness; compiling from source (nim)"
-    HARNESS="$WORK/vm-harness"
+    log "no prebuilt gosti; compiling from source (nim)"
+    HARNESS="$WORK/gosti"
     ( cd "$SCRIPT_DIR/../../.." && \
       nim c --hints:off --opt:speed --path:src -o:"$HARNESS" \
-        src/vm_harness/cli.nim ) >/dev/null 2>&1 \
-      || { fail "could not build vm-harness"; exit 1; }
+        src/gosti/cli.nim ) >/dev/null 2>&1 \
+      || { fail "could not build gosti"; exit 1; }
   fi
 fi
-[[ -x "$HARNESS" ]] || { fail "vm-harness binary not found/executable: $HARNESS"; exit 1; }
-log "using vm-harness: $HARNESS"
+[[ -x "$HARNESS" ]] || { fail "gosti binary not found/executable: $HARNESS"; exit 1; }
+log "using gosti: $HARNESS"
 
 # Paths the CLI derives deterministically from --baseline (used for the
 # residue check + belt-and-braces cleanup).
@@ -208,14 +208,14 @@ printf '{"uuid":"%s","hostname":"%s","name":"%s"}' "$GATE_NAME" "$GATE_NAME" "$G
 CLONE_STARTED=1
 if ! LIBVIRT_DEFAULT_URI="$URI" "$HARNESS" run --ephemeral --keep \
       --baseline "$GATE_NAME" \
-      --golden-image "$VMH_WIN_GOLDEN" \
+      --golden-image "$GOSTI_WIN_GOLDEN" \
       --user-data "$USER_DATA" \
       --meta-data "$METADATA" \
-      --uefi-loader "$VMH_OVMF_CODE" \
-      --uefi-nvram-template "$VMH_OVMF_VARS" \
+      --uefi-loader "$GOSTI_OVMF_CODE" \
+      --uefi-nvram-template "$GOSTI_OVMF_VARS" \
       --cpus 4 --memory-mb 4096 \
       >"$WORK/harness-up.out" 2>"$WORK/harness-up.err"; then
-  fail "vm-harness run --ephemeral --keep failed"
+  fail "gosti run --ephemeral --keep failed"
   cat "$WORK/harness-up.err" >&2
   exit 1
 fi
@@ -237,10 +237,10 @@ done
 [[ -n "$GUEST_IP" ]] || { fail "guest IP not obtained"; exit 1; }
 log "guest IP=$GUEST_IP"
 
-SSH=(sshpass -p "$VMH_GUEST_PASSWORD" ssh -o StrictHostKeyChecking=no \
+SSH=(sshpass -p "$GOSTI_GUEST_PASSWORD" ssh -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o LogLevel=ERROR \
   -o PreferredAuthentications=password "admin@$GUEST_IP")
-SCP=(sshpass -p "$VMH_GUEST_PASSWORD" scp -o StrictHostKeyChecking=no \
+SCP=(sshpass -p "$GOSTI_GUEST_PASSWORD" scp -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
   -o PreferredAuthentications=password)
 
@@ -255,7 +255,7 @@ log "guest SSH up"
 
 # Optionally verify cloudbase-init itself ran the userdata from the config
 # drive (slower; proves the datasource + userdata plugin end-to-end).
-if [[ "${VMH_VERIFY_CLOUDBASE:-0}" == "1" ]]; then
+if [[ "${GOSTI_VERIFY_CLOUDBASE:-0}" == "1" ]]; then
   log "waiting for cloudbase-init to consume the config-drive + run userdata"
   CBOK=0
   for _ in $(seq 1 30); do
@@ -347,7 +347,7 @@ else fail "(c') runner never reached the mock Actions connectionData endpoint"; 
 # --- 7. teardown + no-residue --------------------------------------------
 # Reclaim via the REAL CLI (ephemeral stopAndCleanup: destroy + undefine
 # --nvram + remove overlay/config-drive/nvram — no residue).
-log "tearing down clone via real vm-harness CLI (ephemeral-destroy)"
+log "tearing down clone via real gosti CLI (ephemeral-destroy)"
 LIBVIRT_DEFAULT_URI="$URI" "$HARNESS" ephemeral-destroy \
   --baseline "$GATE_NAME" >/dev/null 2>&1 \
   || log "ephemeral-destroy returned non-zero (will verify residue directly)"
@@ -365,7 +365,7 @@ for f in "$OVERLAY" "$CDISO" "$NVRAM"; do
   if [[ -e "$f" ]]; then fail "residual artifact remains: $f"; RESIDUE=1; fi
 done
 # The golden must be untouched.
-[[ -f "$VMH_WIN_GOLDEN" ]] || fail "golden vanished (must be untouched!)"
+[[ -f "$GOSTI_WIN_GOLDEN" ]] || fail "golden vanished (must be untouched!)"
 [[ "$RESIDUE" == "0" ]] && log "PASS (d): no residual domain/overlay/config-drive/nvram; golden intact"
 
 if [[ "$RESULT" == "0" ]]; then

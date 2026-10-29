@@ -10,7 +10,7 @@
 #   2. Win11_24H2_x64.iso — operator-supplied (Microsoft does not
 #      provide a stable no-login direct URL; the user downloads from
 #      microsoft.com and either drops the file at the canonical path
-#      below or sets VMH_WIN11_X64_ISO).
+#      below or sets GOSTI_WIN11_X64_ISO).
 #
 # This script is intentionally split: it always fetches virtio-win.iso
 # (it's tiny — ~700 MB and Red Hat redistributes it freely under
@@ -22,9 +22,9 @@
 #   ./build/Win11_24H2_x64.iso          (symlink to operator's ISO)
 #
 # Override the Windows ISO path with:
-#   VMH_WIN11_X64_ISO=/path/to/Win11_24H2_EnglishInternational_x64.iso
+#   GOSTI_WIN11_X64_ISO=/path/to/Win11_24H2_EnglishInternational_x64.iso
 #
-# Required tools: curl, sha256sum. Uses xorriso (via the vm-harness dev
+# Required tools: curl, sha256sum. Uses xorriso (via the gosti dev
 # shell) to validate the Windows ISO has a UEFI El Torito boot record.
 
 set -euo pipefail
@@ -40,7 +40,7 @@ VIRTIO_OUT="${BUILD_DIR}/virtio-win.iso"
 # Default path the operator is expected to place the Win11 ISO at.
 # `high-mem-server` already uses this exact convention.
 DEFAULT_WIN11_ISO_PATH="/storage/iso/Win11_24H2_EnglishInternational_x64.iso"
-WIN11_ISO_PATH="${VMH_WIN11_X64_ISO:-${DEFAULT_WIN11_ISO_PATH}}"
+WIN11_ISO_PATH="${GOSTI_WIN11_X64_ISO:-${DEFAULT_WIN11_ISO_PATH}}"
 WIN11_SYMLINK="${BUILD_DIR}/Win11_24H2_x64.iso"
 
 mkdir -p "${BUILD_DIR}"
@@ -96,7 +96,7 @@ Win11 x64 install media. The operator must download it manually:
   2. Pick "Windows 11 (multi-edition ISO for x64 devices)" and the
      installer's "Download Now" path.
   3. Save as: ${DEFAULT_WIN11_ISO_PATH}
-     (or set VMH_WIN11_X64_ISO to wherever you saved it).
+     (or set GOSTI_WIN11_X64_ISO to wherever you saved it).
   4. Re-run this script.
 
 The autounattend.xml in this directory expects "Windows 11 Pro"

@@ -7,8 +7,8 @@ second and need no `/dev/kvm`, so the per-job loop (fresh container → run
 one job → destroy) is far cheaper than the VM path. An operator may explicitly
 attach `/dev/kvm` when a job class needs nested virtualisation.
 
-Source: `src/vm_harness/backends/incus.nim`.
-Gate: `tests/e2e/t_vmharness_incus_ephemeral_run.nim`.
+Source: `src/gosti/backends/incus.nim`.
+Gate: `tests/e2e/t_gosti_incus_ephemeral_run.nim`.
 
 ## Host prerequisites — reproducible daemon init
 
@@ -59,28 +59,28 @@ If a login session pre-dates the group grant (or you are in a sandbox
 without the group active), the CLI can be prefixed with `sudo`:
 
 ```sh
-export VMH_INCUS_CMD="sudo -n incus"   # -n: fail fast, never block on a prompt
+export GOSTI_INCUS_CMD="sudo -n incus"   # -n: fail fast, never block on a prompt
 ```
 
-The `IncusBackend` reads `VMH_INCUS_CMD` (space-split) as the command
+The `IncusBackend` reads `GOSTI_INCUS_CMD` (space-split) as the command
 vector; production leaves it unset and uses a plain `incus` (group access).
 
 ### Base image (pinned locally)
 
 ```sh
-incus image copy images:debian/12 local: --alias vmh-base
+incus image copy images:debian/12 local: --alias gosti-base
 ```
 
 Debian 12 is used (not a minimal NixOS lxc image) because it ships a normal
 FHS + `cloud-init`, so `incus exec -- true` and the cloud-init injection
-seam both work out of the box. The alias defaults to `vmh-base`
-(overridable via `VMH_INCUS_BASE` in the gate, or `--base-image` on the
+seam both work out of the box. The alias defaults to `gosti-base`
+(overridable via `GOSTI_INCUS_BASE` in the gate, or `--base-image` on the
 CLI / `spec.baseImage` in code).
 
 ### Host round-trip gate (`t_incus_host_ready`)
 
 ```sh
-incus launch vmh-base t-im0 && incus exec t-im0 -- true && incus delete -f t-im0
+incus launch gosti-base t-im0 && incus exec t-im0 -- true && incus delete -f t-im0
 ```
 
 ## CLI command map (one verb per VmBackend method)
@@ -103,7 +103,7 @@ incus launch vmh-base t-im0 && incus exec t-im0 -- true && incus delete -f t-im0
 | `removeSnapshot`         | `incus delete <vm>/<snap>`                               |
 
 The CLI exposes non-destructive existing-container operations as
-`vm-harness instance {wait,exec,copy-to,copy-from,start,stop} --backend incus`.
+`gosti instance {wait,exec,copy-to,copy-from,start,stop} --backend incus`.
 They use these backend methods rather than shell-specific Incus command
 composition in consumers.
 
@@ -146,7 +146,7 @@ half-created container is force-deleted. With both flags absent, the original
 
 These are **controller/operator privileges**, not workflow inputs. A local CLI
 caller already has access to the Incus administrative socket. A remote caller
-must possess the `vm-harness serve` bearer token and reach its overlay-only
+must possess the `gosti serve` bearer token and reach its overlay-only
 endpoint; that token already authorizes the full worker CLI, so it must be held
 only by the fleet controller/operator and never exposed to a guest, workflow,
 or user-data template. The flags do not accept a host path, device type, mode,
@@ -157,19 +157,19 @@ host privileges.
 
 The Linux/container analog of the Windows golden. It consists of:
 
-- **Runner image `vmh-linux-runner`** — built by
+- **Runner image `gosti-linux-runner`** — built by
   `guest-recipes/linux-x64-runner/build-runner-image.sh`. A Debian *cloud*
   container image (`im2-debian-cloud` = `images:debian/12/cloud`, which
   ships cloud-init) with the GitHub Actions runner staged under
   `/opt/actions-runner`, an unprivileged `runner` user (passwordless sudo;
   the runner refuses to run as root), and the .NET runtime deps
   (`libicu72/libssl3/zlib1g/libkrb5-3` — already in the cloud base, so no
-  apt is needed). Build (idempotent; a per-alias `vmh-bld-<alias>` throwaway
-  container + the `vmh-linux-runner` alias only — override the build container
-  with `VMH_BUILD_CONTAINER`):
+  apt is needed). Build (idempotent; a per-alias `gosti-bld-<alias>` throwaway
+  container + the `gosti-linux-runner` alias only — override the build container
+  with `GOSTI_BUILD_CONTAINER`):
 
   ```sh
-  export VMH_INCUS_CMD="sudo -n incus"
+  export GOSTI_INCUS_CMD="sudo -n incus"
   guest-recipes/linux-x64-runner/build-runner-image.sh
   ```
 
@@ -194,7 +194,7 @@ The Linux/container analog of the Windows golden. It consists of:
 
 - **Gate `t_incus_linux_jit_boot`** (`tests/e2e/`, driver
   `tests/e2e/linux-jit/run-linux-jit-gate.sh`) — launches a container from
-  `vmh-linux-runner` with the injected bootstrap and asserts: cloud-init
+  `gosti-linux-runner` with the injected bootstrap and asserts: cloud-init
   ran it autonomously; the JIT pull was JWT-authorized (no-JWT → 401);
   `run.sh --jitconfig` launched `Runner.Listener`, which connected to the
   mock, **POSTed a real runner session (SESSION-CREATED)** and reached
@@ -202,7 +202,7 @@ The Linux/container analog of the Windows golden. It consists of:
   Uses only `im2-*` names.
 
   ```sh
-  export VMH_INCUS_CMD="sudo -n incus"
+  export GOSTI_INCUS_CMD="sudo -n incus"
   nim r --hints:off tests/e2e/t_incus_linux_jit_boot.nim
   ```
 
@@ -231,7 +231,7 @@ consequences the runner-image tooling works around:
   polls for it. A raw NixOS lxc image may lack `true` on the default exec
   PATH — Debian does not have this problem.
 - `incus list` lists ALL containers on the host. The gate asserts only on
-  its OWN job names (`vmh-incus-*`) and never touches unrelated production
+  its OWN job names (`gosti-incus-*`) and never touches unrelated production
   containers (e.g. `k3s-*`, `nomad-*`).
 - `incus file push`/`pull` as root make host-side files root-owned; that is
   expected when the backend runs under `sudo incus`.

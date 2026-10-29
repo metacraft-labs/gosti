@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## `run --ephemeral` must dispatch on the BACKEND, and the vm-harness-run
+## `run --ephemeral` must dispatch on the BACKEND, and the gosti-run
 ## backends must not fall through to libvirt.
 ##
 ## THE DEFECT THIS PINS. `cmdRunEphemeral` dispatched `incus` and `hyperv` and
@@ -24,13 +24,13 @@
 
 import std/[options, os, osproc, posix, streams, strutils, tables, tempfiles,
             times, unittest]
-import vm_harness/cli
-import vm_harness/types
-import vm_harness/ephemeral_handle
+import gosti/cli
+import gosti/types
+import gosti/ephemeral_handle
 
-suite "ephemeral dispatch for vm-harness-run backends":
+suite "ephemeral dispatch for gosti-run backends":
 
-  test "the vm-harness-run backends are the ones GARM drives by local exec":
+  test "the gosti-run backends are the ones GARM drives by local exec":
     # If this set and the provider's local-exec backend list ever disagree, one
     # controller can create a guest class the other cannot, which is the whole
     # bug class this change exists to close.
@@ -65,7 +65,7 @@ suite "ephemeral dispatch for vm-harness-run backends":
     check ephemeralPathFor("") == epLibvirt
 
   test "the golden comes from the flags the provider actually sends":
-    # garm-provider-vmharness forwards the golden as --source-image /
+    # garm-provider-gosti forwards the golden as --source-image /
     # --base-image, never --golden-image.
     check resolveEphemeralGolden("", "/g/src", "", "tart-macos") == "/g/src"
     check resolveEphemeralGolden("", "", "oci:base", "tart-linux-arm") == "oci:base"
@@ -92,7 +92,7 @@ suite "ephemeral dispatch for vm-harness-run backends":
 suite "kept-instance handles survive the process that made them":
 
   setup:
-    let root = createTempDir("vmh-eph-", "-test")
+    let root = createTempDir("gosti-eph-", "-test")
     putEnv(EphemeralStateDirEnv, root)
 
   teardown:
@@ -105,7 +105,7 @@ suite "kept-instance handles survive the process that made them":
     var extra = initTable[string, string]()
     extra["qemuPid"] = "4242"
     extra["swtpmPid"] = "4243"
-    extra["vmDir"] = "/private/var/lib/vm-harness/qemu-windows-arm/instances/repro-vm-x"
+    extra["vmDir"] = "/private/var/lib/gosti/qemu-windows-arm/instances/repro-vm-x"
     let vm = VmHandle(
       backend: nil,
       name: "repro-vm-qemu-windows-arm-1789745025315-96801",
@@ -284,7 +284,7 @@ suite "the detached bootstrap launch returns while the bootstrap runs":
     let shells = shellsUnderTest()
     check shells.len > 0
     for shell in shells:
-      let dir = createTempDir("vmh-detach-", "-test")
+      let dir = createTempDir("gosti-detach-", "-test")
       let path = dir / "garm-bootstrap.sh"
       writeFile(path, "#!/bin/sh\necho bootstrapping\nsleep 20\n")
       let (output, secs) = runAsSession(shell,
@@ -301,7 +301,7 @@ suite "the detached bootstrap launch returns while the bootstrap runs":
 
   test "the status probe reports a finished bootstrap's exit code":
     for (body, wantOk) in [("exit 0", true), ("echo boom; exit 3", false)]:
-      let dir = createTempDir("vmh-detach-", "-test")
+      let dir = createTempDir("gosti-detach-", "-test")
       let path = dir / "garm-bootstrap.sh"
       writeFile(path, "#!/bin/sh\n" & body & "\n")
       discard runAsSession("/bin/sh",
@@ -324,7 +324,7 @@ suite "the detached bootstrap launch returns while the bootstrap runs":
       removeDir(dir)
 
   test "a bootstrap that never started is not reported ready":
-    let dir = createTempDir("vmh-detach-", "-test")
+    let dir = createTempDir("gosti-detach-", "-test")
     var p = startProcess("/bin/sh",
       args = buildBootstrapStatusCommand(dir / "garm-bootstrap.sh")[1 .. ^1],
       options = {poStdErrToStdOut})

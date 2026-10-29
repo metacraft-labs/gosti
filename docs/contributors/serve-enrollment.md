@@ -1,4 +1,4 @@
-# vm-harness serve — enrollment, signed identity, capability manifest
+# gosti serve — enrollment, signed identity, capability manifest
 
 On top of the `/v1/info` backend list, serve exposes a **signed capability
 manifest** plus a lightweight **enrollment/identity model**. Each serve host
@@ -8,7 +8,7 @@ signature against its trust store, and **rejects an unenrolled, expired, or
 revoked identity**. This manifest is the **source** for runner labels — labels
 are DERIVED from proven hardware, not hand-maintained in a class name.
 
-Gate: `t_vmharness_serve_enrollment` (hermetic on Linux, `--backend noop`).
+Gate: `t_gosti_serve_enrollment` (hermetic on Linux, `--backend noop`).
 
 ## What is served
 
@@ -17,7 +17,7 @@ Gate: `t_vmharness_serve_enrollment` (hermetic on Linux, `--backend noop`).
 ```jsonc
 {
   "identity": {
-    "keyId": "vmh1-3f9a2c1b7e0d4a56",     // stable, non-secret host id
+    "keyId": "gosti1-3f9a2c1b7e0d4a56",     // stable, non-secret host id
     "host": "high-mem-server",
     "issuedAt": 1757440000,
     "notAfter": 1757443600,                // short-lived (TTL, default 1h)
@@ -47,15 +47,15 @@ Gate: `t_vmharness_serve_enrollment` (hermetic on Linux, `--backend noop`).
 `GET /v1/info` is unchanged: protocol version + the backend
 seed. `/v1/manifest` is the new, versioned, signed surface.
 
-`vm-harness manifest` prints THIS host's **unsigned** manifest locally (no
+`gosti manifest` prints THIS host's **unsigned** manifest locally (no
 daemon, no secret) — handy for debugging and as the label-derivation
-source. `vm-harness --remote <addr> manifest` fetches the remote **signed**
+source. `gosti --remote <addr> manifest` fetches the remote **signed**
 identity over `/v1/manifest`.
 
 ## Capability detection — how each field is proven
 
 Every capability is a **pure function** over an injected input
-(`src/vm_harness/serve/capability.nim`), so it is asserted against fixtures with
+(`src/gosti/serve/capability.nim`), so it is asserted against fixtures with
 no hardware present (`tests/unit/t_serve_enrollment.nim`). The impure
 `detectHostCapabilities` only gathers the inputs from the live host.
 
@@ -82,13 +82,13 @@ key on `os`/`arch` there; Windows/macOS-native detection
 ## Enrollment / identity / revocation model
 
 - **Per-host enrollment secret.** A 256-bit secret, resolved (in precedence
-  order) from `--enroll-secret` > `--enroll-secret-file` > `$VMH_ENROLL_SECRET`
+  order) from `--enroll-secret` > `--enroll-secret-file` > `$GOSTI_ENROLL_SECRET`
   > a secret persisted under `--state-dir` (self-bootstrapped on first run for
   dev). Production provisions it via agenix / systemd `LoadCredential`, exactly
   like the bearer token.
-- **keyId** = `"vmh1-" & sha256(secret)[0..15]` — a stable, non-secret host
+- **keyId** = `"gosti1-" & sha256(secret)[0..15]` — a stable, non-secret host
   identifier, safe to log. The daemon prints it at startup
-  (`identity keyId vmh1-… (enroll this keyId on the controller)`).
+  (`identity keyId gosti1-… (enroll this keyId on the controller)`).
 - **Enrollment** = recording that host's secret in the controller's `TrustStore`
   (`store.enroll(secret)` learns `keyId → secret`). An unenrolled keyId is
   rejected.
@@ -117,11 +117,11 @@ capability/identity **advertisement**: its job is tamper-evidence,
 host-identity binding, expiry, and revocation on top of a transport that
 already provides confidentiality and endpoint auth.
 
-vm-harness is deliberately dependency-light (`vm_harness.nimble` requires only
+gosti is deliberately dependency-light (`gosti.nimble` requires only
 `nim`); Nim's stdlib ships no asymmetric primitive, and linking OpenSSL /
 vendoring a curve for a capability-advertisement signature is disproportionate.
 So the signature is a vendored, fully test-vectored pure-Nim HMAC-SHA256
-(`src/vm_harness/serve/hmac.nim`, checked against NIST SHA-256 + RFC 4231
+(`src/gosti/serve/hmac.nim`, checked against NIST SHA-256 + RFC 4231
 vectors). The wire format carries an `alg` field so an asymmetric scheme such
 as **Ed25519** (the controller then holds only public keys, and a compromised
 controller store cannot forge) can be added as a versioned, non-breaking change.
@@ -156,6 +156,6 @@ A deployment provisions a per-host enrollment secret alongside the serve
 bearer token (agenix, delivered via systemd `LoadCredential` on Linux, launchd
 on macOS, or the Windows service profile) and passes it as
 `--enroll-secret-file`, then records each host's keyId in the controller's
-trust store. Revocation is revoking that keyId. `vm-harness manifest` and
-`vm-harness --remote <addr> manifest` expose the manifest for inspection and
+trust store. Revocation is revoking that keyId. `gosti manifest` and
+`gosti --remote <addr> manifest` expose the manifest for inspection and
 for prototyping the derivation.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-# Smoke-test a prebuilt Windows ARM qcow2 directory through vm-harness's
+# Smoke-test a prebuilt Windows ARM qcow2 directory through gosti's
 # direct QEMU/HVF backend. This intentionally does not build Windows; it only
 # consumes a VM directory containing windows.qcow2.
 
@@ -23,12 +23,12 @@ OpenSSH enabled. Optional firmware files such as QEMU_EFI.fd/AAVMF_CODE.fd
 and matching VARS files are copied into the ephemeral boot directory.
 
 Environment:
-  VM_HARNESS_BIN                         vm-harness binary to run
-  VMH_QEMU_WINDOWS_ARM_SSH_USER          SSH user (default: admin)
-  VMH_QEMU_WINDOWS_ARM_SSH_PASSWORD      SSH password (default: repro-windows-arm)
-  VMH_QEMU_WINDOWS_ARM_SSH_PORT          preferred host SSH port (default: 2223)
-  VMH_QEMU_WINDOWS_ARM_SSH_TIMEOUT       SSH-ready timeout seconds (default: 300)
-  VM_HARNESS_QEMU_WINDOWS_ARM_STATE_DIR  writable state dir for ephemeral copies
+  GOSTI_BIN                         gosti binary to run
+  GOSTI_QEMU_WINDOWS_ARM_SSH_USER          SSH user (default: admin)
+  GOSTI_QEMU_WINDOWS_ARM_SSH_PASSWORD      SSH password (default: repro-windows-arm)
+  GOSTI_QEMU_WINDOWS_ARM_SSH_PORT          preferred host SSH port (default: 2223)
+  GOSTI_QEMU_WINDOWS_ARM_SSH_TIMEOUT       SSH-ready timeout seconds (default: 300)
+  GOSTI_QEMU_WINDOWS_ARM_STATE_DIR  writable state dir for ephemeral copies
   OUT_DIR                                output envelope directory
   TIMEOUT_SEC                            in-guest command timeout
 EOF
@@ -56,13 +56,13 @@ for cmd in qemu-system-aarch64 ssh sshpass scp; do
   fi
 done
 
-if [[ -n "${VM_HARNESS_BIN:-}" ]]; then
-  VMH="${VM_HARNESS_BIN}"
-elif [[ -x "${REPO_ROOT}/build/bin/vm-harness" ]]; then
-  VMH="${REPO_ROOT}/build/bin/vm-harness"
+if [[ -n "${GOSTI_BIN:-}" ]]; then
+  GOSTI_CLI="${GOSTI_BIN}"
+elif [[ -x "${REPO_ROOT}/build/bin/gosti" ]]; then
+  GOSTI_CLI="${REPO_ROOT}/build/bin/gosti"
 else
-  echo "qemu-windows-arm-smoke: vm-harness binary not found." >&2
-  echo "qemu-windows-arm-smoke: run 'nimble buildCli' or set VM_HARNESS_BIN." >&2
+  echo "qemu-windows-arm-smoke: gosti binary not found." >&2
+  echo "qemu-windows-arm-smoke: run 'nimble buildCli' or set GOSTI_BIN." >&2
   exit 1
 fi
 
@@ -72,7 +72,7 @@ mkdir -p "${OUT_DIR}"
 echo "qemu-windows-arm-smoke: booting ${VM_DIR}"
 echo "qemu-windows-arm-smoke: output ${OUT_DIR}"
 
-"${VMH}" run \
+"${GOSTI_CLI}" run \
   --backend qemu-windows-arm \
   --guest windows \
   --baseline "${VM_DIR}" \

@@ -22,7 +22,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
-BUNDLE_NAME="${VMH_GOLDEN_BUNDLE_NAME:-repro-windows-arm-base}"
+BUNDLE_NAME="${GOSTI_GOLDEN_BUNDLE_NAME:-repro-windows-arm-base}"
 BUNDLE_PATH="${BUILD_DIR}/${BUNDLE_NAME}.utm"
 CONFIG_PATH="${BUNDLE_PATH}/config.plist"
 
@@ -87,7 +87,7 @@ utmctl list 2>/dev/null | awk -v n="${BUNDLE_NAME}" 'NR>1 && $NF==n'
 
 echo
 echo "Done. The harness can now clone this bundle via:"
-echo "  vm-harness run --backend utm-windows-arm --baseline ${BUNDLE_NAME} -- cmd /c hostname"
+echo "  gosti run --backend utm-windows-arm --baseline ${BUNDLE_NAME} -- cmd /c hostname"
 echo
 echo "Or run the M3 verification tests:"
 echo "  cd $(dirname "${SCRIPT_DIR}")/../.. && nimble test"

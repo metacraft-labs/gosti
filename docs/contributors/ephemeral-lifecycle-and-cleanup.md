@@ -1,10 +1,10 @@
 # Ephemeral instance lifecycle & cleanup
 
 **Status**: Implemented.
-**Audience**: vm-harness contributors and operators of long-running fleets
-(e.g. the GARM `garm-provider-vmharness` runner provider).
+**Audience**: gosti contributors and operators of long-running fleets
+(e.g. the GARM `garm-provider-gosti` runner provider).
 
-This document specifies how vm-harness provisions the per-instance disk for
+This document specifies how gosti provisions the per-instance disk for
 ephemeral guests, how it makes a leaked instance cheap and reclaimable, and the
 `prune` contract callers use to reclaim resources left behind by launchers that
 were hard-killed before their own teardown could run.
@@ -23,12 +23,12 @@ accumulates:
 - **tart**: a registered ephemeral clone (`tart list`) that a later run never
   reaps, because each instance uses a unique per-instance prefix.
 - **Both**: transient scratch files in the system temp dir — SSH-password files
-  (`vm-harness-<backend>-pwd-*`) and Tart mount-share scripts.
+  (`gosti-<backend>-pwd-*`) and Tart mount-share scripts.
 
 ## 2. Cheap ephemeral disks: qcow2 backing overlay
 
 `qemu-windows-arm` provisions the instance disk in one of two modes, selected
-by `VMH_QEMU_WINDOWS_ARM_DISK_MODE`:
+by `GOSTI_QEMU_WINDOWS_ARM_DISK_MODE`:
 
 - **`overlay` (default)** — `createEphemeralOverlay` runs
   `qemu-img create -f qcow2 -F qcow2 -b <golden>/windows.qcow2 <inst>/overlay.qcow2`.
@@ -83,12 +83,12 @@ age guard.
 ## 4. The `prune` contract
 
 ```
-vm-harness prune --ephemeral-prefix <p> [--backend all|tart|qemu-windows-arm]
+gosti prune --ephemeral-prefix <p> [--backend all|tart|qemu-windows-arm]
       [--state-dir <dir>] [--older-than <sec>] [--sweep-tmp] [--dry-run]
       [--log-format human|json]
 ```
 
-- **Always scoped.** `--ephemeral-prefix` is required. vm-harness is a general
+- **Always scoped.** `--ephemeral-prefix` is required. gosti is a general
   tool shared by many projects; a prune only ever inspects names starting with
   the given prefix (the same per-project tag used to name ephemeral VMs) inside
   the given state dir. Nothing outside that scope is touched. The tart path
@@ -101,7 +101,7 @@ vm-harness prune --ephemeral-prefix <p> [--backend all|tart|qemu-windows-arm]
   raced. Lock-held liveness needs no age guard, but the guard adds a safety
   margin for the legacy/no-lock case.
 - **`--sweep-tmp`** additionally age-removes transient scratch files
-  (`vm-harness-*-pwd-*`, Tart mount-share scripts) matching the in-scope
+  (`gosti-*-pwd-*`, Tart mount-share scripts) matching the in-scope
   backend(s). These are aged by mtime only — their name field order differs
   from instance names — so an in-use password file (seconds old) is never
   swept.
@@ -110,8 +110,8 @@ vm-harness prune --ephemeral-prefix <p> [--backend all|tart|qemu-windows-arm]
 
 ## 5. Fleet integration (GARM provider)
 
-`garm-provider-vmharness` calls `vm-harness prune` opportunistically after each
-successful `DeleteInstance` (`VMHarnessRunBackend.Sweep`), scoped to the
+`garm-provider-gosti` calls `gosti prune` opportunistically after each
+successful `DeleteInstance` (`GostiRunBackend.Sweep`), scoped to the
 backend's shared prefix stem (`repro-vm-tart-macos`, `repro-vm-tart-linux`,
 `repro-vm-qemu-windows-arm`) with `--sweep-tmp`. Delete is per-instance and
 self-cleaning; the sweep mops up orphans from prior runs that crashed before
@@ -121,18 +121,18 @@ other instances are live is safe.
 
 ### 5.1 Remote driving: `ephemeral-list` and the verified teardown
 
-When GARM drives a host through `vm-harness serve` (the provider's `remote`
+When GARM drives a host through `gosti serve` (the provider's `remote`
 backend), the provider holds no state, so the host must be able to answer
 "which per-job instances exist". That is `ephemeral-list`:
 
 ```
-vm-harness ephemeral-list  --backend <libvirt|incus|tart-*|qemu-windows-arm|utm-windows-arm|noop>
+gosti ephemeral-list  --backend <libvirt|incus|tart-*|qemu-windows-arm|utm-windows-arm|noop>
                            [--name <instance>] [--ephemeral-prefix <p>] [--label k=v]...
-vm-harness ephemeral-label --backend <b> --baseline <instance> --label k=v [--label k=v]...
+gosti ephemeral-label --backend <b> --baseline <instance> --label k=v [--label k=v]...
 ```
 
 It prints exactly one line —
-`{"vmhEphemeralList":1,"backend":"…","instances":[{"name":"…","state":"…"}]}` —
+`{"gostiEphemeralList":1,"backend":"…","instances":[{"name":"…","state":"…"}]}` —
 where `state` is GARM's vocabulary (`running` / `stopped` / `error` /
 `unknown`). The marker key exists because a serve worker's stdout and stderr
 are merged into one log stream.
@@ -157,12 +157,12 @@ domains). The provider records `garm-pool=<id>` / `garm-controller=<id>` with
 with the label records: a record whose instance is gone is never listed, an
 instance without a record never matches a label filter, and a successful
 `ephemeral-destroy` drops the record. Records live under the first configured
-of `$VMH_EPHEMERAL_LABEL_DIR`, `$VMH_EPHEMERAL_STATE_DIR/labels`, systemd's
+of `$GOSTI_EPHEMERAL_LABEL_DIR`, `$GOSTI_EPHEMERAL_STATE_DIR/labels`, systemd's
 `$STATE_DIRECTORY/ephemeral-labels` (the serve unit's only writable state under
 `ProtectSystem=strict`), the user state dir (`%LOCALAPPDATA%`,
-`$XDG_STATE_HOME` or `~/.local/state`, under `vm-harness/ephemeral-labels`),
+`$XDG_STATE_HOME` or `~/.local/state`, under `gosti/ephemeral-labels`),
 and finally `<ephemeral state root>/labels`. Deployments should set
-`VMH_EPHEMERAL_LABEL_DIR` explicitly. It is a separate verb, not a `run` flag,
+`GOSTI_EPHEMERAL_LABEL_DIR` explicitly. It is a separate verb, not a `run` flag,
 so the provider can call it against a daemon of any age.
 
 | backend | enumerates | `running` | `stopped` |

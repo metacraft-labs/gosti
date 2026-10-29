@@ -100,9 +100,9 @@
 # Idempotent: a matching install (same version marker + bash.exe present) is a
 # no-op, and the PATH edit de-dupes.
 #
-# Diagnostics: C:\Windows\Temp\vmh-git-provision.log
-# Failure marker: C:\Windows\Temp\vmh-git-provision-failed
-# Success marker: C:\Windows\Temp\vmh-git-provision-done (contains the version)
+# Diagnostics: C:\Windows\Temp\gosti-git-provision.log
+# Failure marker: C:\Windows\Temp\gosti-git-provision-failed
+# Success marker: C:\Windows\Temp\gosti-git-provision-done (contains the version)
 #
 # ---------------------------------------------------------------------------
 # FAILURE HANDLING -- AND THE GATE THAT MAKES IT SAFE
@@ -144,9 +144,9 @@ $GitTag = 'v2.55.0.windows.4'
 $GitSha256X64 = '016e84230a3767f0c6b3788e79ba0c58a17377086801719d46700fca4f7b36b5'
 $GitSha256Arm64 = 'd69d0c6a3c5445553565ef74f1d9e22a9869f57c246111db347dd96c252b4da5'
 
-$log = 'C:\Windows\Temp\vmh-git-provision.log'
-$failMarker = 'C:\Windows\Temp\vmh-git-provision-failed'
-$doneMarker = 'C:\Windows\Temp\vmh-git-provision-done'
+$log = 'C:\Windows\Temp\gosti-git-provision.log'
+$failMarker = 'C:\Windows\Temp\gosti-git-provision-failed'
+$doneMarker = 'C:\Windows\Temp\gosti-git-provision-done'
 
 function Log([string] $Message) {
   $line = '{0:o} {1}' -f (Get-Date), $Message
@@ -350,7 +350,7 @@ try {
   # it makes an interactive session on the build VM behave sanely.
   try {
     $sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'
-    $native = Add-Type -MemberDefinition $sig -Name VmhWin32SendMessageTimeout -Namespace VmhWin32 -PassThru
+    $native = Add-Type -MemberDefinition $sig -Name GostiWin32SendMessageTimeout -Namespace GostiWin32 -PassThru
     $result = [UIntPtr]::Zero
     $null = $native::SendMessageTimeout([IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
     Log 'broadcast WM_SETTINGCHANGE'
@@ -419,7 +419,7 @@ try {
   # the file is deleted in a `finally` so it is never captured into the golden.
   # A failed write throws before the invocation, so a stale file from an
   # earlier run can never be executed in place of the current one.
-  $probeScript = "C:\Windows\Temp\vmh-git-probe-$PID.sh"
+  $probeScript = "C:\Windows\Temp\gosti-git-probe-$PID.sh"
   $probe = @()
   try {
     [System.IO.File]::WriteAllText(

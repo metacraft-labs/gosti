@@ -16,7 +16,7 @@
 ## from a slow install until the timeout fires.
 
 import std/[strutils, unittest]
-import vm_harness
+import gosti
 
 proc win11Spec(): BootMediaSpec =
   ## A spec shaped like the Windows 11 golden build: install ISO as the

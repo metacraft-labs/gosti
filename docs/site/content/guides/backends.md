@@ -71,15 +71,15 @@ without any real hypervisor — the only mock allowed by the test methodology
 - Reset: ephemeral only — default `incus launch`; capability runners use
   `incus init` → fixed config/device → `incus start`; both end with
   `incus delete --force`, with no residual container or storage volume.
-- Constructor defaults: `baseImage = vmh-base`, `storagePool = default`.
+- Constructor defaults: `baseImage = gosti-base`, `storagePool = default`.
 - Socket-access caveat: if your session pre-dates the `incus-admin` group
   grant (or you are in a sandbox), prefix the CLI:
-  `export VMH_INCUS_CMD="sudo -n incus"`. The backend reads `VMH_INCUS_CMD`
+  `export GOSTI_INCUS_CMD="sudo -n incus"`. The backend reads `GOSTI_INCUS_CMD`
   (space-split) as its command vector; production leaves it unset.
 - JIT seam: `provisionEphemeralClone` leaves a cloud-init `user-data`
   injection point (`incus config set <name> cloud-init.user-data ...`) for a
   GARM JIT bootstrap. The base image is pinned locally, e.g.
-  `incus image copy images:debian/12 local: --alias vmh-base`.
+  `incus image copy images:debian/12 local: --alias gosti-base`.
 - Nested capability seam: `--incus-security-nesting` and
   `--incus-nested-kvm` are accepted only for `run --ephemeral --backend incus`.
   They are trusted-controller privileges, never guest/workflow inputs; nested
@@ -97,7 +97,7 @@ without any real hypervisor — the only mock allowed by the test methodology
 - Reset: delete + recreate + start (targets ≤ 30 s). `provisionBaseline`
   also reaps stale `repro-vm-lima-*` instances from aborted prior runs.
 - Constructor: `newLimaBackend(cpus, memoryGiB, diskGiB, bootTimeoutSec)`;
-  boot timeout is tunable (the tests read `VMH_LIMA_BOOT_TIMEOUT` for slow CI
+  boot timeout is tunable (the tests read `GOSTI_LIMA_BOOT_TIMEOUT` for slow CI
   disks).
 - Note: the library gates Lima to macOS in the integration test, but the
   backend is offered on Linux hosts too.
@@ -127,7 +127,7 @@ without any real hypervisor — the only mock allowed by the test methodology
 
 - An alternative Windows-on-ARM path driven directly through `qemu-system-aarch64`
   + `qemu-img` + `swtpm`, with SSH into the guest. Heavily env-tunable — see the
-  `VMH_QEMU_WINDOWS_ARM_*` and `VMH_QEMU_EFI_*` variables in the [Parameters
+  `GOSTI_QEMU_WINDOWS_ARM_*` and `GOSTI_QEMU_EFI_*` variables in the [Parameters
   catalog](/reference/parameters). Has a dedicated `prune` scope for its per-job state
   directory.
 

@@ -3,12 +3,12 @@
 ## Unit tests for the auto-backend-selection dispatch table.
 ##
 ## The dispatch table is pure logic; the e2e selection test
-## (``t_vm_harness_auto_backend_selection.nim``) exercises the full
+## (``t_gosti_auto_backend_selection.nim``) exercises the full
 ## ``newBackendForGuest`` + NoopBackend-fallback path. This file only
 ## checks the table.
 
 import std/unittest
-import vm_harness/types
+import gosti/types
 
 suite "selectBackendId":
   test "Windows host dispatches correctly":

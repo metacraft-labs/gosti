@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import std/[os, unittest]
-import vm_harness/backends/tart
-import vm_harness/types
+import gosti/backends/tart
+import gosti/types
 
 proc restoreEnv(name: string, existed: bool, value: string) =
   if existed:

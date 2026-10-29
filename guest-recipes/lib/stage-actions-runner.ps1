@@ -19,7 +19,7 @@
   generates first-boot.ps1. Run standalone by passing -Version/-Sha256.
 
   Failure never aborts the FirstLogonCommands chain (the golden must still
-  finish and shut down): it leaves C:\Windows\Temp\vmh-runner-stage-failed and
+  finish and shut down): it leaves C:\Windows\Temp\gosti-runner-stage-failed and
   exits 0, and the orchestrator's post-build verification refuses to capture a
   golden without the runner. This mirrors provision-git.ps1 / provision-pwsh.ps1.
 #>
@@ -29,8 +29,8 @@ param(
   [string] $InstallDir = 'C:\actions-runner'
 )
 
-$log = 'C:\Windows\Temp\vmh-runner-stage.log'
-$failMarker = 'C:\Windows\Temp\vmh-runner-stage-failed'
+$log = 'C:\Windows\Temp\gosti-runner-stage.log'
+$failMarker = 'C:\Windows\Temp\gosti-runner-stage-failed'
 function Log([string]$m) { Add-Content -LiteralPath $log -Value ("{0:o} {1}" -f (Get-Date), $m) }
 
 try {
@@ -73,7 +73,7 @@ try {
       throw "staged runner is missing $must"
     }
   }
-  Set-Content -LiteralPath (Join-Path $InstallDir '.vmh-staged') -Value $Version -Encoding ASCII
+  Set-Content -LiteralPath (Join-Path $InstallDir '.gosti-staged') -Value $Version -Encoding ASCII
   Log "staged actions-runner $Version at $InstallDir"
 }
 catch {

@@ -37,19 +37,19 @@
 ## missing. It needs a guest, and it deliberately does not create one:
 ## making a suitable throwaway is an operator act on a shared host.
 ##
-##   VMH_LIBVIRT_WARM_DOMAIN   name of a THROWAWAY libvirt domain, already
+##   GOSTI_LIBVIRT_WARM_DOMAIN   name of a THROWAWAY libvirt domain, already
 ##                             defined, whose guest has SSH reachable on the
 ##                             libvirt network. Its state is destroyed by
 ##                             this test.
-##   VMH_LIBVIRT_WARM_GUEST_OS      `linux` (default) or `windows`
-##   VMH_LIBVIRT_WARM_SSH_USER      guest login (default: root)
-##   VMH_LIBVIRT_WARM_SSH_KEY       private key path, or
-##   VMH_LIBVIRT_WARM_SSH_PASSWORD  password (needs sshpass)
-##   VMH_LIBVIRT_WARM_REPS          timing reps per arm (default 3; the
+##   GOSTI_LIBVIRT_WARM_GUEST_OS      `linux` (default) or `windows`
+##   GOSTI_LIBVIRT_WARM_SSH_USER      guest login (default: root)
+##   GOSTI_LIBVIRT_WARM_SSH_KEY       private key path, or
+##   GOSTI_LIBVIRT_WARM_SSH_PASSWORD  password (needs sshpass)
+##   GOSTI_LIBVIRT_WARM_REPS          timing reps per arm (default 3; the
 ##                                  campaign's gate wants 10)
-##   VMH_LIBVIRT_WARM_STATE_DIR     snapshot artifact dir (default: the
+##   GOSTI_LIBVIRT_WARM_STATE_DIR     snapshot artifact dir (default: the
 ##                                  image pool)
-##   VMH_LIBVIRT_WARM_SSH_FORWARD_PORT  reach the guest at 127.0.0.1:<port>
+##   GOSTI_LIBVIRT_WARM_SSH_FORWARD_PORT  reach the guest at 127.0.0.1:<port>
 ##                                  through a user-mode NIC forward instead
 ##                                  of a libvirt-network lease. Needed on
 ##                                  qemu:///session, which has no NAT
@@ -79,21 +79,21 @@
 ##
 ## Run:
 ##   export LIBVIRT_DEFAULT_URI=qemu:///session
-##   export VMH_LIBVIRT_WARM_DOMAIN=vmh-wr0-warm-scratch
-##   export VMH_LIBVIRT_WARM_SSH_USER=root VMH_LIBVIRT_WARM_SSH_KEY=~/.ssh/id_ed25519
+##   export GOSTI_LIBVIRT_WARM_DOMAIN=gosti-wr0-warm-scratch
+##   export GOSTI_LIBVIRT_WARM_SSH_USER=root GOSTI_LIBVIRT_WARM_SSH_KEY=~/.ssh/id_ed25519
 ##   nim r --hints:off tests/e2e/t_libvirt_live_snapshot_restore.nim
 
 import std/[algorithm, options, os, strutils, tables, times, unittest]
-import vm_harness
-import vm_harness/backends/libvirt
+import gosti
+import gosti/backends/libvirt
 
 when not defined(linux):
   echo "[skip] t_libvirt_live_snapshot_restore: Linux host required"
   quit(0)
 
-let domName = getEnv("VMH_LIBVIRT_WARM_DOMAIN")
+let domName = getEnv("GOSTI_LIBVIRT_WARM_DOMAIN")
 if domName.len == 0:
-  echo "[skip] t_libvirt_live_snapshot_restore: VMH_LIBVIRT_WARM_DOMAIN not " &
+  echo "[skip] t_libvirt_live_snapshot_restore: GOSTI_LIBVIRT_WARM_DOMAIN not " &
        "set. This gate needs a RUNNING, SSH-reachable Linux throwaway " &
        "domain; it does not create one, because provisioning a guest on a " &
        "shared runner host is an operator act. See the header for the full " &
@@ -108,29 +108,29 @@ for p in ProductionPrefixes:
     echo "[FAIL] t_libvirt_live_snapshot_restore: refusing to run against '" &
          domName & "'. That prefix belongs to the production runner fleet, " &
          "and this gate destroys guest state and restarts the domain. Point " &
-         "VMH_LIBVIRT_WARM_DOMAIN at a throwaway."
+         "GOSTI_LIBVIRT_WARM_DOMAIN at a throwaway."
     quit(1)
 
-let sshUser = (let u = getEnv("VMH_LIBVIRT_WARM_SSH_USER"); if u.len > 0: u else: "root")
-let sshKey = getEnv("VMH_LIBVIRT_WARM_SSH_KEY")
-let sshPassword = getEnv("VMH_LIBVIRT_WARM_SSH_PASSWORD")
+let sshUser = (let u = getEnv("GOSTI_LIBVIRT_WARM_SSH_USER"); if u.len > 0: u else: "root")
+let sshKey = getEnv("GOSTI_LIBVIRT_WARM_SSH_KEY")
+let sshPassword = getEnv("GOSTI_LIBVIRT_WARM_SSH_PASSWORD")
 if sshKey.len == 0 and sshPassword.len == 0:
   echo "[skip] t_libvirt_live_snapshot_restore: neither " &
-       "VMH_LIBVIRT_WARM_SSH_KEY nor VMH_LIBVIRT_WARM_SSH_PASSWORD is set; " &
+       "GOSTI_LIBVIRT_WARM_SSH_KEY nor GOSTI_LIBVIRT_WARM_SSH_PASSWORD is set; " &
        "the gate has no way into the guest."
   quit(0)
 
-let reps = (let r = getEnv("VMH_LIBVIRT_WARM_REPS"); if r.len > 0: parseInt(r) else: 3)
+let reps = (let r = getEnv("GOSTI_LIBVIRT_WARM_REPS"); if r.len > 0: parseInt(r) else: 3)
 
-let guestOsName = (let g = getEnv("VMH_LIBVIRT_WARM_GUEST_OS");
+let guestOsName = (let g = getEnv("GOSTI_LIBVIRT_WARM_GUEST_OS");
                    if g.len > 0: g.toLowerAscii() else: "linux")
 if guestOsName notin ["linux", "windows"]:
-  echo "[FAIL] t_libvirt_live_snapshot_restore: VMH_LIBVIRT_WARM_GUEST_OS " &
+  echo "[FAIL] t_libvirt_live_snapshot_restore: GOSTI_LIBVIRT_WARM_GUEST_OS " &
        "must be 'linux' or 'windows'; got '" & guestOsName & "'."
   quit(1)
 let isWindows = guestOsName == "windows"
-let stateDir = getEnv("VMH_LIBVIRT_WARM_STATE_DIR")
-let forwardPort = (let p = getEnv("VMH_LIBVIRT_WARM_SSH_FORWARD_PORT");
+let stateDir = getEnv("GOSTI_LIBVIRT_WARM_STATE_DIR")
+let forwardPort = (let p = getEnv("GOSTI_LIBVIRT_WARM_SSH_FORWARD_PORT");
                    if p.len > 0: parseInt(p) else: 0)
 
 let b = newLibvirtBackend(snapshotStateDir = stateDir,

@@ -7,7 +7,7 @@
 ## or mock is used here. The Unix monitor/QMP and real child-process lifecycle
 ## fixture stays in that original program and runs on POSIX hosts.
 import std/[json, os, sequtils, strutils, tempfiles, times, unittest]
-import vm_harness
+import gosti
 import qwa_fixture_paths
 
 suite "QemuWindowsArmBackend golden build":
@@ -15,7 +15,7 @@ suite "QemuWindowsArmBackend golden build":
   ## corrupting the instances running on top of the golden it replaces.
 
   test "install argv boots the media and defers the empty target disk":
-    let tmp = createTempDir("vmh-qemu-win-arm-install-", "")
+    let tmp = createTempDir("gosti-qemu-win-arm-install-", "")
     defer: removeDir(tmp)
     writeFile(tmp / "windows.qcow2", "")
     writeFile(tmp / "QEMU_EFI.fd", "")
@@ -91,7 +91,7 @@ suite "QemuWindowsArmBackend golden build":
     # golden on disk reproducible from this source: the argv that built it
     # did not have one.
     check "-qmp" notin args
-    check not args.anyIt("vmh-qwa-qmp" in it)
+    check not args.anyIt("gosti-qwa-qmp" in it)
 
     # The install writes the base disk directly; overlays are a per-job
     # concern and must not appear here.
@@ -120,7 +120,7 @@ suite "QemuWindowsArmBackend golden build":
     ## per-job boot WORKS belongs to the host tier
     ## (``tests/e2e/t_qemu_windows_arm_per_job_boot_host.nim``) and to the
     ## end-to-end test in "The per-job boot: the reboot lifecycle" below.
-    let tmp = createTempDir("vmh-qemu-win-arm-runargv-", "")
+    let tmp = createTempDir("gosti-qemu-win-arm-runargv-", "")
     defer: removeDir(tmp)
     writeFile(tmp / "windows.qcow2", "")
 
@@ -156,7 +156,7 @@ suite "QemuWindowsArmBackend golden build":
     check not args.anyIt("sata" in it)
 
   test "a golden build refuses to overwrite an existing golden":
-    let tmp = createTempDir("vmh-qemu-win-arm-guard-", "")
+    let tmp = createTempDir("gosti-qemu-win-arm-guard-", "")
     defer: removeDir(tmp)
     let existing = tmp / "win-arm-runner-0001"
     createDir(existing)
@@ -164,13 +164,13 @@ suite "QemuWindowsArmBackend golden build":
 
     # Overwriting it would not fail at the qcow2 layer: every overlay naming
     # it as a backing store would silently continue against different data.
-    expect VmHarnessError:
+    expect GostiError:
       prepareGoldenBuildDir(existing)
     check readFile(existing / "windows.qcow2") ==
       "pretend this backs a live overlay"
 
   test "a golden build accepts a fresh or empty directory":
-    let tmp = createTempDir("vmh-qemu-win-arm-fresh-", "")
+    let tmp = createTempDir("gosti-qemu-win-arm-fresh-", "")
     defer: removeDir(tmp)
     let fresh = tmp / "win-arm-runner-0002"
     prepareGoldenBuildDir(fresh)
@@ -181,16 +181,16 @@ suite "QemuWindowsArmBackend golden build":
     check dirExists(fresh)
 
   test "golden disk allocation rejects a nonsense size":
-    let tmp = createTempDir("vmh-qemu-win-arm-size-", "")
+    let tmp = createTempDir("gosti-qemu-win-arm-size-", "")
     defer: removeDir(tmp)
-    expect VmHarnessError:
+    expect GostiError:
       createGoldenDisk("qemu-img", tmp, 0)
 
 suite "Golden build space precondition":
   ## Pure policy, so the thresholds can be exercised without a filesystem.
 
   setup:
-    delEnv("VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB")
+    delEnv("GOSTI_QEMU_WINDOWS_ARM_MIN_FREE_GB")
 
   test "a build that cannot finish is refused":
     let v = goldenBuildSpaceVerdict(freeGB = 40, diskGB = QwaDefaultGoldenDiskGB)
@@ -223,26 +223,26 @@ suite "Golden build space precondition":
                                   diskGB = QwaDefaultGoldenDiskGB).fatal
 
   test "an operator can override the estimate":
-    putEnv("VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB", "5")
-    defer: delEnv("VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB")
+    putEnv("GOSTI_QEMU_WINDOWS_ARM_MIN_FREE_GB", "5")
+    defer: delEnv("GOSTI_QEMU_WINDOWS_ARM_MIN_FREE_GB")
     check qwaGoldenFloorGB(QwaDefaultGoldenDiskGB) == 5
     check not goldenBuildSpaceVerdict(freeGB = 10,
                                       diskGB = QwaDefaultGoldenDiskGB).fatal
 
   test "a garbage override falls back to the computed floor":
-    putEnv("VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB", "not-a-number")
-    defer: delEnv("VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB")
+    putEnv("GOSTI_QEMU_WINDOWS_ARM_MIN_FREE_GB", "not-a-number")
+    defer: delEnv("GOSTI_QEMU_WINDOWS_ARM_MIN_FREE_GB")
     check qwaGoldenFloorGB(QwaDefaultGoldenDiskGB) ==
       QwaGoldenInstallPeakGB + QwaGoldenBuildSlackGB
 
   test "unknown free space proceeds rather than blocking":
     # A failed statvfs must not be reported as a full disk.
-    let warning = checkGoldenBuildSpace("/nonexistent-path-for-vmh-test",
+    let warning = checkGoldenBuildSpace("/nonexistent-path-for-gosti-test",
                                         QwaDefaultGoldenDiskGB)
     check "could not determine free space" in warning
 
   test "free space on a real path is plausible":
-    let tmp = createTempDir("vmh-qemu-win-arm-space-", "")
+    let tmp = createTempDir("gosti-qemu-win-arm-space-", "")
     defer: removeDir(tmp)
     when defined(posix):
       check freeSpaceGB(tmp) >= 0
@@ -376,7 +376,7 @@ suite "Golden build: the harness agrees with the checked-in recipe":
     # an ssh wrapper that echoes its argument cannot look like a live sysprep
     # — the same trap QwaInstallDoneMarker exists to avoid.
     check QwaSysprepRunningMarker notin "Get-Process sysprep"
-    check QwaSysprepRunningMarker == "VMH-SYSPREP-RUNNING"
+    check QwaSysprepRunningMarker == "GOSTI-SYSPREP-RUNNING"
 
   test "the install probe cannot be satisfied by an echo of itself":
     let probe = buildInstallSentinelProbe()
@@ -392,7 +392,7 @@ suite "Golden build: the harness agrees with the checked-in recipe":
 suite "Golden build: power-off is read off the monitor, not off SSH":
 
   test "the monitor path watched is the one the argv publishes":
-    let tmp = createTempDir("vmh-qwa-monitor-", "")
+    let tmp = createTempDir("gosti-qwa-monitor-", "")
     defer: removeDir(tmp)
     writeFile(tmp / "windows.qcow2", "")
     let expected = "unix:" & qwaMonitorSocketPath(tmp) & ",server=on,wait=off"
@@ -424,7 +424,7 @@ suite "Golden build: the freeze watchdog":
   ## because it was not looking.
 
   test "a guest that writes to either surface is not stalled":
-    let tmp = createTempDir("vmh-qwa-progress-", "")
+    let tmp = createTempDir("gosti-qwa-progress-", "")
     defer: removeDir(tmp)
     let serial = tmp / "serial.log"
     let disk = tmp / "windows.qcow2"
@@ -448,7 +448,7 @@ suite "Golden build: the freeze watchdog":
     check guestStalledSec(w, now = 1300.0) == 0.0
 
   test "a freeze is both surfaces still, past a bound, and nothing less":
-    let tmp = createTempDir("vmh-qwa-frozen-", "")
+    let tmp = createTempDir("gosti-qwa-frozen-", "")
     defer: removeDir(tmp)
     let serial = tmp / "serial.log"
     let disk = tmp / "windows.qcow2"
@@ -479,7 +479,7 @@ suite "Golden build: the freeze watchdog":
     check QwaInstallMaxPowerCycles == 2
     # The default has to BE the shipped constant, not a copy of its value:
     # a watchdog whose default is 0 is a watchdog that never fires.
-    let tmp = createTempDir("vmh-qwa-freeze-default-", "")
+    let tmp = createTempDir("gosti-qwa-freeze-default-", "")
     defer: removeDir(tmp)
     var w = newGuestProgressWatch(tmp / "serial.log", tmp / "windows.qcow2",
                                   now = 0.0)
@@ -507,7 +507,7 @@ suite "Golden build: the install media keypress prompt":
 suite "Golden build: finalize drops the install media":
 
   test "a finished directory validates and boots with no install media":
-    let tmp = createTempDir("vmh-qwa-finalize-", "")
+    let tmp = createTempDir("gosti-qwa-finalize-", "")
     defer: removeDir(tmp)
     let golden = tmp / "win-arm-runner-0100"
     createDir(golden)
@@ -537,14 +537,14 @@ suite "Golden build: finalize drops the install media":
           ",format=qcow2,if=none,cache=writeback,discard=unmap" in boot
 
   test "a build that produced no disk is refused, not promoted":
-    let tmp = createTempDir("vmh-qwa-finalize-bad-", "")
+    let tmp = createTempDir("gosti-qwa-finalize-bad-", "")
     defer: removeDir(tmp)
     let empty = tmp / "win-arm-runner-0101"
     createDir(empty)
     var raised = false
     try:
       discard finalizeGoldenDir(empty)
-    except VmHarnessError as e:
+    except GostiError as e:
       raised = true
       check "windows.qcow2" in e.msg
     check raised
@@ -562,7 +562,7 @@ suite "Golden build: the manifest":
     # ISO. Nothing regenerates the ISO when a recipe file changes, because
     # build/ is a gitignored artifact built by hand, so the two drift in
     # silence and the golden claims provenance it does not have.
-    let tmp = createTempDir("vmh-qwa-stale-iso-", "")
+    let tmp = createTempDir("gosti-qwa-stale-iso-", "")
     defer: removeDir(tmp)
     let recipe = tmp / "recipe"
     createDir(recipe)
@@ -586,7 +586,7 @@ suite "Golden build: the manifest":
       discard b.buildWindowsArmGolden(newGoldenBuildSpec(
         buildDir = tmp / "build", windowsIso = tmp / "win.iso",
         autounattendIso = iso, recipeDir = recipe, diskGB = 1))
-    except VmHarnessError as e:
+    except GostiError as e:
       raised = true
       check "OLDER than the recipe files" in e.msg
       check "build-autounattend-iso.sh" in e.msg
@@ -598,12 +598,12 @@ suite "Golden build: the manifest":
     setLastModificationTime(iso, isoTime + initDuration(days = 90))
     check staleAnswerIsoRecipeFiles(iso, recipe).len == 0
 
-  test "the recorded vm-harness version tracks the package version":
-    let nimble = readFile(repoRoot() / "vm_harness.nimble")
-    check ("version       = \"" & QwaVmHarnessVersion & "\"") in nimble
+  test "the recorded gosti version tracks the package version":
+    let nimble = readFile(repoRoot() / "gosti.nimble")
+    check ("version       = \"" & QwaGostiVersion & "\"") in nimble
 
   test "a digest is a real SHA-256 of the file's CONTENT":
-    let tmp = createTempDir("vmh-qwa-sha-", "")
+    let tmp = createTempDir("gosti-qwa-sha-", "")
     defer: removeDir(tmp)
     let empty = tmp / "empty"
     writeFile(empty, "")
@@ -622,7 +622,7 @@ suite "Golden build: the manifest":
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
   test "the manifest identifies the ISO, the recipe and the answer files":
-    let tmp = createTempDir("vmh-qwa-manifest-", "")
+    let tmp = createTempDir("gosti-qwa-manifest-", "")
     defer: removeDir(tmp)
     let golden = tmp / "win-arm-runner-0102"
     createDir(golden)
@@ -641,7 +641,7 @@ suite "Golden build: the manifest":
     check m["schema"].getStr == QwaGoldenManifestSchema
     check m["baseline"].getStr == "win-arm-runner"
     check m["builtAt"].getStr == "2026-09-15T00:00:00Z"
-    check m["vmHarnessVersion"].getStr == QwaVmHarnessVersion
+    check m["gostiVersion"].getStr == QwaGostiVersion
     check m["diskGB"].getInt == 64
 
     # The ISO is pinned by CONTENT, not by the path it happened to sit at.
@@ -665,7 +665,7 @@ suite "Golden build: the manifest":
     check m["recipe"]["dir"].getStr == recipeDir()
 
   test "a different ISO produces a different manifest":
-    let tmp = createTempDir("vmh-qwa-manifest-diff-", "")
+    let tmp = createTempDir("gosti-qwa-manifest-diff-", "")
     defer: removeDir(tmp)
     createDir(tmp / "a")
     createDir(tmp / "b")
@@ -697,7 +697,7 @@ suite "Golden build: the manifest":
 suite "The per-job boot: the reboot lifecycle":
 
   test "firmware boots are counted off the serial console":
-    let tmp = createTempDir("vmh-qwa-bootcount-", "")
+    let tmp = createTempDir("gosti-qwa-bootcount-", "")
     defer: removeDir(tmp)
     let serial = tmp / QwaSerialLogName
 
@@ -715,7 +715,7 @@ suite "The per-job boot: the reboot lifecycle":
     # And the marker is the one the REAL firmware prints, not a paraphrase.
     check QwaFirmwareBannerMarker in
       readFile(currentSourcePath().parentDir.parentDir.parentDir /
-               "src" / "vm_harness" / "backends" / "qemu_windows_arm.nim")
+               "src" / "gosti" / "backends" / "qemu_windows_arm.nim")
 
   test "the shipped reboot allowance is the measured one, doubled":
     # MEASURED on m3 2026-09-15: a healthy first boot of the real golden
@@ -732,7 +732,7 @@ suite "The per-job boot: the reboot lifecycle":
 suite "Golden build: only a FINISHED golden is admissible":
   ## MEASURED on m3 2026-09-15, and the reason this suite exists: after MA4's
   ## five host runs, SIX directories sat under
-  ## /private/var/lib/vm-harness/qemu-windows-arm/golden/ — 12-15 GB each,
+  ## /private/var/lib/gosti/qemu-windows-arm/golden/ — 12-15 GB each,
   ## every one of them holding a windows.qcow2 and none of them holding a
   ## manifest, because the golden build creates the disk EMPTY as its first
   ## act and writes the manifest as its LAST. The structural check accepted
@@ -744,7 +744,7 @@ suite "Golden build: only a FINISHED golden is admissible":
   ## artifact must be identifiable AS one.
 
   test "a retained failed build is NOT admissible as a golden":
-    let tmp = createTempDir("vmh-qwa-admit-failed-", "")
+    let tmp = createTempDir("gosti-qwa-admit-failed-", "")
     defer: removeDir(tmp)
     # Exactly the shape of win-arm-runner-20260915T102158Z on m3: a large,
     # entirely plausible disk from an install that got part-way and stopped.
@@ -769,7 +769,7 @@ suite "Golden build: only a FINISHED golden is admissible":
     check raised
 
   test "the consuming path refuses one too, rather than booting jobs off it":
-    let tmp = createTempDir("vmh-qwa-admit-provision-", "")
+    let tmp = createTempDir("gosti-qwa-admit-provision-", "")
     defer: removeDir(tmp)
     let failedBuild = tmp / "win-arm-runner-20260915T102158Z"
     createDir(failedBuild)
@@ -781,20 +781,20 @@ suite "Golden build: only a FINISHED golden is admissible":
     try:
       b.provisionBaseline(BaselineSpec(name: "win-arm-runner",
                                        sourceImage: failedBuild))
-    except VmHarnessError as e:
+    except GostiError as e:
       raised = true
       check QwaGoldenManifestName in e.msg
     check raised
 
   test "a finished golden is admissible":
-    let tmp = createTempDir("vmh-qwa-admit-ok-", "")
+    let tmp = createTempDir("gosti-qwa-admit-ok-", "")
     defer: removeDir(tmp)
     writeFile(tmp / QwaBaseDiskName, "golden")
     writeFile(tmp / QwaGoldenManifestName, "{}")
     check requireWindowsArmGolden(tmp) == absolutePath(tmp)
 
   test "an absent or diskless directory is refused before the manifest":
-    let tmp = createTempDir("vmh-qwa-admit-empty-", "")
+    let tmp = createTempDir("gosti-qwa-admit-empty-", "")
     defer: removeDir(tmp)
     expect ValueError:
       discard requireWindowsArmGolden(tmp / "nope")

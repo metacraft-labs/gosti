@@ -5,7 +5,7 @@
 ## The sender must block at capacity, preserve FIFO across wraparound, and may
 ## exit before another thread drains and closes the queue without owning its heap.
 import std/[atomics, monotimes, os, times, unittest]
-import vm_harness/serve/dispatch_queue
+import gosti/serve/dispatch_queue
 
 var finished: Atomic[bool]
 

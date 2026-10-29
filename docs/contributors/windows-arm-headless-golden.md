@@ -5,7 +5,7 @@
 `qemu-windows-arm` consumes a Windows ARM64 golden — a directory containing
 `windows.qcow2` and `golden-manifest.json` — and can also *produce* one:
 `buildWindowsArmGolden` (in
-[`qemu_windows_arm.nim`](../../src/vm_harness/backends/qemu_windows_arm.nim))
+[`qemu_windows_arm.nim`](../../src/gosti/backends/qemu_windows_arm.nim))
 drives the Windows ARM64 unattended install through QEMU with no GUI and no
 UTM, so a golden is reproducible from the ISO plus the checked-in answer files
 under [`guest-recipes/windows-arm-base/`](../../guest-recipes/windows-arm-base/).
@@ -16,7 +16,7 @@ This page describes how that build works, how a finished golden is consumed
 per job, and what the host runs found along the way.
 
 `buildWindowsArmGolden` is a library entry point. It is driven by the gates
-below; there is no `vm-harness` CLI verb for it, and nothing in this
+below; there is no `gosti` CLI verb for it, and nothing in this
 repository promotes a built golden (see "Promotion is not implemented here,
 and that is on purpose").
 
@@ -37,7 +37,7 @@ and that is on purpose").
 | Free-space precondition | `checkGoldenBuildSpace` | Floor refuses, comfort band warns. |
 | Sysprep + generalize | `runGuestSysprep` + `waitForGuestPowerOff` | Power-off observed on the monitor socket. |
 | Golden finalize | `finalizeGoldenDir` | Drops build leftovers, refuses a golden whose per-job boot would still reference the install media, then `validateWindowsArmVmDir`. |
-| Build manifest | `writeGoldenManifest` | ISO SHA-256, recipe commit + dirty flag, answer-file digests, timestamp, vm-harness version. |
+| Build manifest | `writeGoldenManifest` | ISO SHA-256, recipe commit + dirty flag, answer-file digests, timestamp, gosti version. |
 
 A golden built this way on m3 on 2026-09-15
 (`win-arm-runner-20260915T154742Z`) took 35.1 min wall clock, is 13.81 GiB,
@@ -84,7 +84,7 @@ The golden is not a template that gets copied. In the default disk mode
 `windows.qcow2`**. The golden is never copied; it is shared read-only by
 every concurrent instance, and only the overlay records guest writes. Clone
 mode — a full per-instance copy — is a fallback behind
-`VMH_QEMU_WINDOWS_ARM_DISK_MODE=clone`.
+`GOSTI_QEMU_WINDOWS_ARM_DISK_MODE=clone`.
 
 That makes one thing a hard constraint:
 
@@ -181,8 +181,8 @@ guest is absent. It deliberately does not claim the host tier's coverage: no
 unit test can say that Windows Setup accepted the answer file, that HVF
 tolerated the reboot sequence, or that `/generalize` re-minted the SID.
 
-The host tier requires `VMH_WINDOWS_ARM_GOLDEN_HOST_TEST=1`,
-`VMH_WINDOWS_ARM_ISO` and `VMH_WINDOWS_ARM_AUTOUNATTEND_ISO`, and names each
+The host tier requires `GOSTI_WINDOWS_ARM_GOLDEN_HOST_TEST=1`,
+`GOSTI_WINDOWS_ARM_ISO` and `GOSTI_WINDOWS_ARM_AUTOUNATTEND_ISO`, and names each
 missing one in the skip message.
 
 Points worth knowing before changing the build, each deliberate:
@@ -210,7 +210,7 @@ Points worth knowing before changing the build, each deliberate:
   firmware, and `qemuFirmwareArgs` resolves it from the VM directory, so
   `stageGoldenFirmware` copies a code/vars pair in — giving the build its own
   writable variable store, since Windows Setup writes its boot entry there.
-  `VMH_QEMU_FIRMWARE_DIR` *replaces* the well-known search list rather than
+  `GOSTI_QEMU_FIRMWARE_DIR` *replaces* the well-known search list rather than
   being prepended to it.
 - **The install wait does not reuse `waitForSshReady`.** OpenSSH comes up *partway
   through* the `FirstLogonCommands` chain, so a guest that answers SSH may
@@ -283,9 +283,9 @@ directory**. It never writes `golden/win-arm-runner`, and there is no
 Promotion is a pointer flip plus a retention decision about the previous
 golden, and both are configuration of the host that consumes the golden, not
 something the build does. The build directory is `GoldenBuildSpec.buildDir`
-(the host gate reads it from `VMH_WINDOWS_ARM_GOLDEN_OUT`), so whatever
+(the host gate reads it from `GOSTI_WINDOWS_ARM_GOLDEN_OUT`), so whatever
 provisions the host can point it at
-`/private/var/lib/vm-harness/qemu-windows-arm/golden/win-arm-runner-<build-id>`
+`/private/var/lib/gosti/qemu-windows-arm/golden/win-arm-runner-<build-id>`
 and own the symlink declaratively. Nothing in the build path requires an
 operator to copy, rename or `install -d` anything.
 
@@ -322,7 +322,7 @@ shape of a first host run and worth expecting on the next platform.
    LISTENING`, and every SYN forwarded by `hostfwd` was dropped inside the
    guest. `provision-openssh.ps1` only created a rule *when none existed*, so
    on exactly this path it was a no-op. It now widens whatever rule is there
-   to `Profile Any`, owns a rule of its own (`vmh-sshd-in-tcp22`), and
+   to `Profile Any`, owns a rule of its own (`gosti-sshd-in-tcp22`), and
    **asserts** the result — an unreachable sshd must fail the provisioning
    step loudly rather than produce a golden nothing can log into.
 
@@ -431,7 +431,7 @@ half-installed disk.
 `swtpm` is not an afterthought in that recovery. `swtpm socket` exits when
 its client disconnects, so the first hand-run power cycle on m3 brought QEMU
 back against a TPM socket that no longer existed and died on
-`Failed to connect to /tmp/vmh-qwa-tpm-....sock`. A Windows 11 guest will not
+`Failed to connect to /tmp/gosti-qwa-tpm-....sock`. A Windows 11 guest will not
 boot without a TPM, so the power cycle restarts both.
 
 ### Where the install media lives, and why
@@ -641,7 +641,7 @@ an artifact that lies about itself.
 - **A failed build looks exactly like a golden.** The build deliberately
   retains a failed build's directory and logs for diagnosis, and five runs on
   m3 left **six** of them under
-  `/private/var/lib/vm-harness/qemu-windows-arm/golden/`, 12–15 GB each
+  `/private/var/lib/gosti/qemu-windows-arm/golden/`, 12–15 GB each
   (~68 GB total). Every one holds a `windows.qcow2`, because the build
   creates that empty as its *first* act — and `validateWindowsArmVmDir`, the
   check the consuming path used, asked for nothing else. All six would have
@@ -695,7 +695,7 @@ never published or pulled. The build path is therefore the *only* path, which
 is why it is re-runnable — each run writes a fresh versioned directory, and a
 failed run leaves one that nothing points at — and why each golden carries a
 **manifest** (ISO SHA-256, recipe commit, answer-file digests, build
-timestamp, vm-harness version): not for reproducibility, which the recipe
+timestamp, gosti version): not for reproducibility, which the recipe
 provides, but so that a golden of unknown provenance is identifiable as one.
 The ISO itself remains the one operator-supplied input, pinned by hash.
 
@@ -732,7 +732,7 @@ Derivation, biased pessimistic throughout:
   outgrow its requested size, and stops scaling up past the install peak,
   since the image stays sparse.
 
-`VMH_QEMU_WINDOWS_ARM_MIN_FREE_GB` overrides the floor for an operator who
+`GOSTI_QEMU_WINDOWS_ARM_MIN_FREE_GB` overrides the floor for an operator who
 knows better than the estimate. An undeterminable free figure warns and
 proceeds — refusing to build because a `statvfs` call failed would be worse
 than the risk it guards.

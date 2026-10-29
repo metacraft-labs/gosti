@@ -4,7 +4,7 @@
 ## this repository actually declares.
 ##
 ## MOCK POLICY — nothing is mocked. The test reads the two real files in the
-## working tree: `src/vm_harness/repro/resources.nim` and `docs/contributors/architecture.md`.
+## working tree: `src/gosti/repro/resources.nim` and `docs/contributors/architecture.md`.
 ##
 ## WHY THIS EXISTS. The determinism table is documentation of a contract that
 ## lives in code — a class in the table that the source does not declare is
@@ -32,7 +32,7 @@ import std/[os, strutils, tables, unittest]
 
 const
   RepoRoot = currentSourcePath().parentDir.parentDir.parentDir
-  ResourcesPath = RepoRoot / "src" / "vm_harness" / "repro" / "resources.nim"
+  ResourcesPath = RepoRoot / "src" / "gosti" / "repro" / "resources.nim"
   DesignPath = RepoRoot / "docs" / "contributors" / "architecture.md"
   SectionHeading = "## 13. Reprobuild adapter"
   # Backend methods, not `resourceType` blocks. Presence-checked only.
@@ -48,7 +48,7 @@ proc specClassOf(nimEnum: string): string =
     "unknown determinism enum in resources.nim: " & nimEnum)
 
 proc typeIdConstants(source: string): Table[string, string] =
-  ## `TypeContainer* = "vm_harness.container"` → {"TypeContainer": "vm_harness.container"}
+  ## `TypeContainer* = "gosti.container"` → {"TypeContainer": "gosti.container"}
   result = initTable[string, string]()
   for rawLine in source.splitLines():
     let line = rawLine.strip()
@@ -112,9 +112,9 @@ suite "docs/contributors/architecture.md Reprobuild adapter section":
     ## A guard on the CHECKER. If the parse above silently found nothing,
     ## every assertion below would pass vacuously against an empty table.
     check declaredClasses.len == 6
-    for typeId in ["vm_harness.container", "vm_harness.exec",
-                   "vm_harness.snapshot", "vm_harness.network",
-                   "vm_harness.nic", "vm_harness.check"]:
+    for typeId in ["gosti.container", "gosti.exec",
+                   "gosti.snapshot", "gosti.network",
+                   "gosti.nic", "gosti.check"]:
       check declaredClasses.hasKey(typeId)
 
   test "every declared resource type appears with the class the source declares":
@@ -165,7 +165,7 @@ suite "docs/contributors/architecture.md Reprobuild adapter section":
 
   test "the section points at the normative spec and names the wrapper home":
     check "edge-determinism model" in section
-    check "package vm_harness:" in section
+    check "package gosti:" in section
     # §1.4 composition and §3's substitution rule are the two properties a
     # reader of the table most needs in order not to misread it.
     check "strictest" in section

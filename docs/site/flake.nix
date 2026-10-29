@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 {
-  description = "vm-harness docs — self-contained dev shell for the isonim-docs-powered docs site";
+  description = "gosti docs — self-contained dev shell for the isonim-docs-powered docs site";
 
-  # SELF-CONTAINED: vm-harness is a standalone repo, so this docs site declares
+  # SELF-CONTAINED: gosti is a standalone repo, so this docs site declares
   # the whole isonim-docs framework toolchain + source as flake INPUTS rather
   # than relying on sibling checkouts (the way codetracer/docs/book-isonim does).
   # Everything the SSG needs to compile — the framework source, isonim, the
@@ -38,7 +38,7 @@
     };
 
     # The shared Metacraft docs design system (DTCG token JSON). Provides the
-    # `--docs-*` token values so vm-harness docs look identical to the
+    # `--docs-*` token values so gosti docs look identical to the
     # CodeTracer / isonim-docs sites. Consumed as source (staticRead at compile
     # time — see src/theme_tokens.nim).
     codetracer-design-system = {
@@ -73,27 +73,27 @@
       {
         devShells.default = pkgs.mkShell {
           # Inherit the entire isonim toolchain (nim/nimble/node/just/…). This
-          # site adds only vm-harness's Linux PCRE compile dependency; the SSG
+          # site adds only gosti's Linux PCRE compile dependency; the SSG
           # otherwise builds with plain `nim c` / `nim js` + node, all of which
           # isonim's shell provides.
           inputsFrom = [ isonim.devShells.${system}.default ];
           packages = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcre.dev ];
 
           # CRUCIAL — make the framework SOURCE available with NO sibling repos.
-          # We export the store path of each input as a VMH_DOCS_* env var;
+          # We export the store path of each input as a GOSTI_DOCS_* env var;
           # config.nims reads them and adds the corresponding `--path:` (and
-          # passes the design-system root on as the `vmhDocsDesignSystem`
+          # passes the design-system root on as the `gostiDocsDesignSystem`
           # compile-time define). When these are unset (legacy sibling-checkout
           # layout) config.nims falls back to sibling paths, so both modes work.
           shellHook = ''
-            export VMH_DOCS_ISONIM_SRC="${isonim}/src"
-            export VMH_DOCS_ISONIM_DOCS_SRC="${isonim-docs}/src"
-            export VMH_DOCS_NIM_EVERYWHERE_SRC="${nim-everywhere}/src"
-            export VMH_DOCS_NIM_FASTSTREAMS="${nim-faststreams}"
-            export VMH_DOCS_NIM_STEW="${nim-stew}"
-            export VMH_DOCS_ISONIM_VENDOR="${isonim}/vendor"
-            export VMH_DOCS_DESIGN_SYSTEM="${codetracer-design-system}"
-            echo "vm-harness docs dev shell — framework source from Nix store (isonim-docs + isonim), nim $(nim --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+            export GOSTI_DOCS_ISONIM_SRC="${isonim}/src"
+            export GOSTI_DOCS_ISONIM_DOCS_SRC="${isonim-docs}/src"
+            export GOSTI_DOCS_NIM_EVERYWHERE_SRC="${nim-everywhere}/src"
+            export GOSTI_DOCS_NIM_FASTSTREAMS="${nim-faststreams}"
+            export GOSTI_DOCS_NIM_STEW="${nim-stew}"
+            export GOSTI_DOCS_ISONIM_VENDOR="${isonim}/vendor"
+            export GOSTI_DOCS_DESIGN_SYSTEM="${codetracer-design-system}"
+            echo "gosti docs dev shell — framework source from Nix store (isonim-docs + isonim), nim $(nim --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
           '';
         };
       }

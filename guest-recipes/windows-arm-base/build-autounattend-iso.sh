@@ -39,11 +39,11 @@ LIB_DIR="$(cd -- "${SCRIPT_DIR}/../lib" &>/dev/null && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
 STAGE_DIR="${BUILD_DIR}/autounattend-stage"
 ISO_PATH="${BUILD_DIR}/autounattend.iso"
-OPENSSH_ZIP_SRC="${VMH_OPENSSH_ARM64_ZIP:-}"
+OPENSSH_ZIP_SRC="${GOSTI_OPENSSH_ARM64_ZIP:-}"
 REQUIRE_OPENSSH_ZIP=0
-VIRTIO_NETKVM_SRC="${VMH_VIRTIO_NETKVM_ARM64_DIR:-}"
+VIRTIO_NETKVM_SRC="${GOSTI_VIRTIO_NETKVM_ARM64_DIR:-}"
 REQUIRE_VIRTIO_NETKVM=0
-PORTABLE_GIT_SRC="${VMH_PORTABLE_GIT_ARCHIVE:-}"
+PORTABLE_GIT_SRC="${GOSTI_PORTABLE_GIT_ARCHIVE:-}"
 REQUIRE_PORTABLE_GIT=0
 
 usage() {
@@ -60,17 +60,17 @@ offline before OpenSSH readiness is checked.
 
 The zip source is resolved in this order:
   1. --openssh-arm64-zip PATH
-  2. VMH_OPENSSH_ARM64_ZIP
+  2. GOSTI_OPENSSH_ARM64_ZIP
   3. ./build/OpenSSH-ARM64.zip
 
 The NetKVM source is resolved in this order:
   1. --virtio-netkvm-arm64-dir PATH
-  2. VMH_VIRTIO_NETKVM_ARM64_DIR
+  2. GOSTI_VIRTIO_NETKVM_ARM64_DIR
   3. ./build/virtio/NetKVM/w11/ARM64
 
 The PortableGit source is resolved in this order:
   1. --portable-git PATH
-  2. VMH_PORTABLE_GIT_ARCHIVE
+  2. GOSTI_PORTABLE_GIT_ARCHIVE
   3. ./build/PortableGit-*-arm64.7z.exe
 
 Run ./fetch-openssh-arm64.sh to populate the default cache.
@@ -184,7 +184,7 @@ fi
 # Default the PowerShell 7 ZIP to whatever ../lib/fetch-powershell.sh left in
 # ./build. Resolved by glob so the recipe does not have to repeat the pinned
 # version (provision-pwsh.ps1 owns it).
-PWSH_ZIP_SRC="${VMH_PWSH_ZIP:-}"
+PWSH_ZIP_SRC="${GOSTI_PWSH_ZIP:-}"
 if [[ -z "${PWSH_ZIP_SRC}" ]]; then
   for candidate in "${BUILD_DIR}"/PowerShell-*-win-arm64.zip; do
     [[ -f "${candidate}" ]] && PWSH_ZIP_SRC="${candidate}" && break

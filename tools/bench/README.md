@@ -1,6 +1,6 @@
 # `tools/bench/` — backend-agnostic benchmarks
 
-Reproducible measurement programs that drive the vm-harness library
+Reproducible measurement programs that drive the gosti library
 API against a real backend and emit JSON timings. Designed to be
 re-run on different hardware so consumers can publish their own
 reference numbers without re-implementing the harness.
@@ -32,7 +32,7 @@ nimble buildBench
 Run (Hyper-V example):
 
 ```
-build/bin/vm-harness-bench-snapshot-revert \
+build/bin/gosti-bench-snapshot-revert \
   --backend hyperv \
   --vm repro-m69-hyperv \
   --baseline base-clean \

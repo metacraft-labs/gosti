@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-# build-nixos-runner-image.sh — build the `vmh-nixos-runner` Incus image (HR3).
+# build-nixos-runner-image.sh — build the `gosti-nixos-runner` Incus image (HR3).
 #
 # The NixOS analog of guest-recipes/linux-x64-runner/build-runner-image.sh: a
 # NixOS system-container image with the custom-runner FORK staged NATIVELY.
@@ -19,9 +19,9 @@
 #   * stages the fork _layout (or a `nix build .#packages.default` result)
 #     under /home/<user>/actions-runner (the GARM cached-runner path),
 #   * creates an unprivileged `runner` user with passwordless sudo,
-#   * publishes the result as the `vmh-nixos-runner` alias.
+#   * publishes the result as the `gosti-nixos-runner` alias.
 #
-# This is a SIDE alias — it never overwrites the live `vmh-linux-runner`. Once
+# This is a SIDE alias — it never overwrites the live `gosti-linux-runner`. Once
 # built it can feed `services.garm-incus-runner-host.image.source` (import the
 # exported image) for a NixOS-guest runner fleet.
 #
@@ -30,28 +30,28 @@
 #
 # Usage:
 #   ./build-nixos-runner-image.sh
-#   VMH_INCUS_CMD="sudo -n incus" VMH_RUNNER_LAYOUT=/path/to/_layout ./build-nixos-runner-image.sh
-#   VMH_RUNNER_STORE_PATH=$(nix build .#packages.default --print-out-paths) ./build-nixos-runner-image.sh
+#   GOSTI_INCUS_CMD="sudo -n incus" GOSTI_RUNNER_LAYOUT=/path/to/_layout ./build-nixos-runner-image.sh
+#   GOSTI_RUNNER_STORE_PATH=$(nix build .#packages.default --print-out-paths) ./build-nixos-runner-image.sh
 #
 # Env:
-#   VMH_INCUS_CMD          incus invocation            (default: incus)
-#   VMH_RUNNER_ALIAS       output image alias           (default: vmh-nixos-runner)
-#   VMH_NIXOS_BASE         local NixOS base alias        (default: ah-linux-nixos-base)
-#   VMH_RUNNER_USER        unprivileged runner user      (default: runner)
-#   VMH_RUNNER_CACHE       in-image runner dir           (default: /home/<user>/actions-runner)
-#   VMH_RUNNER_LAYOUT      pre-built fork _layout dir    (mutually exclusive with STORE_PATH)
-#   VMH_RUNNER_STORE_PATH  nix-built fork store path     (a buildDotnetModule result; its
+#   GOSTI_INCUS_CMD          incus invocation            (default: incus)
+#   GOSTI_RUNNER_ALIAS       output image alias           (default: gosti-nixos-runner)
+#   GOSTI_NIXOS_BASE         local NixOS base alias        (default: ah-linux-nixos-base)
+#   GOSTI_RUNNER_USER        unprivileged runner user      (default: runner)
+#   GOSTI_RUNNER_CACHE       in-image runner dir           (default: /home/<user>/actions-runner)
+#   GOSTI_RUNNER_LAYOUT      pre-built fork _layout dir    (mutually exclusive with STORE_PATH)
+#   GOSTI_RUNNER_STORE_PATH  nix-built fork store path     (a buildDotnetModule result; its
 #                                                         closure is copied wholesale)
 set -euo pipefail
 
-INCUS=(${VMH_INCUS_CMD:-incus})
-ALIAS="${VMH_RUNNER_ALIAS:-vmh-nixos-runner}"
-NIXOS_BASE="${VMH_NIXOS_BASE:-ah-linux-nixos-base}"
-RUNNER_USER="${VMH_RUNNER_USER:-runner}"
-RUNNER_CACHE="${VMH_RUNNER_CACHE:-/home/${RUNNER_USER}/actions-runner}"
-LAYOUT="${VMH_RUNNER_LAYOUT:-}"
-STORE_PATH="${VMH_RUNNER_STORE_PATH:-}"
-BLD="vmh-bld-nixos-runner"
+INCUS=(${GOSTI_INCUS_CMD:-incus})
+ALIAS="${GOSTI_RUNNER_ALIAS:-gosti-nixos-runner}"
+NIXOS_BASE="${GOSTI_NIXOS_BASE:-ah-linux-nixos-base}"
+RUNNER_USER="${GOSTI_RUNNER_USER:-runner}"
+RUNNER_CACHE="${GOSTI_RUNNER_CACHE:-/home/${RUNNER_USER}/actions-runner}"
+LAYOUT="${GOSTI_RUNNER_LAYOUT:-}"
+STORE_PATH="${GOSTI_RUNNER_STORE_PATH:-}"
+BLD="gosti-bld-nixos-runner"
 
 log() { echo "[build-nixos-runner-image] $*"; }
 cleanup() { "${INCUS[@]}" delete --force "$BLD" >/dev/null 2>&1 || true; }
@@ -87,7 +87,7 @@ elif [ -n "$LAYOUT" ] && [ -d "$LAYOUT" ]; then
       patchelf --print-rpath "$STAGE/tree/bin/Runner.Listener" | tr ':' '\n'; } \
     | grep -oE '/nix/store/[^/]+' | sort -u )
 else
-  echo "set VMH_RUNNER_LAYOUT or VMH_RUNNER_STORE_PATH" >&2; exit 1
+  echo "set GOSTI_RUNNER_LAYOUT or GOSTI_RUNNER_STORE_PATH" >&2; exit 1
 fi
 [ "${#ROOTS[@]}" -gt 0 ] || { echo "no nix store roots to import (apphost has no nix refs?)" >&2; exit 1; }
 
@@ -128,11 +128,11 @@ log "smoke: Runner.Listener --version (nix-native apphost on NixOS)"
 "
 
 # 6. Record provenance + publish the SIDE alias.
-"${INCUS[@]}" exec "$BLD" -- sh -c "printf 'vmh-nixos-runner: %s + fork actions-runner (nix-native)\n' '${NIXOS_BASE}' > /etc/vmh-nixos-runner-release || true"
+"${INCUS[@]}" exec "$BLD" -- sh -c "printf 'gosti-nixos-runner: %s + fork actions-runner (nix-native)\n' '${NIXOS_BASE}' > /etc/gosti-nixos-runner-release || true"
 log "stopping + publishing image alias '$ALIAS'"
 "${INCUS[@]}" stop "$BLD"
 "${INCUS[@]}" image delete "$ALIAS" >/dev/null 2>&1 || true
 "${INCUS[@]}" publish "$BLD" --alias "$ALIAS" --public=false \
-  description="vmh nixos runner: ${NIXOS_BASE} + fork actions-runner (nix-native)"
+  description="gosti nixos runner: ${NIXOS_BASE} + fork actions-runner (nix-native)"
 log "done: image '$ALIAS' built"
 "${INCUS[@]}" image list "$ALIAS"

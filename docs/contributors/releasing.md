@@ -12,7 +12,7 @@ in Debian 11, Ubuntu 24.04 and AlmaLinux 9 containers without the Nix store.
 Every archive is extracted away from the source tree and checked for native
 architecture, runtime dependencies and functional behavior.
 
-The archive includes `gosti`, its `vm-harness` compatibility command, guest scripts and recipes. Windows bundles matching-architecture PCRE. The smoke check uses the existing no-op lifecycle backend; it does not assert hypervisor availability.
+The archive includes `gosti`, guest scripts and recipes. Windows bundles matching-architecture PCRE. The smoke check uses the existing no-op lifecycle backend; it does not assert hypervisor availability.
 
 Each target emits JSON evidence naming the source commit, pinned dependency
 revisions, smoke result, signing state and artifact hashes. The assembly step

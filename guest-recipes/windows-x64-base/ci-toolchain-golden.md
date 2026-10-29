@@ -40,7 +40,7 @@ OS settings.
 | Clock contract (`RealTimeIsUniversal=1`, zone UTC) | **base** | See [Clock](#clock). |
 | Antivirus real-time scanning off | **base** | See [Antivirus](#antivirus). |
 | Windows Update and Windows Search off | **base** | See [Background services](#background-services). |
-| C: grown by `VMH_GROW_DISK_GB` (default +80 GiB) | **base** | Rust target directories are large. Growth only happens if no partition sits after C:. The build log records the outcome. |
+| C: grown by `GOSTI_GROW_DISK_GB` (default +80 GiB) | **base** | Rust target directories are large. Growth only happens if no partition sits after C:. The build log records the outcome. |
 | WinFsp (`WINFSP_VERSION`) | **project: agent-harbor. Move to an AH5 starting point.** | A kernel-mode driver, so it cannot come from a store. Only agent-harbor's AgentHarborFS tests need it. It is in the base for now because agent-harbor's workflow has no install step for it and fails loudly without it. |
 
 The base and project split follows the CI fleet's plan for per-project
@@ -81,9 +81,9 @@ valid until ..."). The 2026-09-27 stop-gap set the golden's zone to
 `offset='localtime'`. So:
 
 1. Deploy a gosti with the `offset='utc'` domain XML to the serve host.
-2. Then promote a golden built with `VMH_CLOCK_MODE=utc` (the default).
+2. Then promote a golden built with `GOSTI_CLOCK_MODE=utc` (the default).
 
-Until step 1 is deployed, build with `VMH_CLOCK_MODE=keep`, which leaves the
+Until step 1 is deployed, build with `GOSTI_CLOCK_MODE=keep`, which leaves the
 image's clock settings unchanged. Both modes finish with the same check: guest
 UTC is compared to host UTC on the verification clone, and the build fails if
 they differ by more than 120 s.
@@ -95,11 +95,11 @@ The recipe's work and verification domains use
 ephemeral XML and `virt-install --vcpus N,sockets=1,cores=N,threads=1`.
 libvirt's default is one socket per vCPU, and Windows 11 Pro uses at most 2
 sockets, so a 4-vCPU guest used only 2. The gate asserts
-`NumberOfLogicalProcessors == VMH_VCPUS` on both the work VM and the clone.
+`NumberOfLogicalProcessors == GOSTI_VCPUS` on both the work VM and the clone.
 
 ## Antivirus
 
-`VMH_DISABLE_DEFENDER=1` (the default for this CI recipe) applies the
+`GOSTI_DISABLE_DEFENDER=1` (the default for this CI recipe) applies the
 `defender-off` payload with
 [`../lib/apply-offline-service-payloads.sh`](../lib/apply-offline-service-payloads.sh)
 to the cold work image before capture. It uses the same registry payload and the
@@ -121,11 +121,11 @@ toolchains, caches and temp directories live outside the work directory, and
 a list of exclusions is exactly what went stale here before (see the README's
 Defender retrofit). What contains pull-request code is the ephemeral
 lifecycle and the network isolation, not the scanner. A golden meant for
-anything other than ephemeral CI should be built with `VMH_DISABLE_DEFENDER=0`.
+anything other than ephemeral CI should be built with `GOSTI_DISABLE_DEFENDER=0`.
 
 ## Background services
 
-`VMH_DISABLE_BACKGROUND_SERVICES=1` (the default) applies the
+`GOSTI_DISABLE_BACKGROUND_SERVICES=1` (the default) applies the
 `ci-background-off` payload in the same offline pass. It sets `Start=4` on the
 services in [`../lib/ci-background-off.targets`](../lib/ci-background-off.targets)
 and sets the `WindowsUpdate\AU NoAutoUpdate=1` policy:
@@ -215,7 +215,7 @@ target off Disabled (even if reverted), on a `wuauserv` / `UsoSvc` /
 Security posture: the image is patched at build time and each clone lives for
 one job. Patch currency comes from rebuilding the golden from a current
 source, not from clones updating themselves. A golden for anything other than
-ephemeral CI should be built with `VMH_DISABLE_BACKGROUND_SERVICES=0`.
+ephemeral CI should be built with `GOSTI_DISABLE_BACKGROUND_SERVICES=0`.
 
 ### Retrofit onto an existing golden
 
@@ -227,7 +227,7 @@ than reinstalled and only the new item is installed. Every gate then runs on
 the work VM and on a fresh clone:
 
 ```bash
-VMH_SRC_GOLDEN=/storage/iso/golden-win11-cloudbase.qcow2 VMH_GROW_DISK_GB=0 \
+GOSTI_SRC_GOLDEN=/storage/iso/golden-win11-cloudbase.qcow2 GOSTI_GROW_DISK_GB=0 \
   ./build-ci-toolchain-golden.sh
 ```
 
@@ -245,7 +245,7 @@ record:
 
 ```bash
 sudo qemu-img convert -O qcow2 /storage/iso/golden-win11-cloudbase.qcow2 /storage/scratch/ci-toolchain-work.qcow2
-VMH_RESUME_FROM=offline ./build-ci-toolchain-golden.sh
+GOSTI_RESUME_FROM=offline ./build-ci-toolchain-golden.sh
 # -> /storage/iso/golden-win11-cloudbase-ci-<date>.qcow2 (+ .record.txt); then Promote
 ```
 

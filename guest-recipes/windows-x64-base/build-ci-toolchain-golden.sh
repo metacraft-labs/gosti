@@ -27,28 +27,28 @@
 #
 # Usage (on the KVM host, as a user with sudo):
 #   ./build-ci-toolchain-golden.sh
-#   VMH_CI_DRY_RUN=1 ./build-ci-toolchain-golden.sh      # print the plan only
+#   GOSTI_CI_DRY_RUN=1 ./build-ci-toolchain-golden.sh      # print the plan only
 #
 # Env:
-#   VMH_SRC_GOLDEN   source golden (default /storage/iso/golden-win11-cloudbase.qcow2)
-#   VMH_OUT_GOLDEN   output side artifact
+#   GOSTI_SRC_GOLDEN   source golden (default /storage/iso/golden-win11-cloudbase.qcow2)
+#   GOSTI_OUT_GOLDEN   output side artifact
 #                      (default /storage/iso/golden-win11-cloudbase-ci-<UTC date>.qcow2)
-#   VMH_WORK_QCOW2   throwaway full copy (default /storage/scratch/ci-toolchain-work.qcow2)
-#   VMH_CACHE_DIR    host download cache (default /storage/scratch/ci-golden-cache)
-#   VMH_CLOCK_MODE   utc (default) | keep — see provision-ci-toolchain.ps1.
+#   GOSTI_WORK_QCOW2   throwaway full copy (default /storage/scratch/ci-toolchain-work.qcow2)
+#   GOSTI_CACHE_DIR    host download cache (default /storage/scratch/ci-golden-cache)
+#   GOSTI_CLOCK_MODE   utc (default) | keep — see provision-ci-toolchain.ps1.
 #                    `utc` is only correct for domains rendered with
 #                    <clock offset='utc'>; see ci-toolchain-golden.md §Clock.
-#   VMH_DISABLE_DEFENDER  1 (default) = offline-disable real-time scanning; 0 = keep
-#   VMH_DISABLE_BACKGROUND_SERVICES  1 (default) = offline-disable Windows Update
+#   GOSTI_DISABLE_DEFENDER  1 (default) = offline-disable real-time scanning; 0 = keep
+#   GOSTI_DISABLE_BACKGROUND_SERVICES  1 (default) = offline-disable Windows Update
 #                    (wuauserv, UsoSvc, WaaSMedicSvc, DoSvc) and Windows Search
 #                    (WSearch); 0 = keep. See ci-toolchain-golden.md §Background services.
-#   VMH_GROW_DISK_GB extra virtual disk GiB added to the image (default 80; 0 = none)
-#   VMH_VCPUS / VMH_MEMORY_MB  work + verify VM size (default 4 / 8192)
-#   VMH_GUEST_PASSWORD  guest admin password (default repro-windows-x64)
-#   VMH_OVMF_CODE / VMH_OVMF_VARS  (default /run/libvirt/nix-ovmf/edk2-x86_64-code.fd / edk2-i386-vars.fd)
-#   VMH_PROVISION_TIMEOUT seconds for the in-guest provision (default 7200)
-#   VMH_KEEP_ON_FAIL  non-empty = on failure, keep the work/verify domains + disks
-#   VMH_RESUME_FROM   continue a VMH_KEEP_ON_FAIL run: gates = at the work gates
+#   GOSTI_GROW_DISK_GB extra virtual disk GiB added to the image (default 80; 0 = none)
+#   GOSTI_VCPUS / GOSTI_MEMORY_MB  work + verify VM size (default 4 / 8192)
+#   GOSTI_GUEST_PASSWORD  guest admin password (default repro-windows-x64)
+#   GOSTI_OVMF_CODE / GOSTI_OVMF_VARS  (default /run/libvirt/nix-ovmf/edk2-x86_64-code.fd / edk2-i386-vars.fd)
+#   GOSTI_PROVISION_TIMEOUT seconds for the in-guest provision (default 7200)
+#   GOSTI_KEEP_ON_FAIL  non-empty = on failure, keep the work/verify domains + disks
+#   GOSTI_RESUME_FROM   continue a GOSTI_KEEP_ON_FAIL run: gates = at the work gates
 #                     (after provisioning), offline = at the offline AV step
 set -uo pipefail
 
@@ -56,20 +56,20 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 LIB_DIR="$SCRIPT_DIR/../lib"
 PINS="$SCRIPT_DIR/ci-toolchain.pins"
 
-SRC_GOLDEN="${VMH_SRC_GOLDEN:-/storage/iso/golden-win11-cloudbase.qcow2}"
-OUT_GOLDEN="${VMH_OUT_GOLDEN:-/storage/iso/golden-win11-cloudbase-ci-$(date -u +%Y%m%d).qcow2}"
-WORK="${VMH_WORK_QCOW2:-/storage/scratch/ci-toolchain-work.qcow2}"
-CACHE="${VMH_CACHE_DIR:-/storage/scratch/ci-golden-cache}"
-CLOCK_MODE="${VMH_CLOCK_MODE:-utc}"
-DISABLE_DEFENDER="${VMH_DISABLE_DEFENDER:-1}"
-DISABLE_BACKGROUND="${VMH_DISABLE_BACKGROUND_SERVICES:-1}"
-GROW_GB="${VMH_GROW_DISK_GB:-80}"
-VCPUS="${VMH_VCPUS:-4}"
-MEMORY_MB="${VMH_MEMORY_MB:-8192}"
-GUEST_PASSWORD="${VMH_GUEST_PASSWORD:-repro-windows-x64}"
-OVMF_CODE="${VMH_OVMF_CODE:-/run/libvirt/nix-ovmf/edk2-x86_64-code.fd}"
-OVMF_VARS="${VMH_OVMF_VARS:-/run/libvirt/nix-ovmf/edk2-i386-vars.fd}"
-PROVISION_TIMEOUT="${VMH_PROVISION_TIMEOUT:-7200}"
+SRC_GOLDEN="${GOSTI_SRC_GOLDEN:-/storage/iso/golden-win11-cloudbase.qcow2}"
+OUT_GOLDEN="${GOSTI_OUT_GOLDEN:-/storage/iso/golden-win11-cloudbase-ci-$(date -u +%Y%m%d).qcow2}"
+WORK="${GOSTI_WORK_QCOW2:-/storage/scratch/ci-toolchain-work.qcow2}"
+CACHE="${GOSTI_CACHE_DIR:-/storage/scratch/ci-golden-cache}"
+CLOCK_MODE="${GOSTI_CLOCK_MODE:-utc}"
+DISABLE_DEFENDER="${GOSTI_DISABLE_DEFENDER:-1}"
+DISABLE_BACKGROUND="${GOSTI_DISABLE_BACKGROUND_SERVICES:-1}"
+GROW_GB="${GOSTI_GROW_DISK_GB:-80}"
+VCPUS="${GOSTI_VCPUS:-4}"
+MEMORY_MB="${GOSTI_MEMORY_MB:-8192}"
+GUEST_PASSWORD="${GOSTI_GUEST_PASSWORD:-repro-windows-x64}"
+OVMF_CODE="${GOSTI_OVMF_CODE:-/run/libvirt/nix-ovmf/edk2-x86_64-code.fd}"
+OVMF_VARS="${GOSTI_OVMF_VARS:-/run/libvirt/nix-ovmf/edk2-i386-vars.fd}"
+PROVISION_TIMEOUT="${GOSTI_PROVISION_TIMEOUT:-7200}"
 URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 WORK_DOMAIN="ci-toolchain-work"
 VERIFY_DOMAIN="ci-toolchain-verify"
@@ -119,7 +119,7 @@ wait_off() { # domain timeout
 # The domain shape the recipe boots. Mirrors gosti's ephemeral libvirt XML
 # (backends/libvirt.nim buildEphemeralDomainXml): 1 socket x N cores, because
 # Windows 11 Pro uses at most 2 sockets and libvirt's default is one socket
-# per vCPU; clock per VMH_CLOCK_MODE.
+# per vCPU; clock per GOSTI_CLOCK_MODE.
 domain_xml() { # name disk nvram
   local offset=utc
   [[ "$CLOCK_MODE" == keep ]] && offset=localtime
@@ -251,7 +251,7 @@ check_clock() { # ip
 [[ -f "$SRC_GOLDEN" ]] || fail "source golden not found: $SRC_GOLDEN"
 [[ "$OUT_GOLDEN" != "$SRC_GOLDEN" ]] || fail "refusing: OUT == SRC"
 [[ "$OUT_GOLDEN" != /storage/iso/golden-win11-cloudbase.qcow2 ]] || fail "refusing to write the live golden path; promote separately"
-[[ "$CLOCK_MODE" == utc || "$CLOCK_MODE" == keep ]] || fail "VMH_CLOCK_MODE must be utc or keep"
+[[ "$CLOCK_MODE" == utc || "$CLOCK_MODE" == keep ]] || fail "GOSTI_CLOCK_MODE must be utc or keep"
 
 RUNNER_VER="$(pin ACTIONS_RUNNER_VERSION)"
 RUNNER_ZIP="actions-runner-win-x64-$RUNNER_VER.zip"
@@ -261,7 +261,7 @@ SDK_SETUP="winsdksetup-$(pin WINDOWS_SDK_SETUP_VERSION).exe"
 log "SRC  $SRC_GOLDEN (read-only)"
 log "OUT  $OUT_GOLDEN (side artifact)"
 log "WORK $WORK   clock=$CLOCK_MODE defender-off=$DISABLE_DEFENDER background-off=$DISABLE_BACKGROUND grow=${GROW_GB}G vm=${VCPUS}c/${MEMORY_MB}M"
-if [[ -n "${VMH_CI_DRY_RUN:-}" ]]; then
+if [[ -n "${GOSTI_CI_DRY_RUN:-}" ]]; then
   log "plan: fetch -> copy+grow -> boot work VM -> provision -> power-cycle -> gates -> shutdown"
   log "      -> offline AV + background-service disable -> capture -> boot CoW clone -> gates again -> record"
   exit 0
@@ -288,8 +288,8 @@ VERIFY_OVERLAY="${WORK%.qcow2}-verify.qcow2"
 VERIFY_NVRAM="${WORK%.qcow2}-verify_VARS.fd"
 DONE_OK=0
 cleanup() {
-  if [[ "$DONE_OK" != 1 && -n "${VMH_KEEP_ON_FAIL:-}" ]]; then
-    log "VMH_KEEP_ON_FAIL set: leaving $WORK_DOMAIN / $VERIFY_DOMAIN and their disks for inspection"
+  if [[ "$DONE_OK" != 1 && -n "${GOSTI_KEEP_ON_FAIL:-}" ]]; then
+    log "GOSTI_KEEP_ON_FAIL set: leaving $WORK_DOMAIN / $VERIFY_DOMAIN and their disks for inspection"
     return
   fi
   drop_domain "$WORK_DOMAIN"; drop_domain "$VERIFY_DOMAIN"
@@ -297,16 +297,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-RESUME="${VMH_RESUME_FROM:-}"
+RESUME="${GOSTI_RESUME_FROM:-}"
 if [[ "$RESUME" == offline ]]; then
-  # Continue a VMH_KEEP_ON_FAIL run that passed the work gates and shut the
+  # Continue a GOSTI_KEEP_ON_FAIL run that passed the work gates and shut the
   # work guest down: only the cold image is needed.
   [[ -f "$WORK" ]] || fail "resume: work image $WORK not found"
   [[ "$("${VIRSH[@]}" domstate "$WORK_DOMAIN" 2>/dev/null | tr -d '[:space:]')" != running ]] || fail "resume: $WORK_DOMAIN is still running"
   drop_domain "$WORK_DOMAIN"
   log "resuming at the offline step on $WORK"
 elif [[ "$RESUME" == gates ]]; then
-  # Continue a VMH_KEEP_ON_FAIL run whose provisioning finished: the work
+  # Continue a GOSTI_KEEP_ON_FAIL run whose provisioning finished: the work
   # domain must still be defined (running or shut off) on $WORK.
   "${VIRSH[@]}" domstate "$WORK_DOMAIN" >/dev/null 2>&1 || fail "resume: $WORK_DOMAIN is not defined"
   # Always from a cold start (see the power cycle below for why).
@@ -320,7 +320,7 @@ elif [[ "$RESUME" == gates ]]; then
   log "resuming at the gates on $WORK_DOMAIN ($IP)"
   stage_into_guest "$IP"
 else
-[[ -z "$RESUME" ]] || fail "VMH_RESUME_FROM must be empty, 'gates' or 'offline'"
+[[ -z "$RESUME" ]] || fail "GOSTI_RESUME_FROM must be empty, 'gates' or 'offline'"
 drop_domain "$WORK_DOMAIN"; drop_domain "$VERIFY_DOMAIN"
 
 # ── step 2: full standalone copy (+ grow) ────────────────────────────────────

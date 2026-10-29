@@ -13,7 +13,7 @@
 # finds no bootable UEFI option and silently drops to the UEFI shell,
 # and virt-install then sits on `--wait` for ~90 minutes before timing
 # out with no actionable cause. This exact failure mode is documented in
-# src/vm_harness/backends/libvirt.nim's provisionBaseline qcow2 branch.
+# src/gosti/backends/libvirt.nim's provisionBaseline qcow2 branch.
 #
 # This helper detects the condition up front. A good Win11 ISO reports an
 # El Torito image with platform EFI/UEFI (an efisys.bin boot image); a
@@ -110,7 +110,7 @@ validate_uefi_iso() {
          "(xorriso/isoinfo/iso-info) found on PATH; skipping the UEFI" \
          "El Torito validation of ${label}." >&2
     echo "validate-uefi-iso: install xorriso (it is provided by the" \
-         "vm-harness dev shell) to enable this check." >&2
+         "gosti dev shell) to enable this check." >&2
     return 0
   fi
 

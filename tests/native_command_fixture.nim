@@ -8,7 +8,7 @@
 
 import std/[json, os, osproc, strutils]
 
-const FixtureSuffix = ".vmh-command.json"
+const FixtureSuffix = ".gosti-command.json"
 
 proc fixtureExit(code: cint) {.importc: "exit", header: "<stdlib.h>", noreturn.}
   ## Nim's quit clamps POSIX statuses to signed int8; SSH needs exit 255.

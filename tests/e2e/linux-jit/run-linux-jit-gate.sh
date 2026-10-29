@@ -7,7 +7,7 @@
 # Incus containers, with NO live GitHub (a mock GARM metadata + actions
 # endpoint stands in). The container analog of the Windows M3 gate.
 #
-#   * a container launched from the `vmh-linux-runner` image consumes an
+#   * a container launched from the `gosti-linux-runner` image consumes an
 #     INJECTED cloud-init user-data (via the IM1 IncusBackend seam
 #     `incus config set <name> cloud-init.user-data ...`) carrying GARM's
 #     Linux JIT bootstrap;
@@ -28,15 +28,15 @@
 # Exit: 0 = LINUX_JIT_GATE_PASS; 3 = self-skip (image/incus/tooling absent).
 #
 # Env:
-#   VMH_INCUS_CMD    incus invocation  (default: incus)
-#   VMH_RUNNER_ALIAS runner image      (default: vmh-linux-runner)
+#   GOSTI_INCUS_CMD    incus invocation  (default: incus)
+#   GOSTI_RUNNER_ALIAS runner image      (default: gosti-linux-runner)
 #   IM2_PORT         mock port          (default: 8299)
 set -uo pipefail
 
-INCUS=(${VMH_INCUS_CMD:-incus})
-ALIAS="${VMH_RUNNER_ALIAS:-vmh-linux-runner}"
+INCUS=(${GOSTI_INCUS_CMD:-incus})
+ALIAS="${GOSTI_RUNNER_ALIAS:-gosti-linux-runner}"
 PORT="${IM2_PORT:-8299}"
-NET="${VMH_INCUS_BRIDGE:-incusbr0}"
+NET="${GOSTI_INCUS_BRIDGE:-incusbr0}"
 SECRET="im2-mock-garm-instance-secret"
 MOCK="im2-mock"
 RUNNER="im2-runner"
@@ -59,7 +59,7 @@ trap cleanup EXIT
 # --- preflight -------------------------------------------------------------
 command -v python3 >/dev/null || skip "no python3 on host"
 python3 -c "import cryptography" 2>/dev/null || skip "host lacks python cryptography (gen_jitconfig)"
-"${INCUS[@]}" info >/dev/null 2>&1 || skip "incus not reachable (set VMH_INCUS_CMD=\"sudo -n incus\")"
+"${INCUS[@]}" info >/dev/null 2>&1 || skip "incus not reachable (set GOSTI_INCUS_CMD=\"sudo -n incus\")"
 "${INCUS[@]}" image info "$ALIAS" >/dev/null 2>&1 || skip "runner image '$ALIAS' absent (build it: guest-recipes/linux-x64-runner/build-runner-image.sh)"
 
 # Derive the incusbr0 /24 base + a mock cloud base image.

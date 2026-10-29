@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
 ## t_crud_serve_parity — the generic-CRUD ``--json`` contract is identical
-## over the local CLI and over ``vm-harness serve``'s ``POST /v1/exec``.
+## over the local CLI and over ``gosti serve``'s ``POST /v1/exec``.
 ##
 ## ``docs/contributors/architecture.md`` §8.1 promises that a consumer can drive the CRUD verbs
-## either by spawning ``vm-harness crud <verb> …`` locally or by forwarding
+## either by spawning ``gosti crud <verb> …`` locally or by forwarding
 ## the SAME argv to a serve daemon, and gets the same envelope and the same
 ## exit code either way. ``t_crud_facade`` pins the envelope in-process; this
 ## gate pins the two process boundaries a real consumer crosses:
@@ -23,16 +23,16 @@
 ## Mock policy (design doc §9.1): the ONLY mock is ``NoopBackend`` — the
 ## sanctioned fixture — so the gate is hermetic. The CLI, the daemon, the
 ## TCP transport, HTTP framing and bearer auth are all real. Same self-exec
-## topology as ``t_vmharness_serve_roundtrip``: the test binary re-execs
-## itself as the CLI (``__vmh_cli``) and as the daemon (``__serve``).
+## topology as ``t_gosti_serve_roundtrip``: the test binary re-execs
+## itself as the CLI (``__gosti_cli``) and as the daemon (``__serve``).
 
 import std/[json, os, osproc, streams, strutils, tempfiles, times, unittest]
-import vm_harness
-import vm_harness/cli
+import gosti
+import gosti/cli
 
 when isMainModule:
   let params = commandLineParams()
-  if params.len >= 1 and params[0] == "__vmh_cli":
+  if params.len >= 1 and params[0] == "__gosti_cli":
     quit(runCli(params[1 .. ^1]))
   elif params.len >= 5 and params[0] == "__serve":
     let cfg = ServeConfig(
@@ -40,7 +40,7 @@ when isMainModule:
       listenPort: parseInt(params[2]),
       token: readFile(params[3]).strip(),
       workerExe: getAppFilename(),
-      workerArgPrefix: @["__vmh_cli"],
+      workerArgPrefix: @["__gosti_cli"],
       portFile: params[4],
       quiet: true)
     runServe(cfg)
@@ -64,7 +64,7 @@ type LocalRun = object
 proc runLocal(argv: seq[string]): LocalRun =
   ## The CLI as a separate process, stdout and stderr kept apart — exactly
   ## what a subprocess binding sees.
-  let p = startProcess(getAppFilename(), args = @["__vmh_cli"] & argv,
+  let p = startProcess(getAppFilename(), args = @["__gosti_cli"] & argv,
                        options = {})
   p.inputStream.close()
   result.stdout = p.outputStream.readAll()
@@ -73,7 +73,7 @@ proc runLocal(argv: seq[string]): LocalRun =
   p.close()
 
 suite "t_crud_serve_parity":
-  let work = createTempDir("vmh-crud-serve-", "")
+  let work = createTempDir("gosti-crud-serve-", "")
   let tokenFile = work / "token"
   let portFile = work / "port"
   let token = "crud-parity-bearer-7c1e"

@@ -7,9 +7,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
-OUT="${VMH_OPENSSH_ARM64_ZIP_OUT:-${BUILD_DIR}/OpenSSH-ARM64.zip}"
-URL="${VMH_OPENSSH_ARM64_URL:-https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-ARM64.zip}"
-SHA256="${VMH_OPENSSH_ARM64_SHA256:-698c6aec31c1dd0fb996206e8741f4531a97355686b5431ef347d531b07fcd42}"
+OUT="${GOSTI_OPENSSH_ARM64_ZIP_OUT:-${BUILD_DIR}/OpenSSH-ARM64.zip}"
+URL="${GOSTI_OPENSSH_ARM64_URL:-https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-ARM64.zip}"
+SHA256="${GOSTI_OPENSSH_ARM64_SHA256:-698c6aec31c1dd0fb996206e8741f4531a97355686b5431ef347d531b07fcd42}"
 
 usage() {
   cat <<EOF
@@ -24,9 +24,9 @@ Defaults:
   sha256: ${SHA256}
 
 Environment overrides:
-  VMH_OPENSSH_ARM64_URL
-  VMH_OPENSSH_ARM64_SHA256
-  VMH_OPENSSH_ARM64_ZIP_OUT
+  GOSTI_OPENSSH_ARM64_URL
+  GOSTI_OPENSSH_ARM64_SHA256
+  GOSTI_OPENSSH_ARM64_ZIP_OUT
 EOF
 }
 

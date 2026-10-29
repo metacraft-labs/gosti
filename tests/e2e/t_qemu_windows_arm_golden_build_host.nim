@@ -21,24 +21,24 @@
 ##
 ## Preconditions, all required:
 ##
-##   VMH_WINDOWS_ARM_GOLDEN_HOST_TEST=1   explicit opt-in
-##   VMH_WINDOWS_ARM_ISO=<path>           operator-supplied Windows 11 ARM64
+##   GOSTI_WINDOWS_ARM_GOLDEN_HOST_TEST=1   explicit opt-in
+##   GOSTI_WINDOWS_ARM_ISO=<path>           operator-supplied Windows 11 ARM64
 ##                                        ISO (on m3:
 ##                                        /Users/zahary/iso/Win11_25H2_English_Arm64_v2.iso)
-##   VMH_WINDOWS_ARM_AUTOUNATTEND_ISO=<path>
+##   GOSTI_WINDOWS_ARM_AUTOUNATTEND_ISO=<path>
 ##                                        built by
 ##                                        guest-recipes/windows-arm-base/
 ##                                        build-autounattend-iso.sh
 ##   a macOS aarch64 host with qemu-system-aarch64, swtpm and sshpass
 ##
 ## Optional:
-##   VMH_WINDOWS_ARM_GOLDEN_OUT=<dir>     parent directory for the versioned
+##   GOSTI_WINDOWS_ARM_GOLDEN_OUT=<dir>     parent directory for the versioned
 ##                                        build directory (default: a temp
 ##                                        dir). MA4 points this at
-##                                        /private/var/lib/vm-harness/
+##                                        /private/var/lib/gosti/
 ##                                        qemu-windows-arm/golden.
-##   VMH_WINDOWS_ARM_GOLDEN_DEADLINE=<s>  overall deadline (default 5400)
-##   VMH_WINDOWS_ARM_GOLDEN_DISK_GB=<n>   requested qcow2 size (default 64)
+##   GOSTI_WINDOWS_ARM_GOLDEN_DEADLINE=<s>  overall deadline (default 5400)
+##   GOSTI_WINDOWS_ARM_GOLDEN_DISK_GB=<n>   requested qcow2 size (default 64)
 ##
 ## The build directory is deliberately NOT removed on success: this gate
 ## produces the artifact MA4 promotes, and promotion is a pointer flip onto a
@@ -47,13 +47,13 @@
 ## Windows install leaves.
 
 import std/[os, strutils, tables, tempfiles, times, unittest]
-import vm_harness
+import gosti
 
 const
-  OptInEnv = "VMH_WINDOWS_ARM_GOLDEN_HOST_TEST"
-  WindowsIsoEnv = "VMH_WINDOWS_ARM_ISO"
-  AutounattendIsoEnv = "VMH_WINDOWS_ARM_AUTOUNATTEND_ISO"
-  OutDirEnv = "VMH_WINDOWS_ARM_GOLDEN_OUT"
+  OptInEnv = "GOSTI_WINDOWS_ARM_GOLDEN_HOST_TEST"
+  WindowsIsoEnv = "GOSTI_WINDOWS_ARM_ISO"
+  AutounattendIsoEnv = "GOSTI_WINDOWS_ARM_AUTOUNATTEND_ISO"
+  OutDirEnv = "GOSTI_WINDOWS_ARM_GOLDEN_OUT"
 
 proc missingPreconditions(): seq[string] =
   ## Every unmet precondition, named. Collected rather than short-circuited
@@ -118,7 +118,7 @@ suite "t_qemu_windows_arm_golden_build (host tier)":
 
       let outParent =
         if getEnv(OutDirEnv).len > 0: getEnv(OutDirEnv)
-        else: createTempDir("vmh-win-arm-golden-", "")
+        else: createTempDir("gosti-win-arm-golden-", "")
       createDir(outParent)
       let buildId = now().utc.format("yyyyMMdd'T'HHmmss'Z'")
       let buildDir = outParent / ("win-arm-runner-" & buildId)
@@ -128,9 +128,9 @@ suite "t_qemu_windows_arm_golden_build (host tier)":
         windowsIso = getEnv(WindowsIsoEnv),
         autounattendIso = getEnv(AutounattendIsoEnv),
         recipeDir = recipeDir(),
-        diskGB = parseInt(getEnv("VMH_WINDOWS_ARM_GOLDEN_DISK_GB", "64")),
+        diskGB = parseInt(getEnv("GOSTI_WINDOWS_ARM_GOLDEN_DISK_GB", "64")),
         deadlineSec = parseInt(
-          getEnv("VMH_WINDOWS_ARM_GOLDEN_DEADLINE", "5400"))))
+          getEnv("GOSTI_WINDOWS_ARM_GOLDEN_DEADLINE", "5400"))))
 
       # The consuming path must accept it unchanged.
       check golden == absolutePath(buildDir)

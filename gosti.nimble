@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+# Package
+version       = "0.1.2"
+author        = "Metacraft Labs"
+description   = "Cross-platform VM lifecycle orchestration (Tart, UTM, Hyper-V, WSL, libvirt, Lima)"
+license       = "Apache-2.0"
+srcDir        = "src"
+installExt    = @["nim"]
+bin           = @["gosti/cli"]
+binDir        = "build/bin"
+namedBin["gosti/cli"] = "gosti"
+
+# Dependencies
+requires "nim >= 2.0.0"

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## Unit tests for ``vm-harness prune``: project-scoped, lock-guarded reclamation
+## Unit tests for ``gosti prune``: project-scoped, lock-guarded reclamation
 ## of leaked ephemeral resources.
 ##
 ## Justified fakes: a tiny ``tart`` stand-in script backs the tart-clone
@@ -10,8 +10,8 @@
 ## ``flock``.
 
 import std/[os, strutils, tempfiles, times, unittest]
-import vm_harness
-import vm_harness/prune
+import gosti
+import gosti/prune
 
 const
   Prefix = "repro-vm-test-garm"
@@ -28,7 +28,7 @@ proc mkInstance(stateDir, name: string, withLockFile: bool): string =
 
 suite "prune: qemu-windows-arm instance dirs":
   test "reaps dead+old instances, keeps live and fresh and out-of-scope":
-    let root = createTempDir("vmh-prune-qemu-", "")
+    let root = createTempDir("gosti-prune-qemu-", "")
     defer: removeDir(root)
     let stateDir = root / "state"
     createDir(stateDir / "instances")
@@ -64,7 +64,7 @@ suite "prune: qemu-windows-arm instance dirs":
     check otherDir notin rep.removedInstanceDirs
 
   test "dry-run reports the dead instance but deletes nothing":
-    let root = createTempDir("vmh-prune-dry-", "")
+    let root = createTempDir("gosti-prune-dry-", "")
     defer: removeDir(root)
     let stateDir = root / "state"
     createDir(stateDir / "instances")
@@ -83,7 +83,7 @@ suite "prune: temp scratch files":
     const TmpVar = when defined(windows): "TMP" else: "TMPDIR"
     let savedTmp = getEnv(TmpVar)
     let hadTmp = existsEnv(TmpVar)
-    let sweepDir = createTempDir("vmh-prune-tmp-", "")
+    let sweepDir = createTempDir("gosti-prune-tmp-", "")
     putEnv(TmpVar, sweepDir)
     defer:
       if hadTmp: putEnv(TmpVar, savedTmp)
@@ -91,9 +91,9 @@ suite "prune: temp scratch files":
       removeDir(sweepDir)
     check getTempDir() == sweepDir or getTempDir() == sweepDir & DirSep
 
-    let oldQemuPwd = sweepDir / "vm-harness-qemu-win-arm-pwd-123-456"
-    let oldTartPwd = sweepDir / "vm-harness-tart-pwd-1700.0-789"
-    let recentPwd = sweepDir / "vm-harness-tart-pwd-9999.0-321"
+    let oldQemuPwd = sweepDir / "gosti-qemu-win-arm-pwd-123-456"
+    let oldTartPwd = sweepDir / "gosti-tart-pwd-1700.0-789"
+    let recentPwd = sweepDir / "gosti-tart-pwd-9999.0-321"
     let unrelated = sweepDir / "keepme.txt"
     for f in [oldQemuPwd, oldTartPwd, recentPwd, unrelated]:
       writeFile(f, "x")
@@ -108,18 +108,18 @@ suite "prune: temp scratch files":
     check not fileExists(oldQemuPwd)
     check not fileExists(oldTartPwd)
     check fileExists(recentPwd)    # too new to sweep
-    check fileExists(unrelated)    # not a vm-harness scratch file
+    check fileExists(unrelated)    # not a gosti scratch file
     check oldQemuPwd in rep.removedTmpFiles
     check oldTartPwd in rep.removedTmpFiles
 
   test "without --sweep-tmp, tmp files are left alone":
     let savedTmp = getEnv("TMPDIR")
-    let sweepDir = createTempDir("vmh-prune-notmp-", "")
+    let sweepDir = createTempDir("gosti-prune-notmp-", "")
     putEnv("TMPDIR", sweepDir)
     defer:
       putEnv("TMPDIR", savedTmp)
       removeDir(sweepDir)
-    let oldPwd = sweepDir / "vm-harness-tart-pwd-1700.0-789"
+    let oldPwd = sweepDir / "gosti-tart-pwd-1700.0-789"
     writeFile(oldPwd, "x")
     setLastModificationTime(oldPwd, fromUnix(1))
 
@@ -166,7 +166,7 @@ esac
 suite "prune: tart clones":
   test "reaps dead+old clones, keeps live ones, honors scope":
     when defined(posix):
-      let root = createTempDir("vmh-prune-tart-", "")
+      let root = createTempDir("gosti-prune-tart-", "")
       defer: removeDir(root)
       let stateFile = root / "vms.txt"
       let deadClone = Prefix & "-" & $OldEpochMs & "-" & $DeadPid
@@ -178,10 +178,10 @@ suite "prune: tart clones":
         otherClone & " stopped\n")
 
       let tart = writeFakeTart(root, stateFile)
-      putEnv("VMH_TART_CMD", tart)
+      putEnv("GOSTI_TART_CMD", tart)
       putEnv("FAKE_TART_STATE", stateFile)
       defer:
-        delEnv("VMH_TART_CMD")
+        delEnv("GOSTI_TART_CMD")
         delEnv("FAKE_TART_STATE")
 
       let rep = runPrune(PruneScope(
@@ -199,13 +199,13 @@ suite "prune: tart clones":
 
   test "a RUNNING clone is spared even when its creator PID is dead and old":
     # The case PID + age alone cannot see. On m3 the creator PID in the name
-    # is the supervising `vm-harness run`, which normally lives for the whole
+    # is the supervising `gosti run`, which normally lives for the whole
     # job — but if it is SIGKILLed, the `tart run` it parented is reparented
     # and the guest keeps serving its job. The name's PID is then dead and the
     # age floor lapses, so only the run state `tart list` reports separates a
     # live VM from residue.
     when defined(posix):
-      let root = createTempDir("vmh-prune-tart-running-", "")
+      let root = createTempDir("gosti-prune-tart-running-", "")
       defer: removeDir(root)
       let stateFile = root / "vms.txt"
       let runningClone = Prefix & "-" & $OldEpochMs & "-" & $DeadPid
@@ -214,10 +214,10 @@ suite "prune: tart clones":
         runningClone & " running\n" & stoppedClone & " stopped\n")
 
       let tart = writeFakeTart(root, stateFile)
-      putEnv("VMH_TART_CMD", tart)
+      putEnv("GOSTI_TART_CMD", tart)
       putEnv("FAKE_TART_STATE", stateFile)
       defer:
-        delEnv("VMH_TART_CMD")
+        delEnv("GOSTI_TART_CMD")
         delEnv("FAKE_TART_STATE")
 
       let rep = runPrune(PruneScope(
@@ -234,21 +234,21 @@ suite "prune: tart clones":
 
   test "an unreadable `tart list` reaps no clone at all":
     when defined(posix):
-      let root = createTempDir("vmh-prune-tart-unreadable-", "")
+      let root = createTempDir("gosti-prune-tart-unreadable-", "")
       defer: removeDir(root)
       let stateFile = root / "vms.txt"
       let clone = Prefix & "-" & $OldEpochMs & "-" & $DeadPid
       writeFile(stateFile, clone & " stopped\n")
       let tart = writeFakeTart(root, stateFile)
-      putEnv("VMH_TART_CMD", tart)
+      putEnv("GOSTI_TART_CMD", tart)
       # Point the fake at a state file that does not exist AND make the
       # command itself fail, which is what a missing/broken tart looks like.
       putEnv("FAKE_TART_STATE", root / "missing.txt")
       defer:
-        delEnv("VMH_TART_CMD")
+        delEnv("GOSTI_TART_CMD")
         delEnv("FAKE_TART_STATE")
       # A `tart` that is not on the host at all: the strongest form.
-      putEnv("VMH_TART_CMD", root / "no-such-tart")
+      putEnv("GOSTI_TART_CMD", root / "no-such-tart")
 
       let rep = runPrune(PruneScope(
         ephemeralPrefix: Prefix, olderThanSec: 3600, backend: "tart"))

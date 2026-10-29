@@ -1,6 +1,6 @@
 # Gosti architecture
 
-**Audience**: contributors working on gosti (formerly vm-harness). This
+**Audience**: contributors working on gosti. This
 document describes the library and CLI as they are built in this tree. It is
 kept true by the code and tests it names. A change that alters what a section
 describes updates that section in the same pull request. How to *use* gosti is
@@ -8,19 +8,19 @@ in the [user guide](https://metacraft-labs.github.io/gosti/).
 
 ## 1. Overview
 
-**vm-harness** is a focused library + CLI for cross-platform VM lifecycle orchestration in test harnesses and dev workflows. It provides one abstraction over multiple backend hypervisors (Hyper-V, WSL, libvirt/QEMU, Tart, UTM) so test code can drive any of them through the same primitives.
+**gosti** is a focused library + CLI for cross-platform VM lifecycle orchestration in test harnesses and dev workflows. It provides one abstraction over multiple backend hypervisors (Hyper-V, WSL, libvirt/QEMU, Tart, UTM) so test code can drive any of them through the same primitives.
 
 **In scope**: provision a baseline guest image, fast per-gate reset between test invocations, exec command in guest with captured output, copy files in/out, install argv-tracing shims around guest-side tools, write a standardized output envelope. Single-machine, single-process orchestration.
 
-**Out of scope**: image-build pipelines (use Packer for those), agent execution semantics (vm-harness doesn't know what a "task" is — consumers compose), cloud-fleet management (use Terraform or AH's own fleet orchestrator), microVM-grade sub-second cold-starts (use microsandbox if that's the requirement).
+**Out of scope**: image-build pipelines (use Packer for those), agent execution semantics (gosti doesn't know what a "task" is — consumers compose), cloud-fleet management (use Terraform or AH's own fleet orchestrator), microVM-grade sub-second cold-starts (use microsandbox if that's the requirement).
 
-The library lives in a standalone repository, `metacraft-labs/vm-harness`, deliberately *not* bundled inside `nixos-modules` — consumers should be able to add it as a focused dependency without pulling in unrelated infrastructure.
+The library lives in a standalone repository, `metacraft-labs/gosti`, deliberately *not* bundled inside `nixos-modules` — consumers should be able to add it as a focused dependency without pulling in unrelated infrastructure.
 
 ## 2. Why this exists (prior-art summary)
 
 No existing project fills this niche. The closest matches each fail structurally:
 
-| Project | Why it doesn't replace vm-harness |
+| Project | Why it doesn't replace gosti |
 |---|---|
 | **libvirt** | Closest abstraction depth; many bindings exist (libvirt-go, libvirt-python, `virt` Rust crate). But its backend set is KVM/QEMU/Xen/ESX/Bhyve plus a *read-mostly* Hyper-V driver. No Tart, no UTM, no WSL — those frameworks aren't libvirt-shaped. |
 | **HashiCorp Vagrant** | Right backend topology (built-in Hyper-V, plugins for libvirt/UTM, pending Tart). But Ruby user-tool; the Go rewrite has been alpha since 2022; the Tart provider request ([vagrant#12760](https://github.com/hashicorp/vagrant/issues/12760)) has been open four years with no shipped plugin. Not viable as a library foundation. |
@@ -34,7 +34,7 @@ No existing project fills this niche. The closest matches each fail structurally
 - *libvirt domain API* — the battle-tested lifecycle contract; informs which primitives the trait needs (start/stop/snapshot/revert/clone).
 - *Cuckoo Sandbox "Machinery" interface* — clean abstract-base-class shape for multi-backend VM management (used for malware analysis). Worth reading their abstraction layer for API design.
 - *KubeVirt v1.8 HAL plugin model* — recent thinking on multi-hypervisor abstraction; clean separation of generic lifecycle from per-backend transport.
-- *microsandbox API* — the cross-platform SDK delivery model that informs how vm-harness ships: one Nim library and CLI, with other languages binding to the CLI (§8).
+- *microsandbox API* — the cross-platform SDK delivery model that informs how gosti ships: one Nim library and CLI, with other languages binding to the CLI (§8).
 - *cirruslabs/packer-plugin-tart* and *cirruslabs/packer-plugin-utm* — Go reference implementations for driving Tart and UTM. We won't depend on them but can study the patterns.
 - *vagrant_utm* (Ruby+AppleScript) — proves UTM CLI automation is feasible; reference for `utmctl` invocation patterns.
 
@@ -42,13 +42,13 @@ No existing project fills this niche. The closest matches each fail structurally
 
 ### 3.1 Three-tier ownership model
 
-vm-harness provides *generic primitives only*. Consumer-specific orchestration lives in the consumer's own repo.
+gosti provides *generic primitives only*. Consumer-specific orchestration lives in the consumer's own repo.
 
-- **Tier 1 — vm-harness (this library)**: VM lifecycle (provision, revert, start, stop), generic in-guest scripts (`exec a command`, `install argv tracer for any binary`, `write output to standardized layout`), output envelope.
+- **Tier 1 — gosti (this library)**: VM lifecycle (provision, revert, start, stop), generic in-guest scripts (`exec a command`, `install argv tracer for any binary`, `write output to standardized layout`), output envelope.
 - **Tier 2 — reprobuild's test suite**: gate-binary build steps, REPRO_M69_*_VM env-var dispatch, reprobuild-specific argv-trace shim installations (`useradd`, `launchctl`, `dscl`, etc.), result parsing for reprobuild's `RESULT.txt` schema.
 - **Tier 3 — Agent Harbor**: AH binary install, mutagen source sync, cargo test orchestration with isolation flags, JUnit XML extraction.
 
-vm-harness never imports or references Tiers 2 or 3. Consumers compose Tier-1 primitives.
+gosti never imports or references Tiers 2 or 3. Consumers compose Tier-1 primitives.
 
 ### 3.2 The VmBackend abstraction
 
@@ -98,7 +98,7 @@ type
 # Methods every backend must implement
 method probeAvailability*(b: VmBackend): bool {.base.}
   ## Quick capability check: is the underlying tool installed and usable?
-  ## Used by `vm-harness --backend auto` for dispatch.
+  ## Used by `gosti --backend auto` for dispatch.
 
 method provisionBaseline*(b: VmBackend, spec: BaselineSpec) {.base.}
   ## Idempotent. Builds the baseline image if absent, else no-op.
@@ -181,13 +181,13 @@ and the measured numbers behind the Hyper-V and libvirt rows are in
 
 ### 3.5 Output envelope
 
-vm-harness defines the *directory layout and a few mandatory envelope files*; consumers fill in their own domain-specific artifacts.
+gosti defines the *directory layout and a few mandatory envelope files*; consumers fill in their own domain-specific artifacts.
 
 ```
 <output-dir>/
-├── 00-provision.log    ← vm-harness's session-start log (mandatory)
+├── 00-provision.log    ← gosti's session-start log (mandatory)
 ├── 02-<cmd>-run.txt    ← stdout/stderr/exit of each execInGuest call (mandatory)
-├── RESULT.txt          ← vm-harness's per-step status + verdict (mandatory)
+├── RESULT.txt          ← gosti's per-step status + verdict (mandatory)
 ├── DONE                ← sentinel written last (mandatory)
 │
 ├── 01-<gate>-build.log ← reprobuild's gate-build output (consumer-written)
@@ -201,17 +201,17 @@ The `DONE` sentinel pattern is borrowed from the existing PowerShell harnesses a
 
 ```nim
 type
-  VmHarnessError* = object of CatchableError
+  GostiError* = object of CatchableError
     backend*: string
     phase*: LifecyclePhase  # provisioning, revert, exec, copy, cleanup
     cause*: ref Exception   # the underlying error if any
 
   LifecyclePhase* = enum lpProvisioning, lpRevert, lpExec, lpCopy, lpCleanup, lpProbe
 
-  TimeoutError* = object of VmHarnessError
-  BackendUnavailableError* = object of VmHarnessError
-  GuestBootFailureError* = object of VmHarnessError
-  CommandFailedError* = object of VmHarnessError
+  TimeoutError* = object of GostiError
+  BackendUnavailableError* = object of GostiError
+  GuestBootFailureError* = object of GostiError
+  CommandFailedError* = object of GostiError
     exitCode*: int
 ```
 
@@ -223,7 +223,7 @@ Cleanup *never raises* — `stopAndCleanup` swallows errors and logs them. Every
 
 - **Transport**: PowerShell Direct via VMBus (no networking needed in guest). `Invoke-Command -VMName <name> -ScriptBlock { ... }`.
 - **File transfer**: `Copy-VMFile -VM <name> -SourcePath ... -DestinationPath ...` (Integration Services file-copy channel).
-- **Provisioning**: wraps the existing `reprobuild/tools/hyperv-m69-system/provision-base-vm.ps1` (the Windows-11-dev VHDX + Panther-override autounattend + Nim/gcc install + checkpoint pattern). The script stays in reprobuild; vm-harness's HyperVBackend calls it via `osproc.startProcess`.
+- **Provisioning**: wraps the existing `reprobuild/tools/hyperv-m69-system/provision-base-vm.ps1` (the Windows-11-dev VHDX + Panther-override autounattend + Nim/gcc install + checkpoint pattern). The script stays in reprobuild; gosti's HyperVBackend calls it via `osproc.startProcess`.
 - **Revert**: `Restore-VMCheckpoint -VMName <name> -Name <baseline>` + `Start-VM`. Poll `Invoke-Command -VMName <name> { hostname }` for ready signal.
 - **Auth**: PowerShell Direct uses SAM credentials cached in DPAPI-sealed `vm-cred.xml` (existing mechanism from `provision-base-vm.ps1`). No SSH needed.
 - **Cleanup**: `Stop-VM -TurnOff -Force` (never `Save-VM` — saved-state revert desyncs the snapshot).
@@ -328,7 +328,7 @@ A **daemon-less direct-boot** backend (`backends/qemu_boot.nim`). It implements 
   KVM device or nesting key is present by default, preserving the original
   command path.
 - **Operator capability lifecycle**: `EphemeralIncusSpec.securityNesting` or
-  `.nestedKvm` switches creation to `incus init`; vm-harness applies the fixed
+  `.nestedKvm` switches creation to `incus init`; gosti applies the fixed
   configuration/device policy while stopped and then calls `incus start`.
   Nested KVM implies `security.nesting`, attaches only host `/dev/kvm` at guest
   `/dev/kvm` as `unix-char mode=0666`, converges that mode after start, and
@@ -355,7 +355,7 @@ Used by WSL, Tart-macOS, Tart-Linux. Provides POSIX shell primitives.
 Signature (CLI):
 
 ```
-vm-harness-guest.sh <subcommand> [args]
+gosti-guest.sh <subcommand> [args]
   exec <output-dir> [--env KEY=VAL ...] -- <cmd...>
     # Runs <cmd>, captures stdout to <output-dir>/02-<basename>-run.txt
     # with stderr interleaved, exit code recorded.
@@ -401,8 +401,8 @@ exec "@REAL_BIN_PATH@" "$@"
 Used by Hyper-V and UTM backends. Same subcommand surface as posix.sh, PowerShell semantics:
 
 ```powershell
-vm-harness-guest.ps1 -Subcommand exec -OutputDir <dir> -Env @{...} -Cmd <args>
-vm-harness-guest.ps1 -Subcommand install-trace-shim -RealBinary <name> -LogPath <path>
+gosti-guest.ps1 -Subcommand exec -OutputDir <dir> -Env @{...} -Cmd <args>
+gosti-guest.ps1 -Subcommand install-trace-shim -RealBinary <name> -LogPath <path>
 …
 ```
 
@@ -426,75 +426,50 @@ exit $LASTEXITCODE
 
 ### 6.0 Command names
 
-The project was renamed vm-harness → gosti. The binary is installed under
-BOTH names, and they are the same file:
-
-- `bin/gosti` — the primary name. `meta.mainProgram` is `gosti`, so
-  `lib.getExe` consumers run this.
-- `bin/vm-harness` — a relative symlink to `gosti`, kept indefinitely for
-  compatibility. Existing callers (the `vm-harness serve` units, the GARM
-  provider's default binary path, scripts, operator muscle memory) need no
-  change.
-
-Both the flake's `installPhase` and `just build` produce this layout through
-the one script `scripts/install-binaries.sh`, so they cannot disagree.
-Windows releases use `scripts/install-binaries.ps1` to install byte-identical
-`gosti.exe` and `vm-harness.exe` files. This preserves the compatibility name
-without requiring symlink privileges. The command-name integration test runs
-the corresponding production installer on each OS, then checks help output
-and a real daemon started through the compatibility name.
-Behaviour does not depend on the invoked name: argv, exit codes, output, and
-the serve daemon's worker re-exec (it runs the RESOLVED executable) are
-identical. Gated by `t_gosti_command_names`.
-
-Some surfaces keep the old name because their consumers have to move first.
-The environment variables and state directories accept both names (§6.0.1).
-The `share/vm-harness/` payload path and the `vm_harness` Nim package and
-module name are unchanged.
+The CLI and the serve daemon are one binary, installed as `bin/gosti`.
+`meta.mainProgram` is `gosti`, so `lib.getExe` consumers run it. Both the
+flake's `installPhase` and `just build` install it through the one script
+`scripts/install-binaries.sh`, so they cannot disagree; Windows releases use
+`scripts/install-binaries.ps1` to install `gosti.exe`. The command-name
+integration test runs the production installer on each OS and checks that
+`gosti` is the only command installed, that its help names `gosti`, and that
+a real daemon started as `gosti serve` serves execs. Gated by
+`t_gosti_command_names`.
 
 Diagnostics are prefixed `gosti: …` and the serve daemon logs
-`[gosti serve] …`. No consumer keys on the
-prefix: the GARM provider identifies an old daemon by the substrings
-`Unknown flag: '--label'` / `unknown subcommand '<verb>'`, and the enrollment
-harvest greps `identity keyId`, so both prefixes are accepted wherever text is
-matched. The `vm-harness` command name stays as a symlink indefinitely.
+`[gosti serve] …`. No consumer keys on the prefix: the GARM provider
+identifies an old daemon by the substrings `Unknown flag: '--label'` /
+`unknown subcommand '<verb>'`, and the enrollment harvest greps
+`identity keyId`.
 
 #### 6.0.1 Environment variables and state directories
 
-Every setting the binary reads from the environment has a canonical
-`GOSTI_<X>` name. The legacy name keeps working: `VMH_<X>` for most settings,
-`VM_HARNESS_<X>` for the per-backend state dirs (`VM_HARNESS_TART_STATE_DIR`
-→ `GOSTI_TART_STATE_DIR`). The canonical name is read first; if it is SET it
-wins (even when empty, like any set variable), otherwise the legacy one is
-read. A host can therefore export both during a rollout, and a host that still
-exports only `VMH_*` is unaffected. One helper, `env_names.gostiEnv`, does this
-for every reader, and `t_gosti_env_names` checks new-only / old-only / both for
-each variable, plus that no reader escapes the list.
+Every setting the binary reads from the environment is named `GOSTI_<X>`.
+`t_gosti_state_dirs` checks that no reader uses another prefix.
 
-Default state directories (`$XDG_STATE_HOME/…`, `~/.local/state/…`,
-`%LOCALAPPDATA%\…`, `/var/lib/…/ephemeral`) prefer `…/gosti/…` and fall back to
-an EXISTING `…/vm-harness/…`; nothing is ever moved, because a running daemon
-may hold the old one. A fresh host with neither gets `gosti/`. Independent
-processes resolve the same way, so they still agree without probing.
+Default state directories (`$XDG_STATE_HOME/gosti/…`,
+`~/.local/state/gosti/…`, `%LOCALAPPDATA%\gosti\…`,
+`/var/lib/gosti/ephemeral`) are resolved by `state_dirs.gostiStateDir`. A
+state directory left from before the product was named gosti is moved to the
+`gosti` directory the first time it is resolved, so a host keeps its
+ephemeral handles, labels and CRUD records; if the move fails, the command
+fails and names both paths. The serve modules migrate their own state
+directories on activation, so a managed host never reaches that move.
 
-Still spelled the old way: the guest-recipe shell seams (`VMH_RUNNER_*`,
-`VMH_BUILD_DIR`; libvirt passes `GOSTI_BUILD_DIR` alongside) and the
-PowerShell output markers (`VMH_GONE`, `VMH_DISK_GROWN=`, …).
-
-The examples below use `vm-harness`; `gosti` is interchangeable.
+The examples below use `gosti`.
 
 ```
-vm-harness <subcommand> [flags]
+gosti <subcommand> [flags]
 
 PROVISION:
-  vm-harness provision \
+  gosti provision \
     --backend <hyperv|wsl|tart|utm|libvirt|auto> \
     --baseline <name> \
     [--cpus N] [--memory-mb N] [--disk-gb N] \
     [--source-image <ref>]
 
 REVERT-AND-EXEC (one-shot — provisions if needed, reverts, execs, cleans up):
-  vm-harness run \
+  gosti run \
     --backend <name|auto> \
     --baseline <name> \
     --output-dir <path> \
@@ -505,7 +480,7 @@ REVERT-AND-EXEC (one-shot — provisions if needed, reverts, execs, cleans up):
     -- <command args>
 
 BOOT (assert on OS bring-up over the serial console):
-  vm-harness boot \
+  gosti boot \
     --backend <libvirt|hyperv|qemu-boot|auto> \
     --source-image <path> \
     [--kind <auto|iso|qcow2|vhdx|rootfs-tar|kernel>] \
@@ -520,16 +495,16 @@ BOOT (assert on OS bring-up over the serial console):
   which auto-selects the `qemu-boot` backend on Linux.
 
 PROBE (capability detection):
-  vm-harness probe
+  gosti probe
     # Prints a JSON report of available backends + supported guests.
 
 SHELL (interactive, useful for debugging):
-  vm-harness shell \
+  gosti shell \
     --backend <name|auto> \
     --baseline <name>
 
 LIST-BACKENDS:
-  vm-harness backends
+  gosti backends
     # Tabular listing.
 ```
 
@@ -547,10 +522,10 @@ The `auto` backend selection picks based on `(host OS, requested guest OS)`:
 
 ## 7. Library API (Nim consumers)
 
-reprobuild's tests import vm-harness as a regular Nim library:
+reprobuild's tests import gosti as a regular Nim library:
 
 ```nim
-import vm_harness
+import gosti
 
 let backend = autoSelectBackend(guest = goMacos)
 backend.provisionBaseline(BaselineSpec(name: "base-clean", ...))
@@ -572,12 +547,12 @@ finally:
   backend.stopAndCleanup(vm)
 ```
 
-The dotfiles `vm` CLI invokes vm-harness as a child process:
+The dotfiles `vm` CLI invokes gosti as a child process:
 
 ```sh
-vm-harness shell --backend tart --baseline base-clean
+gosti shell --backend tart --baseline base-clean
 # or
-vm-harness run --backend tart --baseline base-clean ... -- <cmd>
+gosti run --backend tart --baseline base-clean ... -- <cmd>
 ```
 
 ## 8. Language bindings (thin subprocess adapters)
@@ -587,9 +562,9 @@ binding in another language carries no backend code. The Rust binding in
 agent-harbor's `ah-vm` crate is the reference case: its `GostiOrchestrator`
 implements `ah-vm`'s existing `VmOrchestrator` trait by driving `gosti`:
 
-- **local** — invoke the `vm-harness` CLI's generic-CRUD subcommands
-  (`vm-harness crud <verb> … `, §6), or
-- **remote** — `POST /v1/exec` against a `vm-harness serve` daemon ([`serve.md`](serve.md), the
+- **local** — invoke the `gosti` CLI's generic-CRUD subcommands
+  (`gosti crud <verb> … `, §6), or
+- **remote** — `POST /v1/exec` against a `gosti serve` daemon ([`serve.md`](serve.md), the
   serve protocol),
 
 and in both cases **parse the CRUD `--json` envelope** documented below. The
@@ -601,7 +576,7 @@ started, execed, snapshotted, and destroyed.
 ### 8.1 The CRUD wire contract (canonical)
 
 This is the contract the binding parses; it is established by the gosti
-`crud` façade (`src/vm_harness/crud.nim`) and is the frozen
+`crud` façade (`src/gosti/crud.nim`) and is the frozen
 consumer-facing spec. Do not change a key name or an exit code without
 versioning it here.
 
@@ -660,7 +635,7 @@ byte-for-byte identical.
 
 **Framing — where the envelope is on each path:**
 
-- **Local** (`vm-harness crud <verb> …` as a child process): stdout carries
+- **Local** (`gosti crud <verb> …` as a child process): stdout carries
   exactly one line, the envelope, and nothing else. Backend diagnostics, if
   any, go to stderr. The process exit code is the code in the table above.
 - **Remote** (`POST /v1/exec` with `argv = ["crud", "<verb>", …]`): serve
@@ -677,7 +652,7 @@ stdout line and the remote `log` line are byte-identical, and the two exit
 codes match.
 
 **Scope of one invocation:** VM state persists across invocations (§8.6).
-A VM created by one `vm-harness crud` call, whether local or forwarded over
+A VM created by one `gosti crud` call, whether local or forwarded over
 `/v1/exec`, is visible to `get_vm`/`list_vms`/`start_vm`/`stop_vm`/`exec`/
 `copy_*`/`snapshot*`/`delete_vm` in any later call on the same host that
 resolves the same crud state directory.
@@ -722,7 +697,7 @@ this side the contract is pinned by `tests/unit/t_crud_facade.nim`,
 
 ### 8.6 Cross-invocation state (the crud store)
 
-A subprocess or serve consumer runs one `vm-harness crud` process per verb. So
+A subprocess or serve consumer runs one `gosti crud` process per verb. So
 the façade's instance registry is persisted in a **crud store** on the host
 that runs the verb, and the running instance is re-attached on every call.
 The §8.1 envelope, verbs and exit codes are unchanged by this.
@@ -732,14 +707,14 @@ The §8.1 envelope, verbs and exit codes are unchanged by this.
 It mirrors the label store that `ephemeral-label` uses:
 
 1. `--state-dir <root>` on the `crud` command line, giving `<root>/crud`
-2. `$VMH_CRUD_STATE_DIR`
-3. `$VMH_EPHEMERAL_STATE_DIR/crud`
+2. `$GOSTI_CRUD_STATE_DIR`
+3. `$GOSTI_EPHEMERAL_STATE_DIR/crud`
 4. systemd's `$STATE_DIRECTORY/crud`. This is the serve unit's writable state
    directory, the same one that holds `ephemeral-labels`.
-5. the user state dir: `%LOCALAPPDATA%\vm-harness\crud` on Windows,
-   otherwise `$XDG_STATE_HOME/vm-harness/crud` or
-   `$HOME/.local/state/vm-harness/crud`
-6. `/var/lib/vm-harness/ephemeral/crud`
+5. the user state dir: `%LOCALAPPDATA%\gosti\crud` on Windows,
+   otherwise `$XDG_STATE_HOME/gosti/crud` or
+   `$HOME/.local/state/gosti/crud`
+6. `/var/lib/gosti/ephemeral/crud`
 
 A serve daemon's worker re-runs the CLI with the daemon's environment. So
 remote calls to one daemon share one store, and a `--state-dir` in the
@@ -750,7 +725,7 @@ forwarded argv names a path on the **daemon** host.
 0600:
 
 ```jsonc
-{"schema": "vm-harness/crud-vm/1",
+{"schema": "gosti/crud-vm/1",
  "name": "<logical name>", "backend": "<backend id>", "baseline": "<template>",
  "state": "running" | "stopped",          // last state the façade set
  "handle": <VmHandle as ephemeral_handle.nim serializes it> | null}
@@ -822,14 +797,14 @@ is **never registered** in the backend registry. It is not advertised by
 it is never auto-selected. It exists only when a caller names it.
 
 This is the **fixture mode for hermetic consumers** (the ah-vm
-`GostiOrchestrator` tests). Point the binding at the real `vm-harness` binary
+`GostiOrchestrator` tests). Point the binding at the real `gosti` binary
 with `--backend mock --state-dir <tmp>`:
 
 ```sh
-vm-harness crud create_vm vm1 --backend mock --state-dir "$T"   # → running
-vm-harness crud exec vm1 --backend mock --state-dir "$T" -- echo hi
+gosti crud create_vm vm1 --backend mock --state-dir "$T"   # → running
+gosti crud exec vm1 --backend mock --state-dir "$T" -- echo hi
 #   → {"ok":true,"verb":"exec","data":{"exit_code":0,"stdout":"mock-exec: echo hi\n",…}}
-vm-harness crud delete_vm vm1 --backend mock --state-dir "$T"
+gosti crud delete_vm vm1 --backend mock --state-dir "$T"
 ```
 
 Deterministic data: `ssh_endpoint` is `{"host":"10.0.2.15","port":22,
@@ -838,12 +813,12 @@ Deterministic data: `ssh_endpoint` is `{"host":"10.0.2.15","port":22,
 `mock-vm-<baseline>@<snapshot>`. Failures can be injected so a consumer can
 test its error mapping:
 
-- `VMH_MOCK_UNAVAILABLE=1` makes the backend unavailable (`backend-unavailable`, exit 4).
-- `VMH_MOCK_FAIL=<op>[,<op>…]` makes the named backend operations raise
+- `GOSTI_MOCK_UNAVAILABLE=1` makes the backend unavailable (`backend-unavailable`, exit 4).
+- `GOSTI_MOCK_FAIL=<op>[,<op>…]` makes the named backend operations raise
   (`backend-error`, exit 5). `<op>` is one of `provision`, `revert`, `start`,
   `exec`, `copy`, `snapshot`, `restore`.
 
-`scripts/vm-harness-fixture.sh` wraps the binary with a per-test state dir.
+`scripts/gosti-fixture.sh` wraps the binary with a per-test state dir.
 
 **Gates.** `tests/e2e/t_crud_store_roundtrip.nim` drives every verb as a
 **separate CLI process** against the file-backed mock. It also covers
@@ -857,7 +832,7 @@ reverse, with byte-identical envelopes.
 
 ### 9.1 Mock policy: almost nothing
 
-**Default position: test against real backends.** vm-harness exists to coordinate real VMs; testing it against mocked VMs would just verify that the mocks are wired up correctly, not that the backends work.
+**Default position: test against real backends.** gosti exists to coordinate real VMs; testing it against mocked VMs would just verify that the mocks are wired up correctly, not that the backends work.
 
 What's allowed to be mocked:
 
@@ -868,10 +843,10 @@ What is NOT allowed to be mocked:
 
 - The VM backends themselves. `HyperVBackend::start` must actually start a Hyper-V VM. `TartBackend::clone` must actually run `tart clone`. No `MockBackend` substituted for `TartBackend` in any test that purports to verify Tart behavior.
 - Process spawning. No mocking `osproc.startProcess`/`std::process::Command`. If a test wants to verify what arguments are passed to `tart`, it can use a shell shim (a real binary on PATH that records its argv and exits) — but that's still a real `osproc` call.
-- File I/O. The output envelope is verified by *reading the actual files vm-harness wrote*, not by mocking the writer.
+- File I/O. The output envelope is verified by *reading the actual files gosti wrote*, not by mocking the writer.
 - SSH/PSDirect transports. Tests run actual `ssh` against actual `sshd` in the guest, or actual `Invoke-Command -VMName` against actual Hyper-V.
 
-The exceptions to "no backend mocks" are two *deliberate test fixtures*. `NoopBackend` implements the trait but does nothing; it exists for testing the dispatcher, output envelope, and lifecycle orchestration in isolation from any real backend. `MockBackend` is the deterministic, file-backed fixture behind the crud store (§8.6). Tests that use either must be named and described to make clear they're testing the harness scaffolding or the contract, not backend behavior (e.g., `tests/e2e/t_vm_harness_finally_cleanup_on_panic.nim`).
+The exceptions to "no backend mocks" are two *deliberate test fixtures*. `NoopBackend` implements the trait but does nothing; it exists for testing the dispatcher, output envelope, and lifecycle orchestration in isolation from any real backend. `MockBackend` is the deterministic, file-backed fixture behind the crud store (§8.6). Tests that use either must be named and described to make clear they're testing the harness scaffolding or the contract, not backend behavior (e.g., `tests/e2e/t_gosti_finally_cleanup_on_panic.nim`).
 
 ### 9.2 Test types
 
@@ -882,7 +857,7 @@ program:
 |---|---|
 | `tests/unit/` | Pure-logic helpers (parsers, argv builders, path math) and contracts driven in-process through `noop` or `mock`. |
 | `tests/integration/` | One backend and one primitive, e.g. `t_tart_lifecycle.nim`, `t_libvirt_backend.nim`. |
-| `tests/e2e/` | A full session or a whole CLI process: one backend from provision to cleanup (`t_vm_harness_*_smoke.nim`), the serve daemon, or the crud store across separate invocations. |
+| `tests/e2e/` | A full session or a whole CLI process: one backend from provision to cleanup (`t_gosti_*_smoke.nim`), the serve daemon, or the crud store across separate invocations. |
 
 ### 9.3 CI layering
 
@@ -908,14 +883,14 @@ run`, real `ssh`.
 
 ### 9.5 What an e2e test looks like
 
-`tests/e2e/t_vm_harness_tart_macos_smoke.nim` and its siblings run one backend
+`tests/e2e/t_gosti_tart_macos_smoke.nim` and its siblings run one backend
 through the whole session lifecycle of §3.3. The serve gates
-(`t_vmharness_serve_*.nim`) start a real daemon and drive it over HTTP, and the
+(`t_gosti_serve_*.nim`) start a real daemon and drive it over HTTP, and the
 crud gates (§8.6) run each verb as a separate CLI process.
 
 ### 9.6 Failure-mode tests
 
-`tests/e2e/t_vm_harness_finally_cleanup_on_panic.nim` throws mid-run and
+`tests/e2e/t_gosti_finally_cleanup_on_panic.nim` throws mid-run and
 verifies the VM is still cleaned up. Backend-specific failure modes (stale
 ephemerals, hung guests, unreachable SSH) are covered in each backend's own
 integration file.
@@ -927,10 +902,10 @@ gosti/
 ├── README.md, AGENTS.md, LICENSE, NOTICE, REUSE.toml
 ├── flake.nix, Justfile         # dev shell, build and test entry points
 ├── repro.nim, repro.lock       # the reprobuild build and test graph
-├── vm_harness.nimble
+├── gosti.nimble
 ├── src/
-│   ├── vm_harness.nim          # main module
-│   └── vm_harness/
+│   ├── gosti.nim          # main module
+│   └── gosti/
 │       ├── types.nim           # VmBackend, VmHandle, ExecResult, …
 │       ├── cli.nim             # CLI entry point
 │       ├── crud.nim, crud_store.nim   # §8
@@ -955,7 +930,7 @@ gosti/
 ## 11. Implementation choices
 
 1. **In-guest script delivery**: the scripts in `guest-scripts/` are embedded
-   with `staticRead` at compile time (`src/vm_harness/guest_scripts.nim`).
+   with `staticRead` at compile time (`src/gosti/guest_scripts.nim`).
 2. **Logging**: human-readable on stderr by default. `--log-format json` emits
    structured events, also on stderr, so stdout stays reserved for command
    output.
@@ -975,14 +950,14 @@ gosti/
 
 ## 13. Reprobuild adapter
 
-vm-harness is usable on its own — as the CLI of §6 and the Nim library of §7.
+gosti is usable on its own — as the CLI of §6 and the Nim library of §7.
 It is *also* a source of build-graph edges: reprobuild drives guest lifecycle
 through typed wrappers, and every edge those wrappers create has to declare how
 reproducible it is, because that declaration is what decides whether a cached
 result may be reused, for how long, and on which machine.
 
 **The typed model is reprobuild's edge-determinism model; reprobuild defines
-it normatively, not this document.** This section only records vm-harness's
+it normatively, not this document.** This section only records gosti's
 defaults against it. The four things worth restating before the table:
 
   * **Four determinism classes.** `strong` — same declared inputs give
@@ -1012,20 +987,20 @@ defaults against it. The four things worth restating before the table:
 
 ### 13.1 Default class and retention
 
-The six resource types are declared in `src/vm_harness/repro/resources.nim`;
+The six resource types are declared in `src/gosti/repro/resources.nim`;
 the two running-state operations are `LibvirtBackend.snapshotRunning` and
-`LibvirtBackend.restoreSnapshot` in `src/vm_harness/backends/libvirt.nim`. The
+`LibvirtBackend.restoreSnapshot` in `src/gosti/backends/libvirt.nim`. The
 cold libvirt snapshot is listed alongside the warm one because the contrast
 between them is the whole point of the classification.
 
 | Edge | Class | Retention |
 |---|---|---|
-| `vm_harness.container` — launch a container | `volatile` | `this-build` |
-| `vm_harness.nic` — attach a container to a managed network | `volatile` | `this-build` |
-| `vm_harness.exec` — run an argv in a guest | `volatile` | `no-cache` |
-| `vm_harness.check` — run an argv and assert exit code / stdout | `volatile` | `no-cache` |
-| `vm_harness.network` — managed network | `host-bound` | — (cache forever, per host) |
-| `vm_harness.snapshot` — cold container snapshot, optional image publish | `host-bound` | — (cache forever, per host) |
+| `gosti.container` — launch a container | `volatile` | `this-build` |
+| `gosti.nic` — attach a container to a managed network | `volatile` | `this-build` |
+| `gosti.exec` — run an argv in a guest | `volatile` | `no-cache` |
+| `gosti.check` — run an argv and assert exit code / stdout | `volatile` | `no-cache` |
+| `gosti.network` — managed network | `host-bound` | — (cache forever, per host) |
+| `gosti.snapshot` — cold container snapshot, optional image publish | `host-bound` | — (cache forever, per host) |
 | libvirt `snapshot` — cold, `--disk-only`; restore *boots* | `host-bound` | — (cache forever, per host) |
 | libvirt `snapshotRunning` — warm; RAM + CPU + device state; restore *resumes* | `volatile` | `max-age = 86400` |
 | libvirt `restoreSnapshot` — revert to a running domain | `volatile` | `this-build` |
@@ -1098,7 +1073,7 @@ The table is the reference; the paragraphs after it are the reasoning.
 | `ephemeral-destroy` | `volatile` | `no-store` |
 | `probe`, `backends`, `shell`, `prune`, `layer` | *(not a graph edge — no class)* | — |
 
-The subcommands dispatched in `src/vm_harness/cli.nim` map onto the same
+The subcommands dispatched in `src/gosti/cli.nim` map onto the same
 classes. `provision` is `host-bound`: it realizes a baseline on this host and
 is idempotent there, but its bytes are the host's. `install` is `volatile` with
 `max-age = 604800` — an installer stamps run-unique identity (machine
@@ -1106,9 +1081,9 @@ identifiers, host keys) into the target disk, so two runs differ, and one week
 is the point at which the guest OS's own patch cadence makes a fresh install
 more honest than a cached one. `boot` is `volatile`, `no-cache`: a
 serial-console assertion over a transient VM is a probe, the same posture as
-`vm_harness.check`. `run` (revert, exec, harvest, clean up) and the mutating
+`gosti.check`. `run` (revert, exec, harvest, clean up) and the mutating
 `instance` verbs (`exec`, `copy-to`, `copy-from`, `start`, `stop`) are
-`volatile`, `no-cache` — the `vm_harness.exec` posture; `instance wait` is a
+`volatile`, `no-cache` — the `gosti.exec` posture; `instance wait` is a
 readiness barrier with no output of its own. `snapshot create` is `host-bound`
 cold and `volatile` with `max-age = 86400` under `--running`; `snapshot
 restore` is `volatile`, `this-build`. `baseline export` and `baseline import`
@@ -1131,17 +1106,17 @@ action of a resource whose lifecycle the graph owns, so it belongs to an edge;
 
 ### 13.3 Where the typed wrappers live
 
-The wrappers are **reprobuild's, not vm-harness's**. A graph author writes
-`package vm_harness:` from reprobuild's stdlib; vm-harness remains the
+The wrappers are **reprobuild's, not gosti's**. A graph author writes
+`package gosti:` from reprobuild's stdlib; gosti remains the
 underlying CLI and library that those wrappers drive. This keeps the ownership
-split intact — vm-harness ships generic lifecycle primitives, and gate
+split intact — gosti ships generic lifecycle primitives, and gate
 orchestration lives in the consumer above it.
 
 The in-repo adapter that declares the resource types,
-`src/vm_harness/repro/resources.nim`, is deliberately **outside vm-harness's
+`src/gosti/repro/resources.nim`, is deliberately **outside gosti's
 core build path**. It imports reprobuild libraries, and it is imported by
-neither `src/vm_harness/cli.nim` nor anything `just build` compiles, so the
-core build stays reprobuild-free and vm-harness acquires no dependency on its
+neither `src/gosti/cli.nim` nor anything `just build` compiles, so the
+core build stays reprobuild-free and gosti acquires no dependency on its
 own consumer. It is compiled only with reprobuild's `--path` set; the same
 module built with `-d:reproProviderMode` serves the driver operations over
 reprobuild's provider protocol from a separate process, so the engine can

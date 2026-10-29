@@ -8,43 +8,43 @@
 # flag set is DERIVED from reprobuild's own providerCompileCommand (via the
 # rp5c1_flagprint helper), exactly the flags the RP1 provider-compile edge uses.
 # We then strip the provider-only bits and re-target at the S2 test module,
-# adding vm-harness's own `src` + `tests/e2e` on --path (the test imports the
+# adding gosti's own `src` + `tests/e2e` on --path (the test imports the
 # REAL resources.nim driver + the incus backend, so this lane is NOT no-closure
 # — the on-incus assertions need the incus helpers).
 #
 # Requires: run inside reprobuild's `nix develop` (this script enters it) so
-# `nim`, the `*_SRC` env, and the toolchain are present. `VMH_INCUS_CMD`
+# `nim`, the `*_SRC` env, and the toolchain are present. `GOSTI_INCUS_CMD`
 # (e.g. "sudo -n incus") selects the incus client for the on-incus lane.
 set -euo pipefail
 
 # Every path below is derived from this script's own location, so the recipe
 # works in any checkout on any machine. Each can still be overridden from the
 # environment:
-#   VMH_ROOT    the vm-harness checkout (this script lives in tests/e2e/)
-#   REPRO_ROOT  the reprobuild checkout (expected as a sibling of VMH_ROOT)
+#   GOSTI_ROOT    the gosti checkout (this script lives in tests/e2e/)
+#   REPRO_ROOT  the reprobuild checkout (expected as a sibling of GOSTI_ROOT)
 #   S2_OUT      scratch dir for build output (default: the gitignored build/)
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-VMH_ROOT="${VMH_ROOT:-$(cd -- "${SCRIPT_DIR}/../.." && pwd)}"
+GOSTI_ROOT="${GOSTI_ROOT:-$(cd -- "${SCRIPT_DIR}/../.." && pwd)}"
 if [ -z "${REPRO_ROOT:-}" ]; then
-  if [ -d "${VMH_ROOT}/../reprobuild" ]; then
-    REPRO_ROOT="$(cd -- "${VMH_ROOT}/../reprobuild" && pwd)"
+  if [ -d "${GOSTI_ROOT}/../reprobuild" ]; then
+    REPRO_ROOT="$(cd -- "${GOSTI_ROOT}/../reprobuild" && pwd)"
   else
     echo "build-s2.sh: cannot find the reprobuild checkout." >&2
-    echo "  Expected it beside the vm-harness checkout, at ${VMH_ROOT}/../reprobuild" >&2
+    echo "  Expected it beside the gosti checkout, at ${GOSTI_ROOT}/../reprobuild" >&2
     echo "  Set REPRO_ROOT=/path/to/reprobuild and re-run." >&2
     exit 2
   fi
 fi
-OUT="${S2_OUT:-${VMH_ROOT}/build/s2-out}"
+OUT="${S2_OUT:-${GOSTI_ROOT}/build/s2-out}"
 mkdir -p "${OUT}"
 
 # The recipe used only to DERIVE the reprobuild flag set (any provider-mode
 # module works; reuse RP5c2's recipe which is already wired for the flagprinter).
-FLAG_SRC="${VMH_ROOT}/src/vm_harness/repro/provider_main.nim"
-TEST_MODULE="${VMH_ROOT}/tests/e2e/t_s2_network_and_attachment.nim"
+FLAG_SRC="${GOSTI_ROOT}/src/gosti/repro/provider_main.nim"
+TEST_MODULE="${GOSTI_ROOT}/tests/e2e/t_s2_network_and_attachment.nim"
 
 build_flagprinter() {
-  cp "${VMH_ROOT}/tests/e2e/rp5c1_flagprint.nim" "${REPRO_ROOT}/rp5c1_flagprint.nim"
+  cp "${GOSTI_ROOT}/tests/e2e/rp5c1_flagprint.nim" "${REPRO_ROOT}/rp5c1_flagprint.nim"
   trap 'rm -f "${REPRO_ROOT}/rp5c1_flagprint.nim"' EXIT
   ( cd "${REPRO_ROOT}" && nix develop --command bash -c '
       source scripts/source_paths.sh
@@ -68,9 +68,9 @@ build_and_run_test() {
         esac
         CMD+=(\"\$a\")
       done
-      # The test imports the REAL vm-harness resources + incus backend, so put
-      # vm-harness src + tests/e2e on --path.
-      CMD+=(--path:'${VMH_ROOT}/src')
+      # The test imports the REAL gosti resources + incus backend, so put
+      # gosti src + tests/e2e on --path.
+      CMD+=(--path:'${GOSTI_ROOT}/src')
       CMD+=(--threads:on)
       CMD+=(--nimcache:'${OUT}/nimcache-test')
       CMD+=(--out:'${OUT}/t_s2')
@@ -78,8 +78,8 @@ build_and_run_test() {
       printf '%s\n' \"\${CMD[@]}\" > '${OUT}/test_compile_cmd.txt'
       \"\${CMD[@]}\"" )
   echo "test binary: ${OUT}/t_s2"
-  echo "=== running S2 test (VMH_INCUS_CMD=${VMH_INCUS_CMD:-incus}) ==="
-  VMH_INCUS_CMD="${VMH_INCUS_CMD:-incus}" "${OUT}/t_s2"
+  echo "=== running S2 test (GOSTI_INCUS_CMD=${GOSTI_INCUS_CMD:-incus}) ==="
+  GOSTI_INCUS_CMD="${GOSTI_INCUS_CMD:-incus}" "${OUT}/t_s2"
 }
 
 build_and_run_test

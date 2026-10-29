@@ -16,7 +16,7 @@
 ## implementation checked against the published NIST/RFC vectors below.
 
 import std/[json, strutils, unittest]
-import vm_harness
+import gosti
 
 suite "unit_serve_enrollment":
 
@@ -107,7 +107,7 @@ Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32
   test "keyId is stable + derived from the secret, never the secret itself":
     let secret = "enrollment-secret-abc"
     check keyIdFor(secret) == keyIdFor(secret)
-    check keyIdFor(secret).startsWith("vmh1-")
+    check keyIdFor(secret).startsWith("gosti1-")
     check secret notin keyIdFor(secret)
     check keyIdFor("other") != keyIdFor(secret)
 

@@ -14,7 +14,7 @@ import core/base_path
 
 const docsSiteOrigin* = "https://metacraft-labs.github.io"
 
-proc vmhDocsConfig*(basePath = "/gosti"): DocsConfig =
+proc gostiDocsConfig*(basePath = "/gosti"): DocsConfig =
   let base = normalizeBasePath(basePath)
   DocsConfig(
     siteTitle: "Gosti docs",

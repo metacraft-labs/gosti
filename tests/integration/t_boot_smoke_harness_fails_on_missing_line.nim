@@ -28,7 +28,7 @@
 ## the assertions read the bytes the guest really wrote to COM1.
 
 import std/[os, strutils, times, unittest]
-import vm_harness
+import gosti
 
 when not defined(linux):
   # QEMU direct boot is a Linux-host backend here and the boot backend
@@ -41,7 +41,7 @@ when not defined(linux):
   quit(0)
 
 proc scratchDir(stem: string): string =
-  getTempDir() / ("vmh-boot-smoke-" & stem & "-" & $getCurrentProcessId())
+  getTempDir() / ("gosti-boot-smoke-" & stem & "-" & $getCurrentProcessId())
 
 suite "t_boot_smoke_harness_fails_on_missing_line":
   test "boot-smoke harness matches the guest's real ordered serial sequence":

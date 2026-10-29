@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## vm-harness docs -- thin SSR entry (one-shot preview via `just serve-docs`).
+## gosti docs -- thin SSR entry (one-shot preview via `just serve-docs`).
 ##
 ## Calls the framework's own `renderRoute` with this site's `content/` dir and
 ## its own `DocsConfig`, passing NO explicit manifest -- letting the framework's
@@ -18,7 +18,7 @@ import "framework_src/ssr" as frameworkSsr
 import ./docs_config
 
 proc renderRoute*(path: string; contentDir = "content"): tuple[status: int, html: string] =
-  frameworkSsr.renderRoute(path, contentDir, cfg = vmhDocsConfig())
+  frameworkSsr.renderRoute(path, contentDir, cfg = gostiDocsConfig())
 
 when isMainModule:
   let (status, html) = renderRoute("/")

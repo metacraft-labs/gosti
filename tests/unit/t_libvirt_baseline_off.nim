@@ -33,7 +33,7 @@
 ## is real.
 
 import std/[os, strutils, tempfiles, unittest]
-import vm_harness
+import gosti
 
 when defined(linux):
   proc writeStub(dir, name, body: string) =
@@ -45,16 +45,16 @@ when defined(linux):
 
   suite "libvirt baseline is left off after qcow2-import provision":
     test "provisionBaseline (qcow2 import) leaves the baseline DEFINED-BUT-OFF":
-      let stubDir = createTempDir("vmh-stub-bin-", "")
-      let poolDir = createTempDir("vmh-pool-", "")
-      let stateDir = createTempDir("vmh-stub-state-", "")
+      let stubDir = createTempDir("gosti-stub-bin-", "")
+      let poolDir = createTempDir("gosti-pool-", "")
+      let stateDir = createTempDir("gosti-stub-state-", "")
       defer:
         removeDir(stubDir); removeDir(poolDir); removeDir(stateDir)
 
       let logPath = stateDir / "argv.log"
       let marker = stateDir / "domain-defined"
-      putEnv("VMH_STUB_LOG", logPath)
-      putEnv("VMH_STUB_MARKER", marker)
+      putEnv("GOSTI_STUB_LOG", logPath)
+      putEnv("GOSTI_STUB_MARKER", marker)
 
       # Stateful ``virsh``: the domain does not exist until ``virt-install``
       # "defines" it (drops the marker); thereafter it is reported "shut
@@ -62,7 +62,7 @@ when defined(linux):
       # domain, proceed, and lets the post-import power-state check see an
       # off template.
       writeStub(stubDir, "virsh", """
-echo "virsh $*" >> "$VMH_STUB_LOG"
+echo "virsh $*" >> "$GOSTI_STUB_LOG"
 sub=""
 skip=0
 for a in "$@"; do
@@ -74,19 +74,19 @@ for a in "$@"; do
   esac
 done
 case "$sub" in
-  dominfo)  [ -f "$VMH_STUB_MARKER" ] && exit 0 || exit 1;;
-  domstate) if [ -f "$VMH_STUB_MARKER" ]; then echo "shut off"; exit 0; else echo ""; exit 1; fi;;
-  list)     [ -f "$VMH_STUB_MARKER" ] && basename "$VMH_STUB_MARKER"; exit 0;;
+  dominfo)  [ -f "$GOSTI_STUB_MARKER" ] && exit 0 || exit 1;;
+  domstate) if [ -f "$GOSTI_STUB_MARKER" ]; then echo "shut off"; exit 0; else echo ""; exit 1; fi;;
+  list)     [ -f "$GOSTI_STUB_MARKER" ] && basename "$GOSTI_STUB_MARKER"; exit 0;;
   *) exit 0;;
 esac
 """)
       writeStub(stubDir, "virt-install", """
-echo "virt-install $*" >> "$VMH_STUB_LOG"
-: > "$VMH_STUB_MARKER"
+echo "virt-install $*" >> "$GOSTI_STUB_LOG"
+: > "$GOSTI_STUB_MARKER"
 exit 0
 """)
       writeStub(stubDir, "qemu-img", """
-echo "qemu-img $*" >> "$VMH_STUB_LOG"
+echo "qemu-img $*" >> "$GOSTI_STUB_LOG"
 for last in "$@"; do :; done
 : > "$last" 2>/dev/null || true
 exit 0

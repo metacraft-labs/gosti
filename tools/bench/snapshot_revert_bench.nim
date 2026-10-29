@@ -26,7 +26,7 @@
 ##
 ## Usage:
 ##
-##   vm-harness-bench-snapshot-revert
+##   gosti-bench-snapshot-revert
 ##     --backend <id>           backend id (hyperv, noop, tart-macos, ...)
 ##     --vm <name>              VM name the backend recognizes
 ##     --baseline <cold-name>   cold snapshot the bench reverts to between runs
@@ -53,25 +53,25 @@
 
 import std/[algorithm, json, os, strutils, times]
 
-import vm_harness/types
-import vm_harness/auto
+import gosti/types
+import gosti/auto
 
 # Force-register the backends we might dispatch to. Tart/UTM/Lima don't
 # need to register on Windows (their constructors no-op probe to false),
 # but importing them is harmless and keeps the bench usable on any host.
 {.push warning[UnusedImport]: off.}
-import vm_harness/backends/noop
-import vm_harness/backends/hyperv
-import vm_harness/backends/tart
-import vm_harness/backends/utm
-import vm_harness/backends/lima
-import vm_harness/backends/wsl
+import gosti/backends/noop
+import gosti/backends/hyperv
+import gosti/backends/tart
+import gosti/backends/utm
+import gosti/backends/lima
+import gosti/backends/wsl
 # libvirt implements snapshotRunning as of campaign WR0, so `--backend
 # libvirt` must resolve through newBackend(); without this import the
 # backend never registers itself and the bench dies in the factory instead
 # of producing the number WR0 needs.
-import vm_harness/backends/libvirt
-import vm_harness/backends/incus
+import gosti/backends/libvirt
+import gosti/backends/incus
 {.pop.}
 
 type

@@ -12,10 +12,10 @@ if [ "$release_os" = linux ]; then
   release_nim_flags+=(--dynlibOverride:pcre)
 fi
 nim c "${release_nim_flags[@]}" --nimcache:"build/nimcache/release-$release_target" \
-  --out:build/gosti-release src/vm_harness/cli.nim
+  --out:build/gosti-release src/gosti/cli.nim
 bash scripts/install-binaries.sh build/gosti-release "$release_stage/bin"
-mkdir -p "$release_stage/share/vm-harness"
-cp -R guest-scripts guest-recipes "$release_stage/share/vm-harness/"
+mkdir -p "$release_stage/share/gosti"
+cp -R guest-scripts guest-recipes "$release_stage/share/gosti/"
 cp LICENSE NOTICE "$release_stage/"
 if [ "$release_os" = linux ]; then
   mkdir -p "$release_stage/share/licenses/pcre"

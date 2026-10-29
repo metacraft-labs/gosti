@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  vm-harness Windows-on-x86_64 golden image autounattend.xml (M4
+  gosti Windows-on-x86_64 golden image autounattend.xml (M4
   libvirt slice, Phase A).
 
   Drives Windows 11 Pro 24H2 (amd64) Setup from first boot through
@@ -70,7 +70,7 @@
       <UserLocale>en-US</UserLocale>
     </component>
 
-    <!-- VMH:VIRTIO-DRIVERS:BEGIN
+    <!-- GOSTI:VIRTIO-DRIVERS:BEGIN
          Everything between this marker and its matching closing marker
          below is QEMU/KVM-specific, and is stripped when
          build-autounattend-iso.sh runs with the hyperv target.
@@ -138,7 +138,7 @@
         </PathAndCredentials>
       </DriverPaths>
     </component>
-    <!-- VMH:VIRTIO-DRIVERS:END -->
+    <!-- GOSTI:VIRTIO-DRIVERS:END -->
 
     <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <!-- Bypass Win11's system-requirements check. Required when the
@@ -236,8 +236,8 @@
           <WillShowUI>OnError</WillShowUI>
         </ProductKey>
         <AcceptEula>true</AcceptEula>
-        <FullName>repro-vm-harness</FullName>
-        <Organization>vm-harness</Organization>
+        <FullName>repro-gosti</FullName>
+        <Organization>gosti</Organization>
       </UserData>
     </component>
   </settings>
@@ -276,7 +276,7 @@
           <LocalAccount wcm:action="add">
             <Name>admin</Name>
             <Group>Administrators</Group>
-            <Description>vm-harness Windows-x64 libvirt golden admin user</Description>
+            <Description>gosti Windows-x64 libvirt golden admin user</Description>
             <Password>
               <Value>repro-windows-x64</Value>
               <PlainText>true</PlainText>
@@ -415,7 +415,7 @@
              miss is tolerated). -->
         <SynchronousCommand wcm:action="add">
           <Order>5</Order>
-          <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Continue'; Set-Service -Name sshd -StartupType Automatic; $cfg='C:\ProgramData\ssh\sshd_config'; if (Test-Path $cfg) { $c = Get-Content $cfg; $c = $c -replace '^Match Group administrators.*','#Match Group administrators (commented by vm-harness)'; $c = $c -replace '^\s+AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys.*','#       AuthorizedKeysFile commented by vm-harness'; Set-Content -Path $cfg -Value $c -Encoding ASCII }; Start-Service sshd"</CommandLine>
+          <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Continue'; Set-Service -Name sshd -StartupType Automatic; $cfg='C:\ProgramData\ssh\sshd_config'; if (Test-Path $cfg) { $c = Get-Content $cfg; $c = $c -replace '^Match Group administrators.*','#Match Group administrators (commented by gosti)'; $c = $c -replace '^\s+AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys.*','#       AuthorizedKeysFile commented by gosti'; Set-Content -Path $cfg -Value $c -Encoding ASCII }; Start-Service sshd"</CommandLine>
           <Description>Enable + start sshd; neutralise admin-keys override</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
@@ -518,14 +518,14 @@
 
              The helper is idempotent, pins the PortableGit version and
              SHA-256, and writes
-             C:\Windows\Temp\vmh-git-provision-failed on failure
+             C:\Windows\Temp\gosti-git-provision-failed on failure
              (see README §"Verify before finalizing"). It deliberately
              exits 0 either way so a failure cannot wedge the rest of
              this chain, including the shutdown that signals
              install-complete to virt-install. -->
         <SynchronousCommand wcm:action="add">
           <Order>12</Order>
-          <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-git.ps1'; if (Test-Path -LiteralPath $p) { &amp; $p -Arch x64 } else { Set-Content -LiteralPath 'C:\Windows\Temp\vmh-git-provision-failed' -Value 'provision-git.ps1 not found on the autounattend ISO' -Encoding UTF8 -Force }; exit 0"</CommandLine>
+          <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-git.ps1'; if (Test-Path -LiteralPath $p) { &amp; $p -Arch x64 } else { Set-Content -LiteralPath 'C:\Windows\Temp\gosti-git-provision-failed' -Value 'provision-git.ps1 not found on the autounattend ISO' -Encoding UTF8 -Force }; exit 0"</CommandLine>
           <Description>Install Git for Windows on the machine PATH</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
@@ -570,14 +570,14 @@
              The helper is idempotent, pins the PowerShell version and
              SHA-256, verifies the checksum before extracting, proves
              the interpreter runs, and writes
-             C:\Windows\Temp\vmh-pwsh-provision-failed on failure. It
+             C:\Windows\Temp\gosti-pwsh-provision-failed on failure. It
              deliberately exits 0 either way so a failure cannot wedge
              the rest of this chain; build-sysprep-golden.sh runs
              ../lib/assert-pwsh-provisioned.ps1 as a hard gate before
              sysprep, which is what makes that safe. -->
         <SynchronousCommand wcm:action="add">
           <Order>14</Order>
-          <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-pwsh.ps1'; if (Test-Path -LiteralPath $p) { &amp; $p -Arch x64 } else { Set-Content -LiteralPath 'C:\Windows\Temp\vmh-pwsh-provision-failed' -Value 'provision-pwsh.ps1 not found on the autounattend ISO' -Encoding UTF8 -Force }; exit 0"</CommandLine>
+          <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-pwsh.ps1'; if (Test-Path -LiteralPath $p) { &amp; $p -Arch x64 } else { Set-Content -LiteralPath 'C:\Windows\Temp\gosti-pwsh-provision-failed' -Value 'provision-pwsh.ps1 not found on the autounattend ISO' -Encoding UTF8 -Force }; exit 0"</CommandLine>
           <Description>Install PowerShell 7 on the machine PATH</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
@@ -627,13 +627,13 @@
              (startAndAwaitReady) once provision returns. -->
         <SynchronousCommand wcm:action="add">
           <Order>18</Order>
-          <CommandLine>cmd.exe /c "shutdown /s /t 5 /c \"vm-harness FirstLogonCommands complete; signalling install-done to virt-install\""</CommandLine>
+          <CommandLine>cmd.exe /c "shutdown /s /t 5 /c \"gosti FirstLogonCommands complete; signalling install-done to virt-install\""</CommandLine>
           <Description>Shut down to signal install-complete to virt-install wait</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
       </FirstLogonCommands>
 
-      <RegisteredOwner>vm-harness</RegisteredOwner>
+      <RegisteredOwner>gosti</RegisteredOwner>
       <RegisteredOrganization>Metacraft Labs</RegisteredOrganization>
       <TimeZone>UTC</TimeZone>
     </component>

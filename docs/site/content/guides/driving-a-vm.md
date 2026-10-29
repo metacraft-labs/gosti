@@ -15,7 +15,7 @@ Import the umbrella module — it re-exports the public types, the backend
 constructors, the orchestrator, and the output envelope:
 
 ```nim
-import vm_harness
+import gosti
 ```
 
 ## The golden rule: whoever reverts must clean up
@@ -39,7 +39,7 @@ sequence in a `try/finally` with SIGINT handling, and finalizes the output
 envelope with the correct verdict no matter which step failed.
 
 ```nim
-import vm_harness, std/tables
+import gosti, std/tables
 
 let backend = newLibvirtBackend()                 # pick your backend
 let envelope = newOutputEnvelope("./out")         # standardized layout in ./out
@@ -69,7 +69,7 @@ then revert-exec-cleanup per gate — drive the primitives directly. The contrac
 is the same: pair each revert with a cleanup.
 
 ```nim
-import vm_harness, std/[options, tables]
+import gosti, std/[options, tables]
 
 let b = newLimaBackend(cpus = 2, memoryGiB = 2, diskGiB = 10)
 
@@ -116,7 +116,7 @@ per gate.
 Each backend has a `new<Name>Backend(...)` constructor with keyword arguments
 that default to the values a normal host uses. Override them to point at custom
 tool paths, credentials, images, or timeouts. Highlights (see each backend
-source under `src/vm_harness/backends/` for the complete signature):
+source under `src/gosti/backends/` for the complete signature):
 
 ```nim
 newLimaBackend(cpus = 2, memoryGiB = 2, diskGiB = 10, bootTimeoutSec = 240)
@@ -131,7 +131,7 @@ newTartBackend(guestOs = goLinux, goldenImage = "",
                sshUser = "admin", sshPassword = "admin")   # cirruslabs image defaults
 
 newIncusBackend(incusCmd = @["incus"],  # or @["sudo","-n","incus"]
-                baseImage = "vmh-base", storagePool = "default")
+                baseImage = "gosti-base", storagePool = "default")
 
 newHyperVBackend(vmName = "...")        # PowerShell Direct over VMBus
 newWslBackend(distroPrefix = "...", rootfsTarballPath = "...")
@@ -171,7 +171,7 @@ the library without constructing raw Incus keys or devices:
 ```nim
 let vm = incus.provisionEphemeralClone(EphemeralIncusSpec(
   name: "job-42",
-  baseImage: "vmh-linux-runner",
+  baseImage: "gosti-linux-runner",
   securityNesting: true,
   nestedKvm: true))
 ```
@@ -189,7 +189,7 @@ not values to deserialize from guest user-data or a workflow payload.
 - `cmd` is an argv sequence, not a shell string — wrap in `/bin/sh -c "..."`
   (POSIX guests) or the equivalent when you need shell parsing.
 - `timeoutSec` defaults to 600. On timeout the backend raises `TimeoutError`
-  (part of the `VmHarnessError` hierarchy).
+  (part of the `GostiError` hierarchy).
 
 ## Boot-time (serial) assertions
 

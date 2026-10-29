@@ -3,8 +3,8 @@
 ## Unit tests for CLI probe backend filtering.
 
 import std/unittest
-import vm_harness/cli
-import vm_harness/types
+import gosti/cli
+import gosti/types
 
 suite "cli probe backend selection":
   test "probe without --backend keeps the all-registered behavior":

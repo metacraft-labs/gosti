@@ -12,7 +12,7 @@
 # Inputs (must exist before running):
 #
 #   ./build/win11-arm64.iso           — produced by fetch-iso.sh (or
-#                                       VMH_WIN11_ARM_ISO override)
+#                                       GOSTI_WIN11_ARM_ISO override)
 #   ./build/autounattend.iso          — produced by build-autounattend-iso.sh
 #
 # Outputs:
@@ -28,19 +28,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
-BUNDLE_NAME="${VMH_GOLDEN_BUNDLE_NAME:-repro-windows-arm-base}"
+BUNDLE_NAME="${GOSTI_GOLDEN_BUNDLE_NAME:-repro-windows-arm-base}"
 BUNDLE_PATH="${BUILD_DIR}/${BUNDLE_NAME}.utm"
 DATA_DIR="${BUNDLE_PATH}/Data"
 DISK_PATH="${DATA_DIR}/disk.qcow2"
 CONFIG_PATH="${BUNDLE_PATH}/config.plist"
-DISK_SIZE="${VMH_GOLDEN_DISK_SIZE:-64G}"
+DISK_SIZE="${GOSTI_GOLDEN_DISK_SIZE:-64G}"
 
-WIN_ISO="${VMH_WIN11_ARM_ISO:-${BUILD_DIR}/win11-arm64.iso}"
+WIN_ISO="${GOSTI_WIN11_ARM_ISO:-${BUILD_DIR}/win11-arm64.iso}"
 UNATTEND_ISO="${BUILD_DIR}/autounattend.iso"
 
 if [[ ! -f "${WIN_ISO}" ]]; then
   echo "create-utm-bundle: Windows ISO not found at ${WIN_ISO}" >&2
-  echo "  run fetch-iso.sh first, or set VMH_WIN11_ARM_ISO to an existing ISO" >&2
+  echo "  run fetch-iso.sh first, or set GOSTI_WIN11_ARM_ISO to an existing ISO" >&2
   exit 1
 fi
 if [[ ! -f "${UNATTEND_ISO}" ]]; then
@@ -56,7 +56,7 @@ fi
 
 if [[ -d "${BUNDLE_PATH}" ]]; then
   echo "create-utm-bundle: ${BUNDLE_PATH} already exists. Remove it (or pass" \
-       "VMH_GOLDEN_BUNDLE_NAME=<other-name>) and re-run." >&2
+       "GOSTI_GOLDEN_BUNDLE_NAME=<other-name>) and re-run." >&2
   exit 1
 fi
 
@@ -80,7 +80,7 @@ cat > "${CONFIG_PATH}" <<EOF
   <key>Information</key>
   <dict>
     <key>Name</key><string>${BUNDLE_NAME}</string>
-    <key>Notes</key><string>vm-harness Windows-on-ARM golden bundle. Built via vm-harness/guest-recipes/windows-arm-base/.</string>
+    <key>Notes</key><string>gosti Windows-on-ARM golden bundle. Built via gosti/guest-recipes/windows-arm-base/.</string>
     <key>UUID</key><string>${UUID}</string>
     <key>IconCustom</key><false/>
   </dict>

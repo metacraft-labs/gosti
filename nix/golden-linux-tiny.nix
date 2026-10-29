@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
 # golden-linux-tiny — a minimal, fast-booting Linux golden image for the
-# libvirt per-job ephemeral-reset gate (`t_vmharness_libvirt_ephemeral_run`,
+# libvirt per-job ephemeral-reset gate (`t_gosti_libvirt_ephemeral_run`,
 # campaign M2).
 #
 # This is deliberately NOT the 81 GiB Windows golden. The per-job

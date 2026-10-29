@@ -2,7 +2,7 @@
 
 This recipe produces a golden UTM bundle named **`repro-windows-arm-base`**
 that the M3 `UtmBackend` clones per gate. The Nim backend
-(`src/vm_harness/backends/utm.nim`) consumes already-baked bundles; this
+(`src/gosti/backends/utm.nim`) consumes already-baked bundles; this
 directory is the documentation + scripts that produce one.
 
 ## What you get
@@ -65,7 +65,7 @@ containing:
   build is inside, just that the SSH contract is honored.
 - **You want a customized golden** — pass `--bundle-name <custom>` to
   the recipe and override `goldenBundleName` on `newUtmBackend(...)`
-  (or set `VMH_UTM_GOLDEN=<custom>` for the test suite).
+  (or set `GOSTI_UTM_GOLDEN=<custom>` for the test suite).
 
 ## Build steps
 
@@ -82,8 +82,8 @@ brew install --cask utm
 
 # QEMU (for the autounattend ISO assembly via mkisofs and for the
 # scripted first-boot install path via qemu-system-aarch64 -accel hvf).
-# Already provided by the vm-harness flake's dev shell on macOS.
-nix develop  # from the vm-harness repo root, OR:
+# Already provided by the gosti flake's dev shell on macOS.
+nix develop  # from the gosti repo root, OR:
 brew install qemu cdrtools
 ```
 
@@ -95,15 +95,15 @@ short-lived tokens, so the helper does not scrape it:
 
 ```bash
 ./fetch-iso.sh
-# If VMH_WIN11_ARM_ISO is set, links it to ./build/win11-arm64.iso.
+# If GOSTI_WIN11_ARM_ISO is set, links it to ./build/win11-arm64.iso.
 # Otherwise prints the official manual download URL and exits 2.
 ```
 
 Open <https://www.microsoft.com/en-us/software-download/windows11arm64>,
 download the ISO, then either place it at `./build/win11-arm64.iso` or
-set `VMH_WIN11_ARM_ISO` to its path and re-run `./fetch-iso.sh`.
+set `GOSTI_WIN11_ARM_ISO` to its path and re-run `./fetch-iso.sh`.
 
-If you already have a Windows 11 Arm64 ISO on disk, set `VMH_WIN11_ARM_ISO`
+If you already have a Windows 11 Arm64 ISO on disk, set `GOSTI_WIN11_ARM_ISO`
 to its path and the rest of the recipe will use it directly.
 
 ### 3. Cache the offline OpenSSH fallback and VirtIO network driver
@@ -124,7 +124,7 @@ ARM64 zip so the guest can install `sshd` entirely offline:
 The zip is about 5 MB and lives under `./build/`, which is ignored by
 git. Do not commit it. To use a pre-fetched copy instead, pass
 `--openssh-arm64-zip PATH` to `build-autounattend-iso.sh` or set
-`VMH_OPENSSH_ARM64_ZIP`.
+`GOSTI_OPENSSH_ARM64_ZIP`.
 
 Direct QEMU/HVF cached boots use a VirtIO network adapter
 (`virtio-net-device`) because Windows ARM does not reliably get an SSH
@@ -143,7 +143,7 @@ extract `NetKVM\w11\ARM64`:
 The tarball is about 1 MB and lives under `./build/`, which is ignored
 by git. To use a pre-extracted copy instead, pass
 `--virtio-netkvm-arm64-dir PATH` to `build-autounattend-iso.sh` or set
-`VMH_VIRTIO_NETKVM_ARM64_DIR`.
+`GOSTI_VIRTIO_NETKVM_ARM64_DIR`.
 
 Cache the pinned Git for Windows (PortableGit) arm64 archive as well:
 
@@ -157,7 +157,7 @@ which is the single source of truth shared with `windows-x64-base`.
 Fetching host-side is optional — with nothing staged the guest downloads
 the same pinned asset and verifies the same checksum — but staging keeps
 the build working offline. To use a copy from elsewhere, pass
-`--portable-git PATH` or set `VMH_PORTABLE_GIT_ARCHIVE`.
+`--portable-git PATH` or set `GOSTI_PORTABLE_GIT_ARCHIVE`.
 
 ### 4. Assemble the autounattend ISO
 
@@ -213,8 +213,8 @@ desktop and the `repro-install-done` marker file appears at
 If the desktop appears but the marker is absent, inspect:
 
 ```text
-C:\Windows\Temp\vmh-openssh-provision.log
-C:\Windows\Temp\vmh-openssh-provision-failed
+C:\Windows\Temp\gosti-openssh-provision.log
+C:\Windows\Temp\gosti-openssh-provision-failed
 ```
 
 If a NetKVM directory was staged but `pnputil` fails, the failure file
@@ -244,7 +244,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 either passes or fails loudly; it is not a checklist to eyeball. It
 asserts:
 
-- no `C:\Windows\Temp\vmh-git-provision-failed` marker (dumps the log
+- no `C:\Windows\Temp\gosti-git-provision-failed` marker (dumps the log
   tail if present);
 - the **raw** machine `PATH` registry value contains `C:\PortableGit\bin`
   — the value that survives capture and reaches the runner service on
@@ -306,12 +306,12 @@ utmctl status repro-windows-arm-base
 ### 8. Run a smoke test
 
 ```bash
-# From the vm-harness repo root.
+# From the gosti repo root.
 nimble test
 ```
 
-The M3 verification tests (`tests/e2e/t_vm_harness_utm_windows_arm_smoke.nim`
-and `tests/e2e/t_vm_harness_utm_windows_dism_works_under_prism.nim`)
+The M3 verification tests (`tests/e2e/t_gosti_utm_windows_arm_smoke.nim`
+and `tests/e2e/t_gosti_utm_windows_dism_works_under_prism.nim`)
 should now run end-to-end against the golden — clone, boot, SSH in,
 exec hostname / DISM, PASS, delete the ephemeral.
 
@@ -324,7 +324,7 @@ nimble buildCli
 scripts/qemu-windows-arm-cached-boot-smoke.sh /path/to/windows-arm-vm-dir
 
 # Equivalent direct harness invocation:
-build/bin/vm-harness run \
+build/bin/gosti run \
   --backend qemu-windows-arm \
   --guest windows \
   --baseline /path/to/windows-arm-vm-dir \
@@ -333,8 +333,8 @@ build/bin/vm-harness run \
 ```
 
 The QEMU backend creates an ephemeral APFS clone/copy under
-`VM_HARNESS_QEMU_WINDOWS_ARM_STATE_DIR` (default:
-`~/.local/state/vm-harness/qemu-windows-arm`) before booting, so the
+`GOSTI_QEMU_WINDOWS_ARM_STATE_DIR` (default:
+`~/.local/state/gosti/qemu-windows-arm`) before booting, so the
 golden `windows.qcow2` is not mutated.
 
 ## Total wall-clock
@@ -381,7 +381,7 @@ built, every per-gate revert is the harness's ≤20s clone budget.
   qemus/virtiso-arm ARM64 `virtio-win-0.1.285.tar.xz` release asset,
   then extracts `NetKVM/w11/ARM64` into `./build/virtio/` for offline
   guest driver install.
-- `fetch-iso.sh` — validates `VMH_WIN11_ARM_ISO` (or an already-present
+- `fetch-iso.sh` — validates `GOSTI_WIN11_ARM_ISO` (or an already-present
   `./build/win11-arm64.iso`) or points at the official Microsoft
   Windows 11 Arm64 ISO page. Also validates the ISO carries a UEFI
   (EFI) El Torito boot record (via `xorriso`): a BIOS-only ISO is

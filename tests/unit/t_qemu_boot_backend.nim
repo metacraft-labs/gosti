@@ -15,7 +15,7 @@
 ## which drive a synthetic guest under a real QEMU.
 
 import std/[os, strutils, tables, tempfiles, unittest]
-import vm_harness
+import gosti
 
 when defined(posix):
   import std/[net, posix]
@@ -37,7 +37,7 @@ proc baseLaunch(): QemuBootLaunch =
     vmName: "repro-test-boot-qemu-1-abc",
     diskPath: "/tmp/overlay.qcow2",
     diskFormat: "qcow2",
-    serialSocketPath: "/tmp/vmh-qb-1.sock",
+    serialSocketPath: "/tmp/gosti-qb-1.sock",
     serialLogPath: "/tmp/artifacts/serial.log",
     qemuLogPath: "/tmp/run/qemu-trace.log",
     cpus: 2,
@@ -67,7 +67,7 @@ suite "qemu_boot argv":
     check idx(args, "-no-reboot") >= 0
     let chardev = valueAfter(args, "-chardev")
     check chardev.startsWith("socket,id=serial0,")
-    check "path=/tmp/vmh-qb-1.sock" in chardev
+    check "path=/tmp/gosti-qb-1.sock" in chardev
     check "server=on,wait=off" in chardev
     check "logfile=/tmp/artifacts/serial.log" in chardev
     check valueAfter(args, "-serial") == "chardev:serial0"
@@ -163,7 +163,7 @@ suite "qemu_boot naming":
     check ("-" & $getCurrentProcessId() & "-") in ("-" & name[15 .. ^1])
 
   test "a name outside the backend prefix is refused":
-    let dir = createTempDir("vmh-qemu-boot-unit-", "")
+    let dir = createTempDir("gosti-qemu-boot-unit-", "")
     defer: removeDir(dir)
     let media = dir / "disk.qcow2"
     writeFile(media, "not-a-real-image")
@@ -473,5 +473,5 @@ suite "shared OVMF resolution":
 
   test "the remediation text names the environment overrides":
     let text = describeOvmfSearch()
-    check "VMH_OVMF_CODE" in text
-    check "VMH_OVMF_VARS" in text
+    check "GOSTI_OVMF_CODE" in text
+    check "GOSTI_OVMF_VARS" in text

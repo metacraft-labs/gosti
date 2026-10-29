@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## Pure reprobuild graph for vm-harness.
+## Pure reprobuild graph for gosti.
 ##
 ## The default collection builds the shipping CLI and benchmark. The test
 ## collection builds and executes the deterministic, host-independent suite on
@@ -23,20 +23,20 @@ when defined(linux):
   import repro_dsl_stdlib/packages/pcre_config
   import ./repro_support/swtpm
 
-# TI2 producer-surface declaration: vm-harness's resource providers live in a
-# SEPARATE module (`src/vm_harness/repro/resources.nim`, re-authored via the RP4
+# TI2 producer-surface declaration: gosti's resource providers live in a
+# SEPARATE module (`src/gosti/repro/resources.nim`, re-authored via the RP4
 # `resourceType` macro for RP5c1), NOT inline in this `repro.nim`. This marker
 # NAMES that module + the extra `--path` its imports need, so a consumer that
-# `uses: "vm-harness"` is routed to the driver-free interface-artifact accessor
+# `uses: "gosti"` is routed to the driver-free interface-artifact accessor
 # splice (TI2): detection reads it TEXTUALLY, the interface lift compiles the
 # module with the declared `--path`, and the accessor-cache freshness folds the
 # module's import closure in. It expands to NOTHING — this `repro.nim` imports
 # only `repro_project_dsl`, so the core `just build` never pulls in the resource
 # module's incus-backend driver closure (the RP5c1 reprobuild-free invariant).
-resourceModule "src/vm_harness/repro/resources.nim":
+resourceModule "src/gosti/repro/resources.nim":
   path "src"
 
-package vm_harness:
+package gosti:
   devEnv:
     when not defined(windows):
       useFlakeDevShell()
@@ -82,20 +82,20 @@ package vm_harness:
 
   runtimeDeps:
     when defined(linux):
-      "vmHarnessPcre"
-      "vmHarnessVirsh"
-      "vmHarnessVirtInstall"
-      "vmHarnessQemuImg"
-      "vmHarnessSsh"
-      "vmHarnessSshpass"
+      "gostiPcre"
+      "gostiVirsh"
+      "gostiVirtInstall"
+      "gostiQemuImg"
+      "gostiSsh"
+      "gostiSshpass"
 
-  library vm_harness
+  library gosti
 
-  executable vmHarness:
-    name: "vm-harness"
+  executable gosti:
+    name: "gosti"
 
   executable snapshotRevertBench:
-    name: "vm-harness-bench-snapshot-revert"
+    name: "gosti-bench-snapshot-revert"
 
   build:
     const backendCompiler = (when defined(macosx): "clang" else: "gcc")
@@ -104,17 +104,17 @@ package vm_harness:
     const testBinDir = "build/test-bin/"
 
     let cliBuild = nim.c(
-      source = "src/vm_harness/cli.nim",
-      binary = binDir & "vm-harness" & exeSuffix,
+      source = "src/gosti/cli.nim",
+      binary = binDir & "gosti" & exeSuffix,
       extraInputs = @["src", "config.nims", "guest-scripts", "guest-recipes"],
-      actionId = "vm_harness.cli.build")
+      actionId = "gosti.cli.build")
     when defined(linux):
       appendRegisteredActionToolIdentityRefs(cliBuild.id, ["pcre-config", "uname"])
     let benchBuild = nim.c(
       source = "tools/bench/snapshot_revert_bench.nim",
-      binary = binDir & "vm-harness-bench-snapshot-revert" & exeSuffix,
+      binary = binDir & "gosti-bench-snapshot-revert" & exeSuffix,
       extraInputs = @["src", "config.nims", "tools", "guest-scripts", "guest-recipes"],
-      actionId = "vm_harness.snapshot_revert_bench.build")
+      actionId = "gosti.snapshot_revert_bench.build")
     when defined(linux):
       appendRegisteredActionToolIdentityRefs(benchBuild.id, ["pcre-config", "uname"])
     discard collect("default", @[cliBuild, benchBuild])
@@ -127,7 +127,7 @@ package vm_harness:
       # realization explicitly, and passes the output path to the real TPM gate.
       let tpmGuest = shell(
         "nix build .#guest-linux-tpm --out-link build/test-tpm-guest",
-        actionId = "vm_harness.test_tpm_guest",
+        actionId = "gosti.test_tpm_guest",
         extraInputs = @["flake.nix", "flake.lock", "nix/guest-linux-tpm.nix"],
         extraOutputs = @["build/test-tpm-guest"])
       appendRegisteredActionToolIdentityRefs(tpmGuest.id, ["nix"])
@@ -140,13 +140,13 @@ package vm_harness:
       let edge = buildNimUnittest.build(
         source = spec.source,
         binary = output,
-        # vm_harness.nimble is an input because the MA3 golden-build gate
+        # gosti.nimble is an input because the MA3 golden-build gate
         # asserts that the version it stamps into every golden manifest is
         # still the package version — a drift guard that has to be able to
         # read the package version.
         extraInputs = @["src", "config.nims", "guest-scripts", "guest-recipes",
-                        "vm_harness.nimble", "tests", "scripts", "docs"],
-        actionId = "vm_harness.test_build." & spec.binary)
+                        "gosti.nimble", "tests", "scripts", "docs"],
+        actionId = "gosti.test_build." & spec.binary)
       # The unittest adapter does not register Nim's C compiler itself.
       appendRegisteredActionToolIdentityRefs(edge.action.id, [backendCompiler])
       when defined(linux):
@@ -164,9 +164,9 @@ package vm_harness:
         if spec.binary == "t_guest_sees_tpm_device":
           executionAfter.add(tpmGuest)
           executionInputs.add("build/test-tpm-guest")
-          executionEnv.add(("VMH_TPM_GUEST_DIR", "build/test-tpm-guest"))
+          executionEnv.add(("GOSTI_TPM_GUEST_DIR", "build/test-tpm-guest"))
       let execute = binary.run(
-        actionId = "vm_harness.test_execute." & spec.binary,
+        actionId = "gosti.test_execute." & spec.binary,
         after = executionAfter,
         extraInputs = executionInputs,
         extraEnv = executionEnv,
@@ -188,7 +188,7 @@ package vm_harness:
           ["pcre-config", "uname", "swtpm"])
       executeActions.add(execute)
       run("test-" & spec.binary, build = execute.id,
-        owningPackage = "vm_harness")
+        owningPackage = "gosti")
 
     # The provider snapshot must be invalidated when the shared catalog or
     # its source inventory changes, including an unregistered new program.
@@ -204,7 +204,7 @@ package vm_harness:
     # their existing deadlines; the same monitored actions pass in isolation.
     # Finish compilation and the other tests first, then run these one at a time.
     # Monitoring, time limits and every assertion remain exactly the same.
-    const timingTests = ["t_tart_backend", "t_vmharness_serve_concurrency"]
+    const timingTests = ["t_tart_backend", "t_gosti_serve_concurrency"]
     for timingPhase in [false, true]:
       for program in testPrograms:
         if (program.spec.binary in timingTests) == timingPhase:
@@ -224,7 +224,7 @@ when defined(linux):
         nixpkgsRev = CanonicalNixpkgsRev,
         nixpkgsNarHash = CanonicalNixpkgsNarHash
 
-  package vmHarnessPcre:
+  package gostiPcre:
     provisioning:
       nixPackage "nixpkgs#pcre.out", executablePath = "lib/libpcre.so",
         nixpkgsRev = CanonicalNixpkgsRev,
@@ -232,7 +232,7 @@ when defined(linux):
 
     library pcre
 
-  package vmHarnessVirsh:
+  package gostiVirsh:
     provisioning:
       nixPackage "nixpkgs#libvirt", executablePath = "bin/virsh",
         nixpkgsRev = CanonicalNixpkgsRev,
@@ -241,7 +241,7 @@ when defined(linux):
     executable virsh:
       name: "virsh"
 
-  package vmHarnessVirtInstall:
+  package gostiVirtInstall:
     provisioning:
       nixPackage "nixpkgs#virt-manager", executablePath = "bin/virt-install",
         nixpkgsRev = CanonicalNixpkgsRev,
@@ -250,7 +250,7 @@ when defined(linux):
     executable virtInstall:
       name: "virt-install"
 
-  package vmHarnessQemuImg:
+  package gostiQemuImg:
     provisioning:
       nixPackage "nixpkgs#qemu", executablePath = "bin/qemu-img",
         nixpkgsRev = CanonicalNixpkgsRev,
@@ -259,7 +259,7 @@ when defined(linux):
     executable qemuImg:
       name: "qemu-img"
 
-  package vmHarnessSsh:
+  package gostiSsh:
     provisioning:
       nixPackage "nixpkgs#openssh", executablePath = "bin/ssh",
         nixpkgsRev = CanonicalNixpkgsRev,
@@ -268,7 +268,7 @@ when defined(linux):
     executable ssh:
       name: "ssh"
 
-  package vmHarnessSshpass:
+  package gostiSshpass:
     provisioning:
       nixPackage "nixpkgs#sshpass", executablePath = "bin/sshpass",
         nixpkgsRev = CanonicalNixpkgsRev,

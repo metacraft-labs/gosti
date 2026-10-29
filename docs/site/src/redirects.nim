@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## vm-harness docs -- legacy-URL redirect generation.
+## gosti docs -- legacy-URL redirect generation.
 ##
 ## The CodeTracer book carries meta-refresh stubs for its old mdBook `*.html`
-## deep links. vm-harness's user guide was never published under a different
+## deep links. gosti's user guide was never published under a different
 ## URL scheme (it is being migrated straight from in-repo Markdown to this
 ## isonim-docs site), so there are NO legacy URLs to preserve today.
 ##

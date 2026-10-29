@@ -47,7 +47,7 @@
 ## reporting a number that would be quietly mislabelled.
 
 import std/[json, os, sequtils, algorithm, strutils, times]
-import vm_harness
+import gosti
 
 type
   BenchOpts = object
