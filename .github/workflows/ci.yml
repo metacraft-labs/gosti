@@ -34,8 +34,7 @@ concurrency:
 jobs:
   choose-macos:
     # Native macOS jobs retain their full gates while the fleet repair lands.
-    # Owner: zah. Follow-up: metacraft-specs/issues/
-    # 2026-09-28-shared-macos-host-has-no-headroom-for-runquota-measurements.md
+    # Owner: zah. The follow-up is tracked internally.
     uses: metacraft-labs/devops-modules/.github/workflows/reusable-choose-runner.yml@cd73eba732b9190499ec78e1e65b0dd784507440
     with:
       preferred: macos-26
@@ -104,7 +103,7 @@ jobs:
       matrix:
         runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
     # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
-    # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
+    # The follow-up is tracked internally.
     runs-on: ${{ contains(matrix.runner, 'macos') && fromJSON(needs.choose-macos.outputs.runs_on) || contains(matrix.runner, 'linux') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-linux.outputs.runs_on) || (contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner) }}
     steps:
       - uses: actions/checkout@v4
@@ -145,7 +144,7 @@ jobs:
       matrix:
         runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
     # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
-    # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
+    # The follow-up is tracked internally.
     runs-on: ${{ contains(matrix.runner, 'macos') && fromJSON(needs.choose-macos.outputs.runs_on) || contains(matrix.runner, 'linux') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-linux.outputs.runs_on) || (contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner) }}
     steps:
       - uses: actions/checkout@v4
@@ -186,7 +185,7 @@ jobs:
       matrix:
         runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
     # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
-    # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
+    # The follow-up is tracked internally.
     runs-on: ${{ contains(matrix.runner, 'macos') && fromJSON(needs.choose-macos.outputs.runs_on) || contains(matrix.runner, 'linux') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-linux.outputs.runs_on) || (contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner) }}
     steps:
       - uses: actions/checkout@v4

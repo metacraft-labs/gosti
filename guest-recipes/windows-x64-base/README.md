@@ -201,9 +201,8 @@ Inside the vm-harness dev shell (`nix develop`):
 which virsh virt-install qemu-img genisoimage curl
 ```
 
-If you're on `high-mem-server`, libvirtd is already enabled (see
-`infra/machines/server/high-mem-server/configuration.nix`); on any
-other Linux host:
+If you're on `high-mem-server`, libvirtd is already enabled; on any other
+Linux host:
 
 ```bash
 sudo systemctl enable --now libvirtd

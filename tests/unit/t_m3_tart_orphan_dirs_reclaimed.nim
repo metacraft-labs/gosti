@@ -396,8 +396,8 @@ suite "t_m3_tart_orphan_dirs_reclaimed: the CLI surface a scheduled sweeper uses
 
   test "--tart-vms-dir + --dry-run --log-format json reports the new fields":
     # A host sweeper is declared in nix and never watched, so its output has
-    # to be machine-readable. This asserts the exact contract that gate
-    # `t_m3_host_hygiene_is_declared` (metacraft-labs/infra) probes for.
+    # to be machine-readable. This asserts the exact contract that the CI
+    # fleet's host-hygiene gate probes for.
     let root = createTempDir("vmh-ma7-cli-", "")
     defer: removeDir(root)
     let vmsDir = root / "vms"

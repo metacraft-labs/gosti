@@ -108,7 +108,7 @@ test posix tests/unit/t_qemu_windows_arm_disk_size.nim
 # Runner-Fleet-M3-ARM-Wave MA0 gate: t_vmharness_image_is_honoured, assertion
 # (c) — a registry-constructed tart backend with no image configured RAISES
 # rather than substituting a default. Assertions (a) and (b) are provider-side
-# and are run by the nix check of the same name in metacraft-labs/nixos-modules.
+# and are run by the nix check of the same name in metacraft-labs/devops-modules.
 test all tests/unit/t_vmharness_image_is_honoured.nim
 test all tests/unit/t_lima_backend.nim
 test all tests/unit/t_prune.nim
