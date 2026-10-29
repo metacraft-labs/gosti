@@ -344,6 +344,55 @@ when defined(linux):
         for ms in slept: check ms <= 30_000
       check readFile(work / "containers") == "garm-stuck,STOPPED\n"
 
+    # A pin that outlives the budget is another mount namespace holding the
+    # rootfs (ncb003, 2026-10-26..28: leaked `unshare -rnm` probes, 8 slots).
+    # This process cannot see other namespaces; the host's root guard can, and
+    # publishes them. The error must name the holder when the guard has.
+    test "a busy delete that outlives the budget names the holder the guard found":
+      let work = createTempDir("vmh-eph-destroy-pinned", "")
+      defer: removeDir(work)
+      writeFile(work / "containers", "garm-pinned,STOPPED\n")
+      writeFile(work / "pins.json", """{"generated": 0, "success": true, "pins": [
+        {"container": "garm-other", "namespace": "mnt:[1]", "kind": "process",
+         "pid": 1, "comm": "x", "uid": 0, "unit": "x.service", "age_seconds": 1},
+        {"container": "garm-pinned", "namespace": "mnt:[4026535684]", "kind": "process",
+         "pid": 3191976, "comm": "ah", "uid": 1007, "unit": "agent-harbor-cred.scope",
+         "age_seconds": 172800}]}""")
+      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 1000)):
+        withEnv("VMH_INCUS_BUSY_DATASET_REPORT", work / "pins.json"):
+          let ib = IncusBackend(newIncusBackend(@[work / "incus"]))
+          var msg = ""
+          try:
+            ib.destroyContainerVerified("garm-pinned", budgetSec = 10,
+              sleeper = proc (ms: int) = discard)
+          except CatchableError as e:
+            msg = e.msg
+          check "dataset is busy" in msg
+          check "held by mount namespace mnt:[4026535684] (process: pid 3191976 ah, uid 1007, unit agent-harbor-cred.scope, age 172800s)" in msg
+          check "garm-other" notin msg
+          check "x.service" notin msg
+
+    test "without a guard report the busy error is unchanged":
+      let work = createTempDir("vmh-eph-destroy-noreport", "")
+      defer: removeDir(work)
+      writeFile(work / "containers", "garm-pinned,STOPPED\n")
+      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 1000)):
+        withEnv("VMH_INCUS_BUSY_DATASET_REPORT", work / "absent.json"):
+          check busyDatasetHolders("garm-pinned") == ""
+          let ib = IncusBackend(newIncusBackend(@[work / "incus"]))
+          var msg = ""
+          try:
+            ib.destroyContainerVerified("garm-pinned", budgetSec = 10,
+              sleeper = proc (ms: int) = discard)
+          except CatchableError as e:
+            msg = e.msg
+          check "dataset is busy" in msg
+          check "held by" notin msg
+        # A malformed report enriches nothing and never raises.
+        writeFile(work / "bad.json", "{not json")
+        withEnv("VMH_INCUS_BUSY_DATASET_REPORT", work / "bad.json"):
+          check busyDatasetHolders("garm-pinned") == ""
+
     # ── H7: teardown ORDERING ────────────────────────────────────────────────
     #
     # `delete --force` folds the stop into the delete, so incusd races its own

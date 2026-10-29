@@ -46,7 +46,7 @@
 ## returns false on non-Linux hosts / when ``incus`` is absent.
 
 import ../env_names
-import std/[options, os, osproc, streams, strtabs,
+import std/[json, options, os, osproc, streams, strtabs,
             strutils, tables, times]
 import ../types
 import ../auto
@@ -487,6 +487,43 @@ proc containerPresent(b: IncusBackend, name: string): bool =
     if e.name == name: return true
   false
 
+const
+  DefaultBusyDatasetReport* = "/run/incus-busy-dataset-guard/pins.json"
+    ## Where the host's incus-busy-dataset-guard (infra
+    ## services/incus-busy-dataset-guard.nix, a root timer) publishes which
+    ## mount namespaces hold which container datasets. World-readable, so this
+    ## unprivileged process can name a holder it could never find itself:
+    ## finding one means reading every namespace's mount table as root.
+    ## Overridable with ``VMH_INCUS_BUSY_DATASET_REPORT``.
+
+proc busyDatasetHolders*(name: string): string =
+  ## One line naming what pins container ``name``'s dataset, from the guard's
+  ## report; "" when the host runs no guard, the report is unreadable, or it
+  ## lists no holder for ``name``. Never raises: this only enriches an error.
+  let path = gostiEnv("VMH_INCUS_BUSY_DATASET_REPORT", DefaultBusyDatasetReport)
+  if path.len == 0 or not fileExists(path):
+    return ""
+  try:
+    let report = parseFile(path)
+    var parts: seq[string]
+    for pin in report{"pins"}.getElems():
+      if pin{"container"}.getStr() != name:
+        continue
+      var who = pin{"namespace"}.getStr() & " (" & pin{"kind"}.getStr()
+      if pin.hasKey("pid"):
+        who.add(": pid " & $pin{"pid"}.getInt() & " " & pin{"comm"}.getStr() &
+          ", uid " & $pin{"uid"}.getInt() & ", unit " & pin{"unit"}.getStr() &
+          ", age " & $pin{"age_seconds"}.getInt() & "s")
+      who.add(")")
+      parts.add(who)
+    if parts.len == 0:
+      return ""
+    let age = int(epochTime()) - report{"generated"}.getInt()
+    result = "held by mount namespace " & parts.join("; ") &
+      " per " & path & " (" & $age & "s old)"
+  except CatchableError:
+    result = ""
+
 proc destroyContainerVerified*(b: IncusBackend, name: string;
                                budgetSec = DefaultDestroyBudgetSec;
                                sleeper: proc (ms: int) = nil) =
@@ -586,10 +623,17 @@ proc destroyContainerVerified*(b: IncusBackend, name: string;
     doSleep(delayMs)
     sleptMs += delayMs
     delayMs = min(delayMs * 2, 30_000)
+  # A busy dataset that outlives the budget is almost never a teardown race:
+  # another mount namespace holds a copy of the rootfs. Name it when the host's
+  # guard has, so the provider's log (and GARM's) says what to end.
+  var holders = ""
+  if "dataset is busy" in lastOutput.toLowerAscii():
+    holders = busyDatasetHolders(name)
   raise newVmHarnessError($b.id, lpCleanup,
     "incus delete " & name & " did not complete after " & $attempt &
     " attempt(s) in " & $budgetSec & "s; the container still exists " &
-    "(last output: " & lastOutput & ")")
+    "(last output: " & lastOutput & ")" &
+    (if holders.len > 0: "; " & holders else: ""))
 
 proc startContainer*(b: IncusBackend, name: string) =
   ## Start an existing container without replacing it. Already-running is a
