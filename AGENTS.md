@@ -70,9 +70,9 @@ the additive five-class catalog spanning Linux x64/ARM64, macOS ARM64, and
 Windows x64/ARM64. Backend tests that require a real hypervisor live behind
 `just test-host` and must keep an explicit platform and prerequisite guard. Do
 not turn a missing prerequisite into claimed coverage.
-The production host-level gates are maintained in `metacraft-labs/infra`:
-`checks/t_vmharness_tart_ephemeral_run.sh`, `checks/t_m3_arm_ephemeral.sh`, and
-`checks/t_windows_sysprep_golden.sh`.
+Three production host-level gates run outside this repository, against the CI
+fleet's hosts: a Tart ephemeral run, a Linux-ARM ephemeral run, and a check
+that the Windows golden is sysprepped.
 
 ## Three-tier ownership (what belongs here vs. in a consumer)
 
@@ -89,6 +89,5 @@ push their logic down into it:
 
 vm-harness never imports Tier 2 or Tier 3 code.
 
-Follow the shared policies in `metacraft-labs/metacraft-dev-guidelines`,
-especially `policies/repo-requirements.md`,
-`policies/ci-workflow-standards.md`, and `policies/writing-nix-flakes.md`.
+Follow the organisation's shared development policies, especially its
+repository requirements, CI workflow standards and Nix flake conventions.

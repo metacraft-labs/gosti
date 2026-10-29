@@ -4,7 +4,7 @@
 # THE MCL STANDARD HOOK SET (`mcl-standard-hooks`), portable committed form --
 # PARTIAL ADOPTION, AND THE SHORTFALL IS STATED RATHER THAN HIDDEN.
 #
-# metacraft-dev-guidelines/policies/repo-requirements.md §4 requires the whole
+# The organisation's shared repository requirements (§4) require the whole
 # set, so this file is a RECORDED SHORTFALL, not a claim of compliance. What it
 # carries is the committed-binaries tier of §4.3 -- the two mandatory refusals.
 # What it does not carry is the formatting tier, for the reason below.

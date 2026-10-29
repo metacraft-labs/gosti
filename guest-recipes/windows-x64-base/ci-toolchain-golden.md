@@ -43,8 +43,8 @@ OS settings.
 | C: grown by `VMH_GROW_DISK_GB` (default +80 GiB) | **base** | Rust target directories are large. Growth only happens if no partition sits after C:. The build log records the outcome. |
 | WinFsp (`WINFSP_VERSION`) | **project: agent-harbor. Move to an AH5 starting point.** | A kernel-mode driver, so it cannot come from a store. Only agent-harbor's AgentHarborFS tests need it. It is in the base for now because agent-harbor's workflow has no install step for it and fails loudly without it. |
 
-The base and project split follows AH5 in reprobuild-specs
-`Sovereign-CI-Fleet-And-GOSTI-Substrate.milestones.org`. The golden is the
+The base and project split follows the CI fleet's plan for per-project
+starting points (AH5). The golden is the
 shared base for every org's Windows runners. Anything only one project needs
 belongs in that project's starting point, a snapshot over the shared base. To
 build a base without WinFsp, drop the WinFsp step once the AH5 starting point

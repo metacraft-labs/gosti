@@ -47,9 +47,8 @@
 #
 # So the binary has to be in the image. This is also the shape the fleet has
 # already proven: the persistent (non-GARM) Windows runner installs the same
-# pinned PowerShell 7 ZIP to the same `C:\pwsh` -- see
-# infra/machines/server/_windows-runner-001/system_windows_runner.nim, whose
-# comment records the motivating incident (codetracer-cairo-recorder
+# pinned PowerShell 7 ZIP to the same `C:\pwsh`. The motivating incident was
+# a missing pwsh in a Windows job (codetracer-cairo-recorder
 # `ci-windows-diy`, 2026-07-03, `pwsh: command not found`). The ephemeral fleet
 # simply never got the same treatment.
 #

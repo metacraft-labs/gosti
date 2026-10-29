@@ -51,8 +51,7 @@
 # PortableGit is the self-contained 7-Zip self-extractor Git for Windows ships
 # alongside the Inno Setup installer. It needs no MSI/Inno plumbing, leaves no
 # uninstall state, and lets us decide exactly which directories reach PATH.
-# It is also what the persistent (non-GARM) runner already uses -- see
-# infra/machines/server/_win-ci-vm-001/system_windows_runner.nim -- so this is
+# It is also what the persistent (non-GARM) runner already uses, so this is
 # the fleet's proven shape, not a new one.
 #
 # `<InstallDir>\bin` contains only three files: bash.exe, sh.exe and git.exe,

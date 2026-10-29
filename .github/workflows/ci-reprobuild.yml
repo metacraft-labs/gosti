@@ -30,8 +30,7 @@ jobs:
 
   choose-windows-arm:
     # Existing x64-emulation suite on a native ARM64 host; no backend port.
-    # Temporary migration owner: zah. Follow-up: metacraft-specs/issues/
-    # 2026-09-29-windows-arm64-release-runner-migration.md
+    # Temporary migration owner: zah. The follow-up is tracked internally.
     uses: metacraft-labs/devops-modules/.github/workflows/reusable-choose-runner.yml@146ea35853f859bcf78cc5da7fa53705a825da30
     with:
       preferred: windows-11-arm
@@ -39,8 +38,7 @@ jobs:
 
   choose-macos:
     # Native macOS jobs retain their full gates while the fleet repair lands.
-    # Owner: zah. Follow-up: metacraft-specs/issues/
-    # 2026-09-28-shared-macos-host-has-no-headroom-for-runquota-measurements.md
+    # Owner: zah. The follow-up is tracked internally.
     uses: metacraft-labs/devops-modules/.github/workflows/reusable-choose-runner.yml@146ea35853f859bcf78cc5da7fa53705a825da30
     with:
       preferred: macos-26
@@ -67,10 +65,10 @@ jobs:
           - [self-hosted, windows, x64]
           - [self-hosted, windows, arm64]
     # Source bootstrap exceeds the current Tart guest's writable storage.
-    # The native nix-darwin class retains every test; owner zah, follow-up:
-    # metacraft-specs/issues/2026-09-29-macos-tart-source-bootstrap-exhausts-guest-disk.md
+    # The native nix-darwin class retains every test; owner zah. The follow-up
+    # is tracked internally.
     # Temporary native Linux ARM64 migration for this build/test job; owner: zah.
-    # Follow-up: metacraft-specs/issues/2026-09-28-release-linux-arm64-runner-migration.md
+    # The follow-up is tracked internally.
     runs-on: ${{ contains(matrix.runner, 'windows') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-windows.outputs.runs_on) || contains(matrix.runner, 'windows') && contains(matrix.runner, 'arm64') && fromJSON(needs.choose-windows-arm.outputs.runs_on) || contains(matrix.runner, 'macos') && fromJSON(needs.choose-macos.outputs.runs_on) || contains(matrix.runner, 'linux') && contains(matrix.runner, 'x64') && fromJSON(needs.choose-linux.outputs.runs_on) || (contains(matrix.runner, 'linux') && contains(matrix.runner, 'arm64') && 'ubuntu-24.04-arm' || matrix.runner) }}
     env:
       # Reprobuild and its monitor currently target x64 on Windows, including

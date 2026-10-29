@@ -143,9 +143,9 @@ privilege to the container.
 
 :::note
 Where these are defined. These options are the NixOS `services.garm`
-provider surface, defined in the shared `metacraft-labs/nixos-modules` GARM
-module (`modules/garm/default.nix`), and set by a consumer such as
-`infra/services/garm-incus-runners.nix`. They are documented here because they
+provider surface, defined in the shared `metacraft-labs/devops-modules` GARM
+module (`modules/garm/default.nix`), and set by the deployment that runs the
+runner pools. They are documented here because they
 are the run-time half of Gosti's runner-image feature contract — the two
 only work as a pair. Set them in the consumer's NixOS config, not in
 Gosti. All are ignored by non-incus providers.

@@ -28,8 +28,8 @@
 ## get --format json`` reports the same ``Disk`` field real Tart prints, and
 ## ``tart set --disk-size`` refuses to shrink as real Tart does — and record
 ## every invocation so the test asserts on the argv the backend really issued.
-## The real-Tart counterpart is the host gate
-## ``checks/t_vmharness_tart_ephemeral_run.sh`` in metacraft-labs/infra.
+## The real-Tart counterpart is the CI fleet's Tart ephemeral-run host gate,
+## which runs outside this repository.
 
 import std/[json, os, strutils, tables, tempfiles, unittest]
 import ../native_command_fixture

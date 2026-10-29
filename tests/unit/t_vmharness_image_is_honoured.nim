@@ -3,7 +3,7 @@
 ## Runner-Fleet-M3-ARM-Wave MA0 gate: ``t_vmharness_image_is_honoured``.
 ##
 ## The gate has three assertions. Two of them are provider-side (Go) and live
-## in ``metacraft-labs/nixos-modules``:
+## in ``metacraft-labs/devops-modules``:
 ##
 ##   (a) the local-exec provider passes the configured image on the flag
 ##       vm-harness actually resolves from

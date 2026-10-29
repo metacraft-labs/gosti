@@ -98,9 +98,8 @@ build-golden-hyperv.ps1 -WindowsIso ... -AutounattendIso ... -DisableDefender
 The default is Defender *enabled*. Stripping AV is not something a golden
 build should do unasked, and this is a product recipe with uses beyond the
 CI pool — so the pool opts in explicitly and a general-purpose golden keeps
-its antivirus. The catch to remember: the pool's PM6 selftest
-(`infra/.github/workflows/pm6-hyperv-pool-selftest.yml`) asserts Defender is
-off, so a pool golden built **without** `-DisableDefender` produces members
+its antivirus. The catch to remember: the pool's Hyper-V selftest asserts
+Defender is off, so a pool golden built **without** `-DisableDefender` produces members
 that fail that step. That is the intended failure — it catches a pool golden
 built the wrong way — but it is worth knowing before it surprises you.
 

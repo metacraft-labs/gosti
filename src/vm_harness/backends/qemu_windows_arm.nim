@@ -687,9 +687,8 @@ proc buildQemuWindowsArmArgs*(vmDir: string, sshPort: int,
   ## THE FIRST BOOT OF AN INSTANCE MUST BE ALLOWED TO REBOOT, and this argv
   ## used to forbid it. It carried ``-no-reboot`` — i.e. ``-action
   ## reboot=shutdown`` — from the start, which was harmless only for as long
-  ## as the fleet's Windows goldens were NOT sysprepped (see
-  ## ``infra/checks/t_windows_sysprep_golden.sh``, whose own header records
-  ## that the non-sysprepped golden's clones shared the base SID). A
+  ## as the fleet's Windows goldens were NOT sysprepped (the clones of a
+  ## non-sysprepped golden share the base image's machine SID). A
   ## non-generalized image boots straight through with no specialize pass and
   ## no reboot. A ``/generalize``d one — which is what the 2026-09-15 golden
   ## is, and what makes distinct machine SIDs possible at all — MUST reboot
