@@ -117,14 +117,9 @@ jobs:
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@d3cbb8f661cdab9d4bc3cad4d48fee65c1b0ae1a
         with:
           env-flavor: reprobuild
-          # Build repro at the org-wide reprobuild pin, the writer of the
-          # committed repro.lock schema. Linux/macOS keep the io-mon its flake
-          # locks; Windows builds the io-mon and RunQuota that same lock names.
-          # Windows ARM64 keeps the existing emulated x64 Reprobuild tools.
-          repro-from-source: true
-          repro-build-pin: cfbc5fd89094783dd48b0202f7d2d23f9ee3777f
-          repro-runquota-pin: 9818dc0c90be8ba7993424a7bbfbb6e009ffa965
-          repro-io-mon-pin: e05beda08343b04b3d53f008ebcd0fe7bd27d8b1
+          # A release that reads the committed repro.lock schema (v3).
+          # Windows ARM64 runs its x64 build under emulation.
+          repro-version: v0.2.18
           gh-token: ${{ steps.ci-token.outputs.token }}
           substituters: ${{ vars.SUBSTITUTERS }}
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
