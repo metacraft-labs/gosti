@@ -49,7 +49,9 @@ test all tests/unit/t_cli_incus.nim
 test all tests/unit/t_incus_create_tuning.nim
 # Per-run ownership of Incus containers and networks (user.gosti.owner).
 # A fake incus script stands in for the daemon (see the file header).
-test all tests/unit/t_incus_owner_token.nim
+# Linux only: IncusBackend exec/stop/delete refuse every call on other
+# hosts, so there the refusal cases would pass without being tested.
+test linux tests/unit/t_incus_owner_token.nim
 # GARM instance-lifecycle gate: `ephemeral-list` makes kept ephemeral
 # instances visible and fails CLOSED (an unenumerable backend is an error,
 # never an empty list), and incus `ephemeral-destroy` retries a transiently
