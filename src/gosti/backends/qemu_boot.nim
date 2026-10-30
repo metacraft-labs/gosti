@@ -85,6 +85,7 @@ import ../auto
 import ../firmware
 import ../serial
 import ../disk_growth
+import ../ssh
 
 # ---------------------------------------------------------------------------
 # Backend type.
@@ -119,6 +120,12 @@ type
     stateDir*: string          ## parent of the per-VM run directories
     namePrefix*: string        ## enforced prefix for VM names
     probeTimeoutSec*: int
+    qemuAarch64Cmd*: string    ## ``qemu-system-aarch64``: ``GuestArch`` arm64
+    qemuArmCmd*: string        ## ``qemu-system-arm``: ``GuestArch`` armv7
+    sshCmd*: string            ## ``ssh``: execInGuest over the forwarded port
+    scpCmd*: string            ## ``scp``: copyToGuest / copyFromGuest
+    sshUser*: string           ## guest login for execInGuest; "" disables it
+    sshKeyPath*: string        ## private key for that login
 
   QemuBootSerialStream* = ref object of SerialStream
     ## Cursor over the QEMU-written serial log plus the write side of
@@ -135,7 +142,13 @@ proc newQemuBootBackend*(qemuCmd = "qemu-system-x86_64",
                          swtpmCmd = "swtpm",
                          stateDir = "",
                          namePrefix = QemuBootNamePrefix,
-                         probeTimeoutSec = 10): QemuBootBackend =
+                         probeTimeoutSec = 10,
+                         qemuAarch64Cmd = "qemu-system-aarch64",
+                         qemuArmCmd = "qemu-system-arm",
+                         sshCmd = "ssh",
+                         scpCmd = "scp",
+                         sshUser = "",
+                         sshKeyPath = ""): QemuBootBackend =
   if namePrefix.len == 0:
     raise newException(ValueError,
       "QemuBootBackend: namePrefix must not be empty")
@@ -148,7 +161,13 @@ proc newQemuBootBackend*(qemuCmd = "qemu-system-x86_64",
     swtpmCmd: swtpmCmd,
     stateDir: (if stateDir.len > 0: stateDir else: defaultQemuBootStateDir()),
     namePrefix: namePrefix,
-    probeTimeoutSec: probeTimeoutSec)
+    probeTimeoutSec: probeTimeoutSec,
+    qemuAarch64Cmd: qemuAarch64Cmd,
+    qemuArmCmd: qemuArmCmd,
+    sshCmd: sshCmd,
+    scpCmd: scpCmd,
+    sshUser: sshUser,
+    sshKeyPath: sshKeyPath)
 
 # ---------------------------------------------------------------------------
 # Small process helpers. Deliberately local: ``qemu_windows_arm.nim`` has
@@ -253,6 +272,13 @@ proc newQemuBootVmName*(prefix = QemuBootNamePrefix): string =
   prefix & $getCurrentProcessId() & "-" &
     toHex(int64(epochTime() * 1000.0) and 0xFFFFFF'i64, 6).toLowerAscii()
 
+proc qemuCmdFor*(b: QemuBootBackend, arch: GuestArch): string =
+  ## The QEMU system emulator for one guest architecture.
+  case arch
+  of gaX86_64: b.qemuCmd
+  of gaArm64: b.qemuAarch64Cmd
+  of gaArmv7: b.qemuArmCmd
+
 proc runDirFor*(b: QemuBootBackend, name: string): string =
   b.stateDir / name
 
@@ -343,6 +369,9 @@ type
     memoryMB*: int
     accel*: BootAcceleration   ## must already be resolved (never baAuto)
     sshForwardPort*: int
+    arch*: GuestArch           ## machine model + CPU + TPM device spelling
+    diskReadonly*: bool        ## ``readonly=on`` on the boot disk
+    seedPath*: string          ## read-only data disk (cloud-init NoCloud seed)
 
 proc kvmUsable*(): bool =
   ## KVM is usable when ``/dev/kvm`` exists and this process may open it
@@ -377,6 +406,23 @@ proc resolveQemuAccel*(requested: BootAcceleration): BootAcceleration =
   of baKvm: baKvm
   of baTcg: baTcg
 
+proc hostGuestArch*(): GuestArch =
+  ## The ``GuestArch`` KVM can accelerate on this host.
+  when defined(amd64): gaX86_64
+  elif defined(arm64): gaArm64
+  elif defined(arm): gaArmv7
+  else: gaX86_64
+
+proc resolveQemuAccelFor*(requested: BootAcceleration;
+                          arch: GuestArch): BootAcceleration =
+  ## As ``resolveQemuAccel``, except that a guest of a foreign
+  ## architecture can only be emulated: ``baAuto`` becomes TCG for it. An
+  ## explicit ``baKvm`` is still passed through, so QEMU refuses it loudly
+  ## instead of the backend silently downgrading.
+  if requested == baAuto and arch != hostGuestArch():
+    return baTcg
+  resolveQemuAccel(requested)
+
 proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
   ## Build the full argv (excluding argv[0]) for one transient boot.
   if l.vmName.len == 0:
@@ -397,11 +443,17 @@ proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
     raise newException(ValueError,
       "QemuBootLaunch.sshForwardPort must be 0 or a TCP port from 1 to 65535")
 
+  # The machine model follows the guest architecture. x86 keeps q35, the
+  # model every existing gate was measured on; ARM guests use QEMU's
+  # ``virt`` board, the one edk2's ArmVirtQemu firmware targets.
+  let machine = case l.arch
+    of gaX86_64: "q35"
+    of gaArm64, gaArmv7: "virt"
   result = @[
     # -name lands in the process table, which is what makes an orphaned
     # QEMU attributable to the harness that leaked it.
     "-name", l.vmName,
-    "-machine", "q35",
+    "-machine", machine,
     "-m", $(if l.memoryMB > 0: l.memoryMB else: DefaultQemuBootMemoryMB),
     "-smp", $(if l.cpus > 0: l.cpus else: DefaultQemuBootCpus),
     "-display", "none",
@@ -415,8 +467,16 @@ proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
     result.add(@["-accel", "kvm", "-cpu", "host"])
   of baTcg, baAuto:
     # TCG must not inherit a host CPU model: that model can advertise
-    # KVM-only features the emulator cannot provide.
-    result.add(@["-accel", "tcg", "-cpu", "qemu64"])
+    # KVM-only features the emulator cannot provide. For arm64,
+    # ``max`` with the implementation-defined pointer-authentication
+    # algorithm is the emulated CPU that boots current distribution kernels
+    # fastest; for armv7, ``cortex-a15`` is the ``virt`` board's reference
+    # core (LPAE, hardware float, virtualisation extensions).
+    let cpu = case l.arch
+      of gaX86_64: "qemu64"
+      of gaArm64: "max,pauth-impdef=on"
+      of gaArmv7: "cortex-a15"
+    result.add(@["-accel", "tcg", "-cpu", cpu])
 
   if l.ovmfCode.len > 0:
     result.add(@[
@@ -425,8 +485,18 @@ proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
 
   if l.diskPath.len > 0:
     let fmt = if l.diskFormat.len > 0: l.diskFormat else: "qcow2"
+    # ``readonly=on`` is appended only when asked for, so the argv of every
+    # existing boot is unchanged.
     result.add(@["-drive",
-      "file=" & l.diskPath & ",format=" & fmt & ",if=virtio"])
+      "file=" & l.diskPath & ",format=" & fmt & ",if=virtio" &
+      (if l.diskReadonly: ",readonly=on" else: "")])
+  if l.seedPath.len > 0:
+    # A NoCloud seed as a read-only virtio disk rather than ``-cdrom``:
+    # the ``virt`` board has no IDE/AHCI controller for a CD drive, and
+    # cloud-init finds the ``cidata`` volume on any block device, so one
+    # spelling serves every architecture.
+    result.add(@["-drive",
+      "file=" & l.seedPath & ",format=raw,if=virtio,readonly=on"])
   if l.cdromPath.len > 0:
     result.add(@["-cdrom", l.cdromPath])
 
@@ -471,7 +541,8 @@ proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
     result.add(@[
       "-chardev", "socket,id=chrtpm,path=" & l.tpmSocketPath,
       "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
-      "-device", "tpm-tis,tpmdev=tpm0"])
+      "-device", (if l.arch == gaX86_64: "tpm-tis" else: "tpm-tis-device") &
+        ",tpmdev=tpm0"])
 
 proc qemuBootShellCommand*(qemuCmd: string, args: seq[string],
                            qemuStdioLogPath: string): string =
@@ -622,8 +693,17 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
     # (``DiskSizeTooSmallError``) leaves no run directory or process behind.
     # Only the backend's own overlay is sized; an ISO's blank target disk is
     # created at ``diskGB`` below.
+    if spec.guestArch != gaX86_64 and spec.tpmEnabled and
+        spec.guestArch == gaArmv7:
+      raise newException(ValueError,
+        "QemuBootBackend: no TPM device model for 32-bit ARM guests")
+    if spec.diskInPlace and spec.kind != bmkQcow2:
+      raise newException(ValueError,
+        "BootMediaSpec.diskInPlace requires kind bmkQcow2")
+    let qemuCmd = b.qemuCmdFor(spec.guestArch)
     let overlayBytes =
-      if spec.kind in {bmkQcow2, bmkVhdx}:
+      if spec.diskInPlace: 0'i64
+      elif spec.kind in {bmkQcow2, bmkVhdx}:
         planQcow2Clone(b.qemuImgCmd, spec.mediaPath,
                        mediaOverlayRequestBytes(spec.diskGB, spec.diskGBDefaulted),
                        false, $b.id, lpStartup)
@@ -677,8 +757,16 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
         qemuLogPath: runDir / "qemu-trace.log",
         cpus: spec.cpus,
         memoryMB: spec.memoryMB,
-        accel: resolveQemuAccel(spec.acceleration),
-        sshForwardPort: spec.sshForwardPort)
+        accel: resolveQemuAccelFor(spec.acceleration, spec.guestArch),
+        sshForwardPort: spec.sshForwardPort,
+        arch: spec.guestArch,
+        diskReadonly: spec.diskReadonly)
+      if spec.secondaryIsoPath.len > 0:
+        if not fileExists(spec.secondaryIsoPath):
+          raise newException(IOError,
+            "BootMediaSpec.secondaryIsoPath does not exist: " &
+            spec.secondaryIsoPath)
+        launch.seedPath = absolutePath(spec.secondaryIsoPath)
 
       # A direct kernel boot has no bootloader to hand control to, so the
       # firmware generation only decides which stub loads the kernel.
@@ -692,7 +780,31 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
       if generation notin [1, 2]:
         raise newException(ValueError,
           "BootMediaSpec.generation must be 1 (BIOS) or 2 (UEFI)")
-      if generation == 2:
+      if spec.guestArch != gaX86_64:
+        # The ``virt`` board has no legacy BIOS: ARM guests always boot
+        # edk2. The code image is QEMU's own (see firmware.nim); the
+        # variable store is a zero-filled per-VM file of the same size.
+        if spec.generation == 1:
+          raise newException(ValueError,
+            "BootMediaSpec.generation 1 (BIOS) does not exist for ARM guests")
+        let code = resolveArmFirmware(spec.guestArch == gaArm64, qemuCmd,
+                                      spec.extra.getOrDefault("uefiLoader"))
+        if code.len == 0:
+          raise newGostiError($b.id, lpStartup,
+            "QemuBootBackend: no edk2 firmware for a " & $spec.guestArch &
+            " guest; searched " &
+            armFirmwareCandidates(spec.guestArch == gaArm64, qemuCmd).join(", "))
+        let varsFile = runDir / "EFI_VARS.fd"
+        block:
+          var f = open(varsFile, fmWrite)
+          try:
+            f.setFilePos(getFileSize(code) - 1)
+            f.write('\0')
+          finally:
+            f.close()
+        launch.ovmfCode = code
+        launch.ovmfVars = varsFile
+      elif generation == 2:
         let ovmf = resolveOvmfPair(spec.extra.getOrDefault("uefiLoader"),
                                    spec.extra.getOrDefault("uefiNvramTemplate"))
         if ovmf.loader.len == 0:
@@ -730,10 +842,16 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
           launch.diskFormat = "qcow2"
       of bmkQcow2, bmkVhdx:
         let sourceFormat = spec.extra.getOrDefault("diskFormat", "qcow2")
-        let overlay = b.prepareOverlay(runDir, spec.mediaPath, sourceFormat,
-                                       overlayBytes)
-        launch.diskPath = overlay.path
-        launch.diskFormat = overlay.format
+        if spec.diskInPlace:
+          # The caller owns this disk; it is booted as is and is never
+          # removed by teardown (it lives outside the run directory).
+          launch.diskPath = absolutePath(spec.mediaPath)
+          launch.diskFormat = sourceFormat
+        else:
+          let overlay = b.prepareOverlay(runDir, spec.mediaPath, sourceFormat,
+                                         overlayBytes)
+          launch.diskPath = overlay.path
+          launch.diskFormat = overlay.format
       of bmkKernel:
         launch.kernelPath = absolutePath(spec.mediaPath)
         let initrd = spec.extra.getOrDefault("initrdPath")
@@ -763,7 +881,7 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
 
       let args = buildQemuBootArgs(launch)
       let stdioLog = runDir / "qemu-stdio.log"
-      let shellCmd = qemuBootShellCommand(b.qemuCmd, args, stdioLog)
+      let shellCmd = qemuBootShellCommand(qemuCmd, args, stdioLog)
       var p = startProcess("/bin/sh", args = @["-c", shellCmd],
                            options = {poParentStreams})
       pid = p.processID
@@ -788,7 +906,7 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
           detail = readFile(stdioLog).strip()
         raise newGostiError($b.id, lpStartup,
           "QemuBootBackend: qemu exited before opening its serial log. " &
-          "argv: " & (b.qemuCmd & " " & args.join(" ")) &
+          "argv: " & (qemuCmd & " " & args.join(" ")) &
           (if detail.len > 0: "\nqemu said: " & detail else: ""))
 
       var extra = initTable[string, string]()
@@ -811,6 +929,9 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
         extra["targetDiskPath"] = launch.diskPath
         extra["preserveBootDisk"] = "true"
       extra["accel"] = $launch.accel
+      extra["guestArch"] = $spec.guestArch
+      if spec.diskInPlace:
+        extra["diskInPlace"] = "true"
       if overlayBytes > 0:
         # No in-guest channel on this backend: the guest grows its own volume
         # (cloud-init growpart) or the caller does.
@@ -822,6 +943,10 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
         ipAddress: (if spec.sshForwardPort > 0: some("127.0.0.1")
                     else: none(string)),
         sshPort: spec.sshForwardPort,
+        sshUser: b.sshUser,
+        sshAuth: (if b.sshKeyPath.len > 0:
+                    SshAuth(kind: saKeyFile, keyPath: b.sshKeyPath)
+                  else: SshAuth(kind: saNone)),
         extra: extra)
       return handle
     except CatchableError:
@@ -881,6 +1006,173 @@ method stopAndCleanup*(b: QemuBootBackend, vm: VmHandle,
     vm.extra["cleanedUp"] = "true"
   except CatchableError:
     discard
+
+# ---------------------------------------------------------------------------
+# Guest access over SSH (``execInGuest`` / ``copyToGuest`` /
+# ``copyFromGuest``).
+#
+# Available when the boot forwarded a loopback port to the guest's port 22
+# (``BootMediaSpec.sshForwardPort``) and the backend was given a login
+# (``sshUser`` / ``sshKeyPath``) -- typically one a cloud-init NoCloud seed
+# provisioned. Host-key trust is per run: ``known_hosts`` lives in the run
+# directory and starts empty, so the first connection pins the key the
+# guest generated on ITS first boot, and a different key on a later
+# connection to the same run is refused (``StrictHostKeyChecking
+# accept-new``). Nothing is written to the operator's own known_hosts.
+#
+# stdout and stderr are captured into files in the run directory rather
+# than pipes, so a chatty remote command can never dead-lock the reader
+# and the timeout can be enforced while the command runs.
+# ---------------------------------------------------------------------------
+
+proc sshOptions(b: QemuBootBackend, vm: VmHandle): seq[string] =
+  let knownHosts = vm.extra.getOrDefault("runDir") / "known_hosts"
+  result = @[
+    "-o", "BatchMode=yes",
+    "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "UserKnownHostsFile=" & quoteSshConfigValue(knownHosts),
+    "-o", "GlobalKnownHostsFile=/dev/null",
+    "-o", "LogLevel=ERROR",
+    "-o", "ConnectTimeout=10",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=8"]
+  if vm.sshAuth.kind == saKeyFile:
+    result.add(@["-o", "IdentitiesOnly=yes", "-i", vm.sshAuth.keyPath])
+
+proc requireSshAccess(b: QemuBootBackend, vm: VmHandle, what: string) =
+  if vm == nil or vm.sshPort <= 0:
+    raise newException(BackendUnavailableError,
+      "QemuBootBackend." & what & ": the guest was booted without " &
+      "BootMediaSpec.sshForwardPort")
+  if vm.sshUser.len == 0:
+    raise newException(BackendUnavailableError,
+      "QemuBootBackend." & what & ": no guest login configured " &
+      "(newQemuBootBackend sshUser / sshKeyPath)")
+  if vm.extra.getOrDefault("cleanedUp") == "true":
+    raise newGostiError($b.id, lpExec,
+      "QemuBootBackend." & what & ": VM " & vm.name & " was torn down")
+
+proc runCapturedToFiles(argv: seq[string], stdinData: string,
+                        workDir: string, timeoutSec: int): ExecResult =
+  ## Run ``argv`` with stdout/stderr redirected to fresh files in
+  ## ``workDir`` and ``stdinData`` written to its stdin. Kills it at the
+  ## deadline (exit 124, the coreutils ``timeout`` convention).
+  let started = epochTime()
+  var n = 0
+  var outPath, errPath: string
+  while true:
+    outPath = workDir / ("ssh-" & $n & ".out")
+    errPath = workDir / ("ssh-" & $n & ".err")
+    if not fileExists(outPath) and not fileExists(errPath): break
+    inc n
+  var parts = @["exec"]
+  for a in argv: parts.add(shQuote(a))
+  let shellCmd = parts.join(" ") & " >" & shQuote(outPath) & " 2>" &
+                 shQuote(errPath)
+  var p = startProcess("/bin/sh", args = @["-c", shellCmd], options = {})
+  try:
+    if stdinData.len > 0:
+      p.inputStream.write(stdinData)
+    p.inputStream.close()
+  except CatchableError:
+    discard
+  let deadline = started + max(timeoutSec, 1).float
+  var timedOut = false
+  while p.running:
+    if epochTime() >= deadline:
+      timedOut = true
+      try: p.terminate() except CatchableError: discard
+      sleep(500)
+      try: p.kill() except CatchableError: discard
+      break
+    sleep(20)
+  let code = try: p.waitForExit() except CatchableError: 127
+  try: p.close() except CatchableError: discard
+  result.exitCode = if timedOut: 124 else: code
+  result.stdout = (try: readFile(outPath) except IOError: "")
+  result.stderr = (try: readFile(errPath) except IOError: "")
+  if timedOut:
+    result.stderr.add("\n[gosti: killed after " & $timeoutSec & "s]")
+  result.elapsedMs = int((epochTime() - started) * 1000)
+  try: removeFile(outPath) except OSError: discard
+  try: removeFile(errPath) except OSError: discard
+
+method execInGuest*(b: QemuBootBackend, vm: VmHandle,
+                   env: Table[string, string],
+                   cmd: seq[string],
+                   stdin: string = "",
+                   timeoutSec: int = 600): ExecResult =
+  ## Run ``cmd`` in the guest over SSH. The argv is quoted for the remote
+  ## POSIX login shell (``formatSshCommand``), so no element is ever
+  ## re-split or expanded there.
+  b.requireSshAccess(vm, "execInGuest")
+  if cmd.len == 0:
+    raise newException(ValueError, "execInGuest: empty cmd")
+  let line = formatSshEnvironment(env, goLinux) & formatSshCommand(cmd, goLinux)
+  let argv = @[b.sshCmd] & b.sshOptions(vm) &
+    @["-p", $vm.sshPort, vm.sshUser & "@127.0.0.1", line]
+  runCapturedToFiles(argv, stdin, vm.extra.getOrDefault("runDir"), timeoutSec)
+
+method startAndAwaitReady*(b: QemuBootBackend, vm: VmHandle,
+                          timeoutSec: int = 120) =
+  ## Poll ``true`` over SSH until it succeeds. Fails fast when QEMU has
+  ## exited (a guest that powered off or crashed never becomes ready).
+  b.requireSshAccess(vm, "startAndAwaitReady")
+  let deadline = epochTime() + max(timeoutSec, 1).float
+  var last = ""
+  while epochTime() < deadline:
+    let pidText = vm.extra.getOrDefault("qemuPid")
+    if pidText.len > 0 and not processAlive(parseInt(pidText)):
+      raise (ref GuestBootFailureError)(backend: $b.id, phase: lpStartup,
+        msg: "QemuBootBackend.startAndAwaitReady: QEMU exited before SSH " &
+             "came up (serial log: " & vm.extra.getOrDefault("serialLogPath") &
+             ")", cause: nil)
+    let r = b.execInGuest(vm, initTable[string, string](), @["true"],
+                          timeoutSec = 30)
+    if r.exitCode == 0:
+      return
+    last = r.stderr.strip()
+    if "host identification has changed" in last.toLowerAscii or
+        "host key verification failed" in last.toLowerAscii:
+      raise (ref GuestBootFailureError)(backend: $b.id, phase: lpStartup,
+        msg: "QemuBootBackend.startAndAwaitReady: SSH host key changed " &
+             "within one run: " & last, cause: nil)
+    sleep(2000)
+  raise (ref GuestBootFailureError)(backend: $b.id, phase: lpStartup,
+    msg: "QemuBootBackend.startAndAwaitReady: SSH on 127.0.0.1:" &
+         $vm.sshPort & " not ready within " & $timeoutSec & "s; last: " & last,
+    cause: nil)
+
+proc scpArgs(b: QemuBootBackend, vm: VmHandle): seq[string] =
+  @[b.scpCmd] & b.sshOptions(vm) & @["-P", $vm.sshPort]
+
+method copyToGuest*(b: QemuBootBackend, vm: VmHandle,
+                   hostPath: string, guestPath: string) =
+  b.requireSshAccess(vm, "copyToGuest")
+  if not fileExists(hostPath) and not dirExists(hostPath):
+    raise newGostiError($b.id, lpCopy,
+      "QemuBootBackend.copyToGuest: source not found: " & hostPath)
+  var argv = b.scpArgs(vm)
+  if dirExists(hostPath): argv.add("-r")
+  argv.add(@[hostPath, vm.sshUser & "@127.0.0.1:" & guestPath])
+  let r = runCapturedToFiles(argv, "", vm.extra.getOrDefault("runDir"), 600)
+  if r.exitCode != 0:
+    raise newGostiError($b.id, lpCopy,
+      "scp " & hostPath & " -> guest:" & guestPath & " failed (exit " &
+      $r.exitCode & "): " & r.stderr.strip())
+
+method copyFromGuest*(b: QemuBootBackend, vm: VmHandle,
+                     guestPath: string, hostPath: string) =
+  b.requireSshAccess(vm, "copyFromGuest")
+  let dir = parentDir(hostPath)
+  if dir.len > 0: createDir(dir)
+  let argv = b.scpArgs(vm) & @["-r", vm.sshUser & "@127.0.0.1:" & guestPath,
+                               hostPath]
+  let r = runCapturedToFiles(argv, "", vm.extra.getOrDefault("runDir"), 600)
+  if r.exitCode != 0:
+    raise newGostiError($b.id, lpCopy,
+      "scp guest:" & guestPath & " -> " & hostPath & " failed (exit " &
+      $r.exitCode & "): " & r.stderr.strip())
 
 method waitForShutdown*(b: QemuBootBackend, vm: VmHandle,
                         timeoutSec: int): bool =

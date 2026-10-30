@@ -47,6 +47,9 @@ test all tests/unit/t_cli_probe.nim
 test all tests/unit/t_cli_boot.nim
 test all tests/unit/t_cli_incus.nim
 test all tests/unit/t_incus_create_tuning.nim
+# Per-run ownership of Incus containers and networks (user.gosti.owner).
+# A fake incus script stands in for the daemon (see the file header).
+test all tests/unit/t_incus_owner_token.nim
 # GARM instance-lifecycle gate: `ephemeral-list` makes kept ephemeral
 # instances visible and fails CLOSED (an unenumerable backend is an error,
 # never an empty list), and incus `ephemeral-destroy` retries a transiently
@@ -87,6 +90,10 @@ test posix tests/unit/t_qemu_windows_arm_golden_build.nim
 # scripts/run-host-tests.sh.
 test posix tests/unit/t_qemu_windows_arm_dead_guest_is_named.nim
 test all tests/unit/t_qemu_boot_backend.nim
+# qemu-boot ARM guests (arm64/armv7 on the virt board), read-only boot
+# disks, NoCloud seeds as virtio disks, and SSH exec/copy preconditions.
+# Pure argv + precondition checks; hermetic.
+test all tests/unit/t_qemu_boot_arm_and_ssh_access.nim
 test all tests/unit/t_tpm_device_args.nim
 test all tests/unit/t_windows_golden_recipe_hardening.nim
 # The Linux runner recipe's actions-runner pin: stale-pin warning helpers,

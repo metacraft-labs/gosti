@@ -109,3 +109,68 @@ proc describeOvmfSearch*(): string =
   when defined(linux):
     lines.add("  - /nix/store/*-OVMF-*-fd/FV/OVMF_{CODE,VARS}.fd")
   lines.join("\n")
+
+# ---------------------------------------------------------------------------
+# ARM guests (``qemu-boot`` with ``GuestArch`` arm64 / armv7).
+#
+# QEMU ships its own edk2 builds for the ``virt`` machine next to its
+# binaries (``<prefix>/share/qemu/edk2-aarch64-code.fd`` and
+# ``edk2-arm-code.fd``), padded to the 64 MiB a ``virt`` pflash bank
+# requires. They are the firmware QEMU itself is tested with, which is why
+# they are preferred over a distro's AAVMF when no explicit path is given.
+#
+# Resolution order, highest first:
+#
+# 1. an explicit caller-supplied code image;
+# 2. ``$GOSTI_AAVMF_CODE`` (arm64) / ``$GOSTI_ARMVIRT_CODE`` (armv7);
+# 3. ``<dir of the resolved qemu binary>/../share/qemu/<name>``;
+# 4. conventional distro locations.
+#
+# Only the CODE image is resolved: the writable variable store is a
+# zero-filled file of the same size that the backend creates per VM, which
+# is what edk2's ArmVirtQemu expects on first boot.
+# ---------------------------------------------------------------------------
+
+const
+  AavmfCodeEnvVar* = "GOSTI_AAVMF_CODE"
+  ArmVirtCodeEnvVar* = "GOSTI_ARMVIRT_CODE"
+
+proc armFirmwareCandidates*(aarch64: bool; qemuCmd: string): seq[string] =
+  ## Ordered search list for the edk2 code image of one ARM flavour.
+  let envVar = if aarch64: AavmfCodeEnvVar else: ArmVirtCodeEnvVar
+  let leaf = if aarch64: "edk2-aarch64-code.fd" else: "edk2-arm-code.fd"
+  let fromEnv = getEnv(envVar)
+  if fromEnv.len > 0:
+    result.add(fromEnv)
+  var qemuPath = qemuCmd
+  if not qemuPath.isAbsolute:
+    qemuPath = findExe(qemuCmd)
+  if qemuPath.len > 0:
+    try:
+      qemuPath = expandFilename(qemuPath)
+    except OSError:
+      discard
+    result.add(parentDir(parentDir(qemuPath)) / "share" / "qemu" / leaf)
+  if aarch64:
+    result.add(@["/usr/share/qemu/edk2-aarch64-code.fd",
+                 "/usr/share/AAVMF/AAVMF_CODE.fd",
+                 "/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw"])
+  else:
+    result.add(@["/usr/share/qemu/edk2-arm-code.fd",
+                 "/usr/share/AAVMF/AAVMF32_CODE.fd",
+                 "/usr/share/edk2/arm/QEMU_EFI-pflash.raw"])
+
+proc resolveArmFirmware*(aarch64: bool; qemuCmd: string;
+                         explicitCode = ""): string =
+  ## The edk2 code image for an ARM ``virt`` guest, or "" when none is
+  ## found. An explicit path that does not exist is an error, never a
+  ## fallback to something else.
+  if explicitCode.len > 0:
+    if not fileExists(explicitCode):
+      raise newException(ValueError,
+        "ARM firmware image does not exist: " & explicitCode)
+    return explicitCode
+  for c in armFirmwareCandidates(aarch64, qemuCmd):
+    if fileExists(c):
+      return c
+  ""

@@ -112,6 +112,21 @@ type
       ## container is initialised STOPPED, security.nesting is enabled, and a
       ## fixed /dev/kvm unix-char device is attached before its first start.
       ## The device path/type/mode are not caller-selectable.
+    ownerToken*: string
+      ## When non-empty, the container is created with the config key
+      ## ``user.gosti.owner`` set to this value IN THE SAME ``incus
+      ## launch``/``init`` call, and every later ``execInGuest``,
+      ## ``copyToGuest``, ``copyFromGuest`` and ``stopAndCleanup`` on the
+      ## handle first checks that the live container still carries it. A
+      ## container with the same name that this run did not create -- a
+      ## production runner, another gate's guest -- is refused rather than
+      ## touched (the "per-run ownership" rule). Use a fresh random token per
+      ## run.
+    network*: string
+      ## When non-empty, ``eth0`` is attached to this managed network
+      ## (``incus launch … --network <name>``) instead of the profile's
+      ## default bridge, so a gate can give its guest a network it created
+      ## and owns (see ``createOwnedNetwork``).
 
 const
   DefaultIncusBaseImage* = "gosti-base"
@@ -673,6 +688,31 @@ proc stopContainer*(b: IncusBackend, name: string) =
 # ``listDevices`` let the resource driver's ``observe`` check existence first so
 # apply stays idempotent-friendly.
 
+const
+  IncusOwnerKey* = "user.gosti.owner"
+    ## The config key that records which run created a container or a
+    ## managed network (``EphemeralIncusSpec.ownerToken``,
+    ## ``createOwnedNetwork``).
+
+proc containerOwnerToken*(b: IncusBackend, name: string): string =
+  ## The ``user.gosti.owner`` value of a container, or "" when it has none
+  ## or does not exist.
+  let r = b.runIncus(@["config", "get", name, IncusOwnerKey], timeoutSec = 30)
+  if r.exitCode != 0: "" else: r.stdout.strip()
+
+proc requireContainerOwner*(b: IncusBackend, vm: VmHandle) =
+  ## Refuse to act on a container whose live owner token is not the one
+  ## this handle was created with. A handle created without a token is
+  ## not checked (the pre-existing contract for callers that do not opt
+  ## in).
+  let want = vm.extra.getOrDefault("ownerToken")
+  if want.len == 0: return
+  let have = b.containerOwnerToken(vm.name)
+  if have != want:
+    raise newGostiError($b.id, lpExec,
+      "incus container '" & vm.name & "' is not owned by this run (" &
+      IncusOwnerKey & " is '" & have & "'); refusing to touch it")
+
 proc networkExists*(b: IncusBackend, name: string): bool =
   ## ``incus network info <name>`` exits 0 iff the managed network is defined.
   let r = b.runIncus(@["network", "info", name], timeoutSec = 30)
@@ -731,6 +771,34 @@ proc networkConfigGet*(b: IncusBackend, name, key: string): string =
   if r.exitCode != 0:
     return ""
   result = r.stdout.strip()
+
+proc createOwnedNetwork*(b: IncusBackend, name, cidr, ownerToken: string;
+                         config: Table[string, string] =
+                           initTable[string, string]()): ExecResult =
+  ## ``createNetwork`` that records ``ownerToken`` in the network's
+  ## ``user.gosti.owner`` key, and refuses a name that already exists.
+  if ownerToken.len == 0:
+    raise newException(ValueError, "createOwnedNetwork: empty ownerToken")
+  if b.networkExists(name):
+    raise newGostiError($b.id, lpProvisioning,
+      "incus network '" & name & "' already exists; an owned network must " &
+      "be created by this run")
+  var cfg = config
+  cfg[IncusOwnerKey] = ownerToken
+  b.createNetwork(name, cidr, cfg)
+
+proc deleteOwnedNetwork*(b: IncusBackend, name, ownerToken: string): ExecResult =
+  ## Delete ``name`` only if its ``user.gosti.owner`` equals
+  ## ``ownerToken``; raise otherwise. A network that is already gone is a
+  ## clean no-op (exit 0, empty output).
+  if not b.networkExists(name):
+    return ExecResult(exitCode: 0)
+  let have = b.networkConfigGet(name, IncusOwnerKey)
+  if ownerToken.len == 0 or have != ownerToken:
+    raise newGostiError($b.id, lpCleanup,
+      "incus network '" & name & "' is not owned by this run (" &
+      IncusOwnerKey & " is '" & have & "'); refusing to delete it")
+  b.deleteNetwork(name)
 
 proc addDeviceToContainer*(b: IncusBackend, container, nic,
                            network: string): ExecResult =
@@ -933,6 +1001,10 @@ proc provisionEphemeralClone*(b: IncusBackend,
     (if needsPreStartCapabilities: "init" else: "launch"), base, spec.name]
   if spec.ephemeral:
     launchArgs.add("--ephemeral")
+  if spec.ownerToken.len > 0:
+    launchArgs.add(@["--config", IncusOwnerKey & "=" & spec.ownerToken])
+  if spec.network.len > 0:
+    launchArgs.add(@["--network", spec.network])
   for p in spec.profiles:
     launchArgs.add("--profile")
     launchArgs.add(p)
@@ -973,6 +1045,8 @@ proc provisionEphemeralClone*(b: IncusBackend,
   extra["ephemeral"] = "true"
   extra["baseImage"] = base
   extra["storagePool"] = b.storagePool
+  if spec.ownerToken.len > 0:
+    extra["ownerToken"] = spec.ownerToken
   result = VmHandle(
     backend: b,
     name: spec.name,
@@ -1135,6 +1209,7 @@ method execInGuest*(b: IncusBackend, vm: VmHandle,
   ## games — incus exec forwards the vector directly to execvp in the
   ## container), which is cleaner than the SSH backends' cmd-line joining.
   when defined(linux):
+    b.requireContainerOwner(vm)
     if cmd.len == 0:
       raise newException(ValueError, "execInGuest: empty cmd")
     var sub = @["exec", vm.name]
@@ -1156,6 +1231,7 @@ method copyToGuest*(b: IncusBackend, vm: VmHandle,
                    hostPath: string, guestPath: string) =
   ## ``incus file push [-r] <host> <name><guest>``.
   when defined(linux):
+    b.requireContainerOwner(vm)
     if not fileExists(hostPath) and not dirExists(hostPath):
       raise newGostiError($b.id, lpCopy,
         "IncusBackend.copyToGuest: source not found: " & hostPath)
@@ -1176,6 +1252,7 @@ method copyFromGuest*(b: IncusBackend, vm: VmHandle,
                      guestPath: string, hostPath: string) =
   ## ``incus file pull [-r] <name><guest> <host>``.
   when defined(linux):
+    b.requireContainerOwner(vm)
     createDir(parentDir(hostPath))
     var sub = @["file", "pull", "-r", vm.name & guestPath, hostPath]
     let r = b.runIncus(sub, timeoutSec = 300)
@@ -1206,6 +1283,16 @@ method stopAndCleanup*(b: IncusBackend, vm: VmHandle, deleteVm: bool = true) =
   ## it and removes its per-container storage volume in one shot — no
   ## residue. When false the container is only stopped (kept for a later
   ## job / inspection). Idempotent: deleting a missing container is fine.
+  when defined(linux):
+    # A handle created with an owner token never deletes or stops a
+    # container that no longer carries it (renamed away and replaced, or
+    # a stale handle): teardown of someone else's container is exactly
+    # what the ownership rule forbids. It does not raise -- this method is
+    # called from finally blocks -- but it does nothing.
+    try:
+      b.requireContainerOwner(vm)
+    except CatchableError:
+      return
   when defined(linux):
     try:
       if deleteVm:

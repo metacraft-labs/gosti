@@ -34,6 +34,10 @@ type
   GuestArch* = enum
     gaX86_64 = "x86_64"
     gaArm64 = "arm64"
+    gaArmv7 = "armv7"
+      ## 32-bit ARM with hardware floating point (Debian's and Ubuntu's
+      ## ``armhf``), booted as a ``virt`` machine under TCG on non-ARM
+      ## hosts. Realised by the ``qemu-boot`` backend.
 
   BackendId* = enum
     biNoop = "noop"
@@ -317,6 +321,24 @@ type
       ## image media then keep their own size.
     serialPipeName*: string         ## backend may override; otherwise auto-generated
     serialLogPath*: string          ## host-side path where serial bytes are logged
+    guestArch*: GuestArch           ## guest CPU architecture; defaults to x86_64
+      ## Realised by ``qemu-boot``: ``gaArm64`` boots ``qemu-system-aarch64
+      ## -machine virt`` and ``gaArmv7`` boots ``qemu-system-arm -machine
+      ## virt``, both with edk2 firmware and under TCG unless the host's own
+      ## architecture matches. Other backends reject a non-default value
+      ## rather than boot an x86 guest.
+    diskReadonly*: bool             ## present the boot disk read-only
+      ## The guest sees a write-protected virtio disk (QEMU
+      ## ``readonly=on``), so no guest action can change the image. This is
+      ## the "independently enforced read-only environment" a zero-write
+      ## gate runs a probe in.
+    diskInPlace*: bool              ## boot ``mediaPath`` itself, not an overlay
+      ## By default the backend boots a throwaway overlay over the image so
+      ## the caller's artifact never changes. A gate that must observe what a
+      ## guest did to ITS OWN disk across several boots (shut down, hash the
+      ## qcow2, boot again) owns the disk file instead: with this set the
+      ## backend boots ``mediaPath`` directly and never deletes it. The
+      ## caller is responsible for that file's ownership and removal.
     extra*: Table[string, string]   ## backend-specific scratch (post-import scripts...)
 
   SerialMatch* = object
