@@ -115,6 +115,19 @@ suite "qemu_boot argv":
     check valueAfter(kvm, "-accel") == "kvm"
     check valueAfter(kvm, "-cpu") == "host"
 
+  test "a QMP socket is published only when asked for, and never waits":
+    check idx(buildQemuBootArgs(baseLaunch()), "-qmp") < 0
+    var l = baseLaunch()
+    l.qmpSocketPath = "/tmp/gosti-qb-1/qmp.sock"
+    check valueAfter(buildQemuBootArgs(l), "-qmp") ==
+      "unix:/tmp/gosti-qb-1/qmp.sock,server=on,wait=off"
+
+  test "systemReset without a QMP socket reports why instead of raising":
+    let b = newQemuBootBackend(stateDir = createTempDir("gosti-qb-", "-noqmp"))
+    let r = b.systemReset(VmHandle(name: "none", extra: initTable[string, string]()))
+    check not r.ok
+    check "no QMP socket" in r.detail
+
   test "an SSH forward replaces the isolated NIC":
     var l = baseLaunch()
     l.sshForwardPort = 2222

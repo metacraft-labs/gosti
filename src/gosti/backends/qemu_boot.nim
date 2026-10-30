@@ -86,6 +86,7 @@ import ../firmware
 import ../serial
 import ../disk_growth
 import ../ssh
+import ../qmp
 
 # ---------------------------------------------------------------------------
 # Backend type.
@@ -372,6 +373,7 @@ type
     arch*: GuestArch           ## machine model + CPU + TPM device spelling
     diskReadonly*: bool        ## ``readonly=on`` on the boot disk
     seedPath*: string          ## read-only data disk (cloud-init NoCloud seed)
+    qmpSocketPath*: string     ## QMP monitor socket; "" => no monitor
 
 proc kvmUsable*(): bool =
   ## KVM is usable when ``/dev/kvm`` exists and this process may open it
@@ -524,6 +526,11 @@ proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
 
   if l.qemuLogPath.len > 0:
     result.add(@["-D", l.qemuLogPath])
+
+  # The QMP monitor: how a caller hard-resets the guest (``systemReset``).
+  # ``wait=off`` so QEMU does not block on a client that never connects.
+  if l.qmpSocketPath.len > 0:
+    result.add(@["-qmp", "unix:" & l.qmpSocketPath & ",server=on,wait=off"])
 
   # vTPM, deliberately LAST. QEMU's ``emulator`` backend speaks to swtpm's
   # CONTROL channel over this chardev and then hands swtpm a socketpair
@@ -749,6 +756,7 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
         removeFile(serialLogPath)
 
       let socketPath = socketDir / "serial.sock"
+      let qmpSocketPath = socketDir / "qmp.sock"
 
       var launch = QemuBootLaunch(
         vmName: vmName,
@@ -760,7 +768,8 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
         accel: resolveQemuAccelFor(spec.acceleration, spec.guestArch),
         sshForwardPort: spec.sshForwardPort,
         arch: spec.guestArch,
-        diskReadonly: spec.diskReadonly)
+        diskReadonly: spec.diskReadonly,
+        qmpSocketPath: qmpSocketPath)
       if spec.secondaryIsoPath.len > 0:
         if not fileExists(spec.secondaryIsoPath):
           raise newException(IOError,
@@ -916,6 +925,7 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
       extra["qemuPid"] = $pid
       extra["serialLogPath"] = serialLogPath
       extra["serialSocketPath"] = socketPath
+      extra["qmpSocketPath"] = qmpSocketPath
       extra["socketDir"] = socketDir
       extra["socketDirIdentity"] = socketDirIdentity
       extra["qemuStdioLogPath"] = stdioLog
@@ -1327,6 +1337,24 @@ proc qemuBootSwtpmProcessesMatching*(stateDir, namePrefix: string):
           break
   else:
     discard
+
+proc systemReset*(b: QemuBootBackend, vm: VmHandle):
+    tuple[ok: bool, detail: string] =
+  ## Hard-reset the guest with QMP ``system_reset``: no shutdown, no sync,
+  ## the guest's RAM (and with it every unwritten page cache) is lost, as
+  ## on a power cut. This is what a crash-consistency gate needs; a
+  ## ``reboot`` inside the guest would flush and stop services first.
+  ##
+  ## Every guest of this backend runs with ``-no-reboot``, under which
+  ## QEMU turns a reset request into a shutdown: QEMU EXITS. The disk keeps
+  ## whatever reached it, and the caller boots the same disk again to see
+  ## what survived (``waitForShutdown`` then ``bootFromMedia`` with
+  ## ``diskInPlace``). See ``qemu_system_reset_request`` in QEMU's
+  ## ``system/runstate.c``: a reset under ``-action reboot=shutdown`` is a
+  ## shutdown with the reset's cause.
+  ##
+  ## A failure is returned, never raised (``qmp.qmpCommand``).
+  qmpCommand(vm.extra.getOrDefault("qmpSocketPath"), "system_reset")
 
 proc sweepStaleQemuBootProcesses*(b: QemuBootBackend): seq[string] =
   ## Kill every live QEMU carrying this backend's name prefix, every
