@@ -581,20 +581,27 @@ method probeAvailability*(b: QemuBootBackend): bool =
   else:
     false
 
-proc swtpmAvailable*(b: QemuBootBackend): bool =
+proc swtpmProbe*(b: QemuBootBackend): tuple[ok: bool, detail: string] =
   ## Whether ``tpmEnabled`` can be honoured on this host. Deliberately NOT
   ## folded into ``probeAvailability``: a TPM-less boot must not become
   ## unavailable because swtpm is missing, and a TPM-requiring boot must
   ## fail loudly rather than be skipped.
+  ## ``detail`` says what the probe saw, for the refusal message.
   try:
     let r = runProcessCapture(@[b.swtpmCmd, "--version"],
                               timeoutSec = b.probeTimeoutSec)
     # swtpm's banner is "TPM emulator version 0.10.1, Copyright …" — it
     # does not contain its own program name, so matching on "swtpm"
     # would reject a perfectly good swtpm.
-    r.exitCode == 0 and "tpm emulator" in r.output.toLowerAscii
-  except CatchableError:
-    false
+    result.ok = r.exitCode == 0 and "tpm emulator" in r.output.toLowerAscii
+    result.detail = "`" & b.swtpmCmd & " --version` exited " & $r.exitCode &
+      ": " & r.output.strip()
+  except CatchableError as e:
+    result = (false, "`" & b.swtpmCmd & " --version` raised: " & e.msg)
+
+proc swtpmAvailable*(b: QemuBootBackend): bool =
+  ## Whether ``tpmEnabled`` can be honoured on this host.
+  b.swtpmProbe().ok
 
 proc startSwtpmInBackground*(b: QemuBootBackend, runDir, socketPath: string): int =
   ## Start one ``swtpm socket`` for this VM and return its pid.
@@ -878,12 +885,13 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
       # two children to clean up rather than one.
       var tpmSocketPath = ""
       if spec.tpmEnabled:
-        if not b.swtpmAvailable():
+        let swtpm = b.swtpmProbe()
+        if not swtpm.ok:
           raise newGostiError($b.id, lpStartup,
             "QemuBootBackend: BootMediaSpec.tpmEnabled requires '" &
             b.swtpmCmd & "' on PATH (it is pkgs.swtpm, and it is in the " &
             "gosti and reprobuild dev shells). Refusing to boot a " &
-            "guest without the TPM it asked for.")
+            "guest without the TPM it asked for. Probe: " & swtpm.detail)
         tpmSocketPath = socketDir / "tpm.sock"
         swtpmPid = b.startSwtpmInBackground(runDir, tpmSocketPath)
         launch.tpmSocketPath = tpmSocketPath
