@@ -100,8 +100,9 @@ suite "t_gosti_serve_concurrency":
   # Falsifiability seam: ``GOSTI_CONC_TEST_THREADS=1`` forces a ONE-thread pool,
   # so the dedicated acceptor refuses the fast request with handlers_saturated
   # while the slow exec occupies that worker. The required successful responses
-  # then fail. The former serial accept loop instead exceeded the batch timing
-  # bound. Both are failures of this gate; the default (4) is what CI runs.
+  # then fail. The former serial accept loop instead exceeded the per-request
+  # timing bound. Both are failures of this gate; the default (4) is what CI
+  # runs.
   let threadArg = getEnv("GOSTI_CONC_TEST_THREADS", "4")
   let daemon = startProcess(
     getAppFilename(),
@@ -131,9 +132,10 @@ suite "t_gosti_serve_concurrency":
     check slow.running
     check not fileExists(doneFile)          # slow request still in flight
 
-    # 2. Time a batch of fast execs. Serial loop ⇒ these queue behind the slow
-    #    exec (≈ slowSec); concurrent loop ⇒ they finish in milliseconds.
-    let t0 = epochTime()
+    # 2. Time a batch of fast execs. Serial loop ⇒ the first one queues behind
+    #    the slow exec (≈ slowSec - 1.2 s); concurrent loop ⇒ each takes only
+    #    its own launch time.
+    var slowestRequest = 0.0
     for k in 0 ..< 5:
       var got = ""
       let requestStarted = epochTime()
@@ -143,15 +145,17 @@ suite "t_gosti_serve_concurrency":
           if firstLogSeconds < 0:
             firstLogSeconds = epochTime() - requestStarted
           got.add(ev.line))
+      let requestSeconds = epochTime() - requestStarted
+      slowestRequest = max(slowestRequest, requestSeconds)
       echo "fast request ", k, ": first log seconds=", firstLogSeconds,
-        ", total seconds=", epochTime() - requestStarted
+        ", total seconds=", requestSeconds
       check code == 0
       check "quick-ok" in got
-    let elapsed = epochTime() - t0
-
-    # The batch completed well within the slow request's lifetime — proof it
-    # was NOT serialized behind it. Threshold sits far below slowSec = 5.
-    check elapsed < 2.5
+    # No fast request waited behind the slow one: a queued request would take
+    # about slowSec - 1.2 s, far above this bound. The bound is per request
+    # because the batch total also counts five process launches, which take
+    # about 0.5 s each on Windows ARM64 under x64 emulation.
+    check slowestRequest < 2.5
     # The slow request is genuinely still running at this point.
     check not fileExists(doneFile)
     check slow.running
