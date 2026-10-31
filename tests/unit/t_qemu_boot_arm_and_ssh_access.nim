@@ -144,3 +144,31 @@ suite "SSH access preconditions":
                       sshUser: "root", extra: extra)
     expect GostiError:
       discard b.execInGuest(vm, initTable[string, string](), @["true"])
+
+suite "restricted user networking":
+  test "an unrestricted guest keeps the plain user network":
+    var l = baseLaunch()
+    l.sshForwardPort = 2222
+    check valueAfter(buildQemuBootArgs(l), "-netdev") ==
+      "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22"
+
+  test "restrict=on with a guest forward to a host command":
+    var l = baseLaunch()
+    l.sshForwardPort = 2222
+    l.networkRestricted = true
+    l.guestForwards = @[GuestForward(guestAddress: "10.0.2.100",
+      guestPort: 3128, command: @["/usr/bin/socat", "STDIO", "TCP:127.0.0.1:4000,nodelay"])]
+    check valueAfter(buildQemuBootArgs(l), "-netdev") ==
+      "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22,restrict=on," &
+      "guestfwd=tcp:10.0.2.100:3128-cmd:'/usr/bin/socat' 'STDIO' " &
+      "'TCP:127.0.0.1:4000,,nodelay'"
+
+  test "a forward without an absolute program or with a quote is refused":
+    var l = baseLaunch()
+    l.sshForwardPort = 2222
+    l.guestForwards = @[GuestForward(guestAddress: "10.0.2.100",
+      guestPort: 3128, command: @["socat"])]
+    expect ValueError: discard buildQemuBootArgs(l)
+    l.guestForwards = @[GuestForward(guestAddress: "10.0.2.100",
+      guestPort: 3128, command: @["/bin/sh", "-c", "it's"])]
+    expect ValueError: discard buildQemuBootArgs(l)

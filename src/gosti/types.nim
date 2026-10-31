@@ -260,6 +260,14 @@ type
     baKvm = "kvm"              ## require Linux KVM acceleration
     baTcg = "tcg"              ## QEMU software emulation
 
+  GuestForward* = object
+    ## One guest-visible TCP endpoint served by a host command
+    ## (``BootMediaSpec.guestForwards``).
+    guestAddress*: string           ## e.g. "10.0.2.100" (in the user net)
+    guestPort*: int
+    command*: seq[string]           ## run per connection, stdin/stdout = the
+                                    ## connection; argv, absolute program
+
   BootMediaSpec* = object
     ## Direct-boot media for testing OS bring-up itself (not test-in-guest).
     ## Distinct from BaselineSpec: BaselineSpec provisions a long-lived
@@ -332,6 +340,17 @@ type
       ## ``readonly=on``), so no guest action can change the image. This is
       ## the "independently enforced read-only environment" a zero-write
       ## gate runs a probe in.
+    networkRestricted*: bool        ## no guest-initiated traffic leaves the VM
+      ## ``qemu-boot``: the user-mode network gets ``restrict=on``, so the
+      ## guest reaches neither the host nor the outside world (DNS
+      ## included); the SSH forward still works, and ``guestForwards`` are
+      ## the only destinations the guest can open. Realised by ``qemu-boot``
+      ## only; no other backend reads it.
+    guestForwards*: seq[GuestForward]
+      ## ``qemu-boot`` only: guest-side addresses QEMU answers itself by
+      ## running a command per connection (``guestfwd=tcp:IP:PORT-cmd:...``),
+      ## e.g. a relay to a host-side proxy. The way a restricted guest is
+      ## given exactly the services a test wants it to have.
     diskInPlace*: bool              ## boot ``mediaPath`` itself, not an overlay
       ## By default the backend boots a throwaway overlay over the image so
       ## the caller's artifact never changes. A gate that must observe what a
