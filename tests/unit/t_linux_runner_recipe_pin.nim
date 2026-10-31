@@ -11,7 +11,7 @@
 ## side of that:
 ##
 ##   * the version helpers the recipe uses to warn about a stale pin, and to
-##     resolve `VMH_RUNNER_VERSION=latest`, compute what they claim to —
+##     resolve `GOSTI_RUNNER_VERSION=latest`, compute what they claim to —
 ##     exercised by running the recipe's OWN function bodies under bash, with a
 ##     fake `curl` on PATH (hermetic: no network);
 ##   * the default pin is a well-formed version and is not the release that
@@ -191,10 +191,10 @@ echo "[$(runner_minor_lag '' 2.337.0)]"
     writeFile(executable, "old fixture bytes")
     defer:
       removeFile(executable)
-      removeFile(executable & ".vmh-command.json")
+      removeFile(executable & ".gosti-command.json")
     check commandFixture(path, %*{"output": "replacement\n"}) == executable
     check sameFileContent(getAppFilename(), executable)
-    check parseFile(executable & ".vmh-command.json")["output"].getStr() ==
+    check parseFile(executable & ".gosti-command.json")["output"].getStr() ==
       "replacement\n"
 
   test "an unusable API response yields an empty version":
@@ -221,17 +221,17 @@ suite "linux runner recipe: pin hygiene":
     check "staged_version\" != \"$RUNNER_VERSION\"" in text
 
   test "a supplied tarball digest is verified":
-    check "VMH_RUNNER_SHA256" in text
+    check "GOSTI_RUNNER_SHA256" in text
     check "actual_sha256\" != \"$RUNNER_SHA256\"" in text
 
   test "the runner version is stamped as an image property":
     # Stamped on the freshly published image by fingerprint, before the alias
     # is moved onto it (publish-then-swap).
-    check "set-property \"$NEW_FP\" vmh.runner_version \"$RUNNER_VERSION\"" in text
+    check "set-property \"$NEW_FP\" gosti.runner_version \"$RUNNER_VERSION\"" in text
 
   test "the alias moves only after the new image is published and stamped":
     let publishAt = text.find("publish \"$BLD\"")
-    let stampAt = text.find("set-property \"$NEW_FP\" vmh.recipe_revision")
+    let stampAt = text.find("set-property \"$NEW_FP\" gosti.recipe_revision")
     let aliasAt = text.find("image alias create \"$ALIAS\" \"$NEW_FP\"")
     check publishAt >= 0
     check stampAt > publishAt

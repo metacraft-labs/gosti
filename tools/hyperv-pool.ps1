@@ -7,7 +7,7 @@
 
 .DESCRIPTION
   The Hyper-V implementation of the algorithm selected for this backend in
-  docs/pool-algorithms.md. Measured on win-ci-bare-001, 2026-08-21:
+  docs/contributors/pool-algorithms.md. Measured on win-ci-bare-001, 2026-08-21:
 
     clone-per-task    Import 28.67 + Restore 2.16 + Resume 5.08 = 35.9 s
     recycle-per-task              Restore 2.16 + Resume 5.08 =  7.2 s

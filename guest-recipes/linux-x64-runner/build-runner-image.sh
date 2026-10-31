@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-# build-runner-image.sh — build the `vmh-linux-runner` Incus image.
+# build-runner-image.sh — build the `gosti-linux-runner` Incus image.
 #
 # The Linux analog of the Windows cloudbase-init golden: a small Debian
 # system-container image with
@@ -35,54 +35,54 @@
 # host `incus file push` corrupts large tarballs (blocker A).
 #
 # Reproducible + idempotent: safe to re-run. Uses ONLY a throwaway build
-# container derived from the target alias (`vmh-bld-<alias>`, see
-# VMH_BUILD_CONTAINER below) + that output alias — never touches unrelated host
+# container derived from the target alias (`gosti-bld-<alias>`, see
+# GOSTI_BUILD_CONTAINER below) + that output alias — never touches unrelated host
 # containers/images, and never collides with a concurrent build of a different
 # alias.
 #
 # Usage:
 #   ./build-runner-image.sh
-#   VMH_INCUS_CMD="sudo -n incus" ./build-runner-image.sh
-#   VMH_RUNNER_VERSION=2.337.0 ./build-runner-image.sh
-#   VMH_RUNNER_VERSION=latest ./build-runner-image.sh   # resolve at build time
-#   VMH_RUNNER_TARBALL=/path/to/actions-runner-linux-x64-X.tar.gz ./build-runner-image.sh
+#   GOSTI_INCUS_CMD="sudo -n incus" ./build-runner-image.sh
+#   GOSTI_RUNNER_VERSION=2.337.0 ./build-runner-image.sh
+#   GOSTI_RUNNER_VERSION=latest ./build-runner-image.sh   # resolve at build time
+#   GOSTI_RUNNER_TARBALL=/path/to/actions-runner-linux-x64-X.tar.gz ./build-runner-image.sh
 #   # FU3 (HR-BAKE): the prod nested-capability image (`incus-nested` class) —
 #   # bake BOTH docker (HR1) + qemu/kvm (HR2) under a SIDE alias:
-#   VMH_RUNNER_DOCKER=1 VMH_RUNNER_KVM=1 \
-#     VMH_RUNNER_ALIAS=vmh-linux-runner-nested ./build-runner-image.sh
+#   GOSTI_RUNNER_DOCKER=1 GOSTI_RUNNER_KVM=1 \
+#     GOSTI_RUNNER_ALIAS=gosti-linux-runner-nested ./build-runner-image.sh
 #
 # Env:
-#   VMH_INCUS_CMD       incus invocation        (default: incus)
-#   VMH_RUNNER_ALIAS    output image alias       (default: vmh-linux-runner)
-#   VMH_BUILD_CONTAINER throwaway build container (default: vmh-bld-<alias w/o
-#                       name; MUST be unique per   the leading `vmh-`>, so a
+#   GOSTI_INCUS_CMD       incus invocation        (default: incus)
+#   GOSTI_RUNNER_ALIAS    output image alias       (default: gosti-linux-runner)
+#   GOSTI_BUILD_CONTAINER throwaway build container (default: gosti-bld-<alias w/o
+#                       name; MUST be unique per   the leading `gosti-`>, so a
 #                       concurrent alias           per-alias build never clashes)
-#   VMH_CLOUD_BASE      local cloud base alias   (default: im2-debian-cloud)
-#   VMH_CLOUD_REMOTE    remote to copy if base
+#   GOSTI_CLOUD_BASE      local cloud base alias   (default: im2-debian-cloud)
+#   GOSTI_CLOUD_REMOTE    remote to copy if base
 #                       absent                   (default: images:debian/12/cloud)
-#   VMH_CLOUD_MAX_AGE_DAYS  refresh the cached cloud base once it is older than
+#   GOSTI_CLOUD_MAX_AGE_DAYS  refresh the cached cloud base once it is older than
 #                       this many days, so its apt index does not go stale past a
 #                       Debian point release (0 = never refresh) (default: 7)
-#   VMH_RUNNER_VERSION  actions runner version   (default: 2.337.0; `latest`
+#   GOSTI_RUNNER_VERSION  actions runner version   (default: 2.337.0; `latest`
 #                       resolves the newest non-prerelease at build time)
-#   VMH_RUNNER_SHA256   expected sha256 of the    (default: unchecked)
+#   GOSTI_RUNNER_SHA256   expected sha256 of the    (default: unchecked)
 #                       runner tarball
-#   VMH_RUNNER_STALENESS_CHECK  warn when the pin (default: 1; set =0 to skip,
+#   GOSTI_RUNNER_STALENESS_CHECK  warn when the pin (default: 1; set =0 to skip,
 #                       is >=2 minor releases     e.g. for offline builds)
 #                       behind upstream latest
-#   VMH_RUNNER_TARBALL  pre-downloaded tarball    (default: download to /tmp)
-#   VMH_RUNNER_CACHE    in-image runner dir       (default: /home/<user>/actions-runner)
-#   VMH_RUNNER_DOCKER   bake nested Docker (HR1)  (default: off; set =1)
-#   VMH_RUNNER_KVM      bake nested KVM (HR2)     (default: off; set =1)
-#   VMH_RUNNER_RECIPE_REVISION
+#   GOSTI_RUNNER_TARBALL  pre-downloaded tarball    (default: download to /tmp)
+#   GOSTI_RUNNER_CACHE    in-image runner dir       (default: /home/<user>/actions-runner)
+#   GOSTI_RUNNER_DOCKER   bake nested Docker (HR1)  (default: off; set =1)
+#   GOSTI_RUNNER_KVM      bake nested KVM (HR2)     (default: off; set =1)
+#   GOSTI_RUNNER_RECIPE_REVISION
 #                       image recipe revision property (default: linux-x64-runner-v2)
-#   VMH_RUNNER_REPRO    bake the `repro` CLI      (default: ON; set =0 to skip)
-#   VMH_REPRO_PIN       reprobuild rev to build   (default: resolved from
+#   GOSTI_RUNNER_REPRO    bake the `repro` CLI      (default: ON; set =0 to skip)
+#   GOSTI_REPRO_PIN       reprobuild rev to build   (default: resolved from
 #                       repro-portable from       nixos-modules/flake.lock —
 #                                                 the single source of truth)
-#   VMH_REPRO_BUNDLE    pre-built repro-portable  (default: nix-built on host
+#   GOSTI_REPRO_BUNDLE    pre-built repro-portable  (default: nix-built on host
 #                       self-extractor on host    from the pin)
-#   VMH_NIXOS_MODULES_LOCK  path to the pinning   (default: ../../../nixos-modules
+#   GOSTI_NIXOS_MODULES_LOCK  path to the pinning   (default: ../../../nixos-modules
 #                       nixos-modules flake.lock  /flake.lock relative to script)
 #
 # REPRO BAKE (HR-REPRO): the ephemeral Linux runner ships the pinned `repro`
@@ -109,10 +109,10 @@
 # job. Baking it at the expected path lets the bootstrap take the cached branch.
 set -euo pipefail
 
-INCUS=(${VMH_INCUS_CMD:-incus})
-ALIAS="${VMH_RUNNER_ALIAS:-vmh-linux-runner}"
-CLOUD_BASE="${VMH_CLOUD_BASE:-im2-debian-cloud}"
-CLOUD_REMOTE="${VMH_CLOUD_REMOTE:-images:debian/12/cloud}"
+INCUS=(${GOSTI_INCUS_CMD:-incus})
+ALIAS="${GOSTI_RUNNER_ALIAS:-gosti-linux-runner}"
+CLOUD_BASE="${GOSTI_CLOUD_BASE:-im2-debian-cloud}"
+CLOUD_REMOTE="${GOSTI_CLOUD_REMOTE:-images:debian/12/cloud}"
 # RUNNER VERSION PIN. GitHub stops dispatching jobs to runner releases it has
 # deprecated: the listener connects, prints "Listening for Jobs", then exits
 # with "Runner version vX is deprecated and cannot receive messages". Because
@@ -120,59 +120,59 @@ CLOUD_REMOTE="${VMH_CLOUD_REMOTE:-images:debian/12/cloud}"
 # self-update), a stale pin yields an image whose every runner dies right
 # after registering. In practice a release is deprecated roughly a month after
 # it falls two minor releases behind latest, so keep this default current, pass
-# an explicit VMH_RUNNER_VERSION from the caller, or use `latest`.
+# an explicit GOSTI_RUNNER_VERSION from the caller, or use `latest`.
 RUNNER_VERSION_DEFAULT="2.337.0"
-RUNNER_VERSION="${VMH_RUNNER_VERSION:-${RUNNER_VERSION_DEFAULT}}"
-RUNNER_SHA256="${VMH_RUNNER_SHA256:-}"
-RUNNER_STALENESS_CHECK="${VMH_RUNNER_STALENESS_CHECK:-1}"
-RUNNER_USER="${VMH_RUNNER_USER:-runner}"
+RUNNER_VERSION="${GOSTI_RUNNER_VERSION:-${RUNNER_VERSION_DEFAULT}}"
+RUNNER_SHA256="${GOSTI_RUNNER_SHA256:-}"
+RUNNER_STALENESS_CHECK="${GOSTI_RUNNER_STALENESS_CHECK:-1}"
+RUNNER_USER="${GOSTI_RUNNER_USER:-runner}"
 # Default to the GARM-expected cached path /home/<user>/actions-runner so the
 # per-job bootstrap uses the baked runner instead of re-downloading it.
-RUNNER_CACHE="${VMH_RUNNER_CACHE:-/home/${RUNNER_USER}/actions-runner}"
+RUNNER_CACHE="${GOSTI_RUNNER_CACHE:-/home/${RUNNER_USER}/actions-runner}"
 # Throwaway build container. DERIVED FROM THE TARGET ALIAS so that two
 # invocations of this same recipe for DIFFERENT aliases (e.g. the plain
-# `vmh-linux-runner` and the nested `vmh-linux-runner-nested`) never share one
+# `gosti-linux-runner` and the nested `gosti-linux-runner-nested`) never share one
 # build container. They previously both hard-coded `im2-bld-runner`, so when
 # both ran at once each recipe's opening `incus delete --force "$BLD"` destroyed
 # the other's in-flight container and both builds failed (SIGKILL/137 on the
 # next `incus exec`) and crash-looped, producing no image. Overridable for
 # callers that need an explicit name.
-BLD="${VMH_BUILD_CONTAINER:-vmh-bld-${ALIAS#vmh-}}"
+BLD="${GOSTI_BUILD_CONTAINER:-gosti-bld-${ALIAS#gosti-}}"
 
-# HR1 (nested Docker): when VMH_RUNNER_DOCKER is set (=1), bake docker/moby +
+# HR1 (nested Docker): when GOSTI_RUNNER_DOCKER is set (=1), bake docker/moby +
 # fuse-overlayfs into the image so a per-job container launched with the
 # provider's `incusSecurityNesting=true` (security.nesting + the
 # mknod/setxattr syscall intercepts) can run an UNPRIVILEGED in-guest Docker
 # daemon (`docker run` / `docker build`). Off by default ⇒ the live
-# `vmh-linux-runner` image is byte-unchanged. Point VMH_RUNNER_ALIAS at a SIDE
-# alias (eg vmh-linux-runner-docker) so the live image is never overwritten.
-DOCKER="${VMH_RUNNER_DOCKER:-}"
-DOCKER_VERSION="${VMH_DOCKER_VERSION:-27.5.1}"
-# HR2 (nested KVM): when VMH_RUNNER_KVM is set (=1), bake the qemu/kvm
+# `gosti-linux-runner` image is byte-unchanged. Point GOSTI_RUNNER_ALIAS at a SIDE
+# alias (eg gosti-linux-runner-docker) so the live image is never overwritten.
+DOCKER="${GOSTI_RUNNER_DOCKER:-}"
+DOCKER_VERSION="${GOSTI_DOCKER_VERSION:-27.5.1}"
+# HR2 (nested KVM): when GOSTI_RUNNER_KVM is set (=1), bake the qemu/kvm
 # USERSPACE (qemu-system-x86 + a guest kernel for the boot smoke) into the
 # image so a per-job container launched with the provider's
 # `incusNestedKvm=true` (security.nesting + a /dev/kvm unix-char device) can run
 # `qemu-system-x86_64 -enable-kvm` with HARDWARE acceleration (the nested-VM
 # path proven by the t_incus_nested_vm gate). Off by default ⇒ the live image is
-# byte-unchanged. Point VMH_RUNNER_ALIAS at a SIDE alias (eg
-# vmh-linux-runner-nested) so the live image is never overwritten. KVM shares
-# the same egress + apt seam as HR1, so VMH_RUNNER_DOCKER=1 VMH_RUNNER_KVM=1
+# byte-unchanged. Point GOSTI_RUNNER_ALIAS at a SIDE alias (eg
+# gosti-linux-runner-nested) so the live image is never overwritten. KVM shares
+# the same egress + apt seam as HR1, so GOSTI_RUNNER_DOCKER=1 GOSTI_RUNNER_KVM=1
 # bakes BOTH into one image (the `incus-nested` prod class needs both).
-KVM="${VMH_RUNNER_KVM:-}"
-RECIPE_REVISION="${VMH_RUNNER_RECIPE_REVISION:-linux-x64-runner-v2}"
-# HR-REPRO (repro CLI bake): ON by default so the live `vmh-linux-runner` image
-# ships `repro` on PATH. Set VMH_RUNNER_REPRO=0 to skip (e.g. to reproduce the
+KVM="${GOSTI_RUNNER_KVM:-}"
+RECIPE_REVISION="${GOSTI_RUNNER_RECIPE_REVISION:-linux-x64-runner-v2}"
+# HR-REPRO (repro CLI bake): ON by default so the live `gosti-linux-runner` image
+# ships `repro` on PATH. Set GOSTI_RUNNER_REPRO=0 to skip (e.g. to reproduce the
 # pre-repro image byte-for-byte). The pin is resolved from nixos-modules'
-# flake.lock unless VMH_REPRO_PIN pins a reprobuild rev explicitly; a pre-built
-# bundle can be supplied via VMH_REPRO_BUNDLE (host path) to skip the nix build.
-REPRO="${VMH_RUNNER_REPRO:-1}"
-REPRO_PIN="${VMH_REPRO_PIN:-}"
-REPRO_BUNDLE="${VMH_REPRO_BUNDLE:-}"
+# flake.lock unless GOSTI_REPRO_PIN pins a reprobuild rev explicitly; a pre-built
+# bundle can be supplied via GOSTI_REPRO_BUNDLE (host path) to skip the nix build.
+REPRO="${GOSTI_RUNNER_REPRO:-1}"
+REPRO_PIN="${GOSTI_REPRO_PIN:-}"
+REPRO_BUNDLE="${GOSTI_REPRO_BUNDLE:-}"
 # nixos-modules is the single source of truth for the reprobuild pin. Default to
 # the sibling checkout in this multi-repo workspace (…/infra and …/nixos-modules
-# are siblings; this recipe lives at vm-harness/guest-recipes/linux-x64-runner).
+# are siblings; this recipe lives at gosti/guest-recipes/linux-x64-runner).
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NIXOS_MODULES_LOCK="${VMH_NIXOS_MODULES_LOCK:-${_SCRIPT_DIR}/../../../nixos-modules/flake.lock}"
+NIXOS_MODULES_LOCK="${GOSTI_NIXOS_MODULES_LOCK:-${_SCRIPT_DIR}/../../../nixos-modules/flake.lock}"
 # Where the self-extractor is installed on PATH inside the image, and the runner
 # user's HOME whose .cache the pre-warmed extraction is baked under.
 REPRO_BIN="/usr/local/bin/repro"
@@ -181,16 +181,16 @@ RUNNER_HOME="/home/${RUNNER_USER}"
 # once a static IP + gateway are configured — see the egress step below); the
 # static bundle is STREAMED in (cat|incus exec tar) rather than `incus file
 # push`ed, working around blocker A (incus file push corrupts large tarballs).
-DOCKER_TARBALL="${VMH_DOCKER_TARBALL:-}"
-DOCKER_STORAGE_DRIVER="${VMH_DOCKER_STORAGE_DRIVER:-fuse-overlayfs}"
+DOCKER_TARBALL="${GOSTI_DOCKER_TARBALL:-}"
+DOCKER_STORAGE_DRIVER="${GOSTI_DOCKER_STORAGE_DRIVER:-fuse-overlayfs}"
 # incusbr0 DHCP does not lease on this host, so give the build container a
 # STATIC egress IP for the docker apt step. Auto-detected from the bridge
 # (gateway = the incusbr0 host address; build IP = same /24, host .249) but
 # env-overridable.
-BUILD_EGRESS_IP="${VMH_BUILD_EGRESS_IP:-}"
-BUILD_EGRESS_GW="${VMH_BUILD_EGRESS_GW:-}"
-BUILD_EGRESS_DNS="${VMH_BUILD_EGRESS_DNS:-1.1.1.1}"
-INCUS_BRIDGE="${VMH_CLOUD_BRIDGE:-incusbr0}"
+BUILD_EGRESS_IP="${GOSTI_BUILD_EGRESS_IP:-}"
+BUILD_EGRESS_GW="${GOSTI_BUILD_EGRESS_GW:-}"
+BUILD_EGRESS_DNS="${GOSTI_BUILD_EGRESS_DNS:-1.1.1.1}"
+INCUS_BRIDGE="${GOSTI_CLOUD_BRIDGE:-incusbr0}"
 
 log() { echo "[build-runner-image] $*"; }
 warn() { echo "[build-runner-image] WARNING: $*" >&2; }
@@ -221,12 +221,12 @@ runner_minor_lag() {
 if [ "$RUNNER_VERSION" = "latest" ]; then
   RUNNER_VERSION="$(latest_runner_release || true)"
   if [ -z "$RUNNER_VERSION" ]; then
-    echo "[build-runner-image] ERROR: VMH_RUNNER_VERSION=latest but the latest actions/runner release could not be resolved" >&2
+    echo "[build-runner-image] ERROR: GOSTI_RUNNER_VERSION=latest but the latest actions/runner release could not be resolved" >&2
     exit 1
   fi
-  warn "VMH_RUNNER_VERSION=latest resolved to ${RUNNER_VERSION}; this build is NOT reproducible — pin VMH_RUNNER_VERSION for that"
+  warn "GOSTI_RUNNER_VERSION=latest resolved to ${RUNNER_VERSION}; this build is NOT reproducible — pin GOSTI_RUNNER_VERSION for that"
   if [ -n "$RUNNER_SHA256" ]; then
-    warn "VMH_RUNNER_SHA256 is ignored with VMH_RUNNER_VERSION=latest"
+    warn "GOSTI_RUNNER_SHA256 is ignored with GOSTI_RUNNER_VERSION=latest"
     RUNNER_SHA256=""
   fi
 elif [ "$RUNNER_STALENESS_CHECK" != "0" ]; then
@@ -238,7 +238,7 @@ elif [ "$RUNNER_STALENESS_CHECK" != "0" ]; then
   else
     lag="$(runner_minor_lag "$RUNNER_VERSION" "$upstream_latest")"
     if [ -n "$lag" ] && [ "$lag" -ge 2 ]; then
-      warn "actions runner pin ${RUNNER_VERSION} is ${lag} minor releases behind latest ${upstream_latest}; GitHub deprecates such releases and they stop receiving jobs — bump VMH_RUNNER_VERSION"
+      warn "actions runner pin ${RUNNER_VERSION} is ${lag} minor releases behind latest ${upstream_latest}; GitHub deprecates such releases and they stop receiving jobs — bump GOSTI_RUNNER_VERSION"
     fi
   fi
 fi
@@ -267,7 +267,7 @@ ensure_build_egress() {
     bip="$(printf '%s' "$gw" | awk -F. '{printf "%s.%s.%s.249", $1,$2,$3}')"
   fi
   if [ -z "$gw" ] || [ -z "$bip" ]; then
-    echo "[build-runner-image] could not derive build egress IP/gateway (set VMH_BUILD_EGRESS_IP / VMH_BUILD_EGRESS_GW)" >&2
+    echo "[build-runner-image] could not derive build egress IP/gateway (set GOSTI_BUILD_EGRESS_IP / GOSTI_BUILD_EGRESS_GW)" >&2
     exit 1
   fi
   log "build-container egress ${bip} via ${gw} (dns ${BUILD_EGRESS_DNS})"
@@ -290,7 +290,7 @@ teardown_build_egress() {
 # HR-REPRO helpers ────────────────────────────────────────────────────────────
 # Resolve the reprobuild rev to build `repro-portable` from. nixos-modules'
 # flake.lock is the SINGLE source of truth (its `reprobuild` node rev). An
-# explicit VMH_REPRO_PIN overrides it (e.g. to test an unlanded rev). We resolve
+# explicit GOSTI_REPRO_PIN overrides it (e.g. to test an unlanded rev). We resolve
 # a concrete rev — rather than build `github:…/reprobuild#repro-portable` at a
 # floating branch — so the runner image and the nix fleet install byte-identical
 # `repro` from the same commit. nixos-modules does NOT re-export repro-portable
@@ -299,12 +299,12 @@ teardown_build_egress() {
 # rev nixos-modules pins.
 resolve_repro_pin() {
   if [ -n "$REPRO_PIN" ]; then
-    log "HR-REPRO: using explicit reprobuild pin VMH_REPRO_PIN=${REPRO_PIN}"
+    log "HR-REPRO: using explicit reprobuild pin GOSTI_REPRO_PIN=${REPRO_PIN}"
     return 0
   fi
   if [ ! -f "$NIXOS_MODULES_LOCK" ]; then
     echo "[build-runner-image] HR-REPRO: nixos-modules flake.lock not found at ${NIXOS_MODULES_LOCK}" >&2
-    echo "  (set VMH_NIXOS_MODULES_LOCK to its path, or VMH_REPRO_PIN to a reprobuild rev)" >&2
+    echo "  (set GOSTI_NIXOS_MODULES_LOCK to its path, or GOSTI_REPRO_PIN to a reprobuild rev)" >&2
     exit 1
   fi
   # Pull the reprobuild node's locked rev out of the lock JSON. Prefer python3
@@ -339,8 +339,8 @@ build_repro_bundle() {
   fi
   if ! command -v nix >/dev/null 2>&1; then
     echo "[build-runner-image] HR-REPRO: nix not found on the host — cannot build repro-portable." >&2
-    echo "  Supply a pre-built bundle via VMH_REPRO_BUNDLE=/path/to/repro-portable, or set" >&2
-    echo "  VMH_RUNNER_REPRO=0 to skip the repro bake." >&2
+    echo "  Supply a pre-built bundle via GOSTI_REPRO_BUNDLE=/path/to/repro-portable, or set" >&2
+    echo "  GOSTI_RUNNER_REPRO=0 to skip the repro bake." >&2
     exit 1
   fi
   local flakeref="github:metacraft-labs/reprobuild/${REPRO_PIN}#repro-portable"
@@ -360,10 +360,10 @@ build_repro_bundle() {
 #    predates a Debian point release makes the in-container `apt-get` below fail:
 #    once the pool rotates, the exact package versions the stale index pins are
 #    removed and `apt-get install` 404s (e.g. `libcurl3-gnutls …deb12u14 404`).
-#    So refresh the cache once it is older than VMH_CLOUD_MAX_AGE_DAYS (default 7;
+#    So refresh the cache once it is older than GOSTI_CLOUD_MAX_AGE_DAYS (default 7;
 #    set 0 to disable the age check and always reuse an existing cache). If not
 #    present (or just deleted for age), copy it from the remote (host has network).
-CLOUD_MAX_AGE_DAYS="${VMH_CLOUD_MAX_AGE_DAYS:-7}"
+CLOUD_MAX_AGE_DAYS="${GOSTI_CLOUD_MAX_AGE_DAYS:-7}"
 if [ "$CLOUD_MAX_AGE_DAYS" -gt 0 ] && "${INCUS[@]}" image info "$CLOUD_BASE" >/dev/null 2>&1; then
   uploaded="$("${INCUS[@]}" image info "$CLOUD_BASE" 2>/dev/null | sed -n 's/.*Uploaded: //p' | head -1)"
   up_epoch="$(date -d "$uploaded" +%s 2>/dev/null || echo 0)"
@@ -379,8 +379,8 @@ if ! "${INCUS[@]}" image info "$CLOUD_BASE" >/dev/null 2>&1; then
 fi
 
 # 1. Obtain the runner tarball on the HOST (containers have no egress here).
-if [ -n "${VMH_RUNNER_TARBALL:-}" ] && [ -f "${VMH_RUNNER_TARBALL}" ]; then
-  TARBALL="${VMH_RUNNER_TARBALL}"
+if [ -n "${GOSTI_RUNNER_TARBALL:-}" ] && [ -f "${GOSTI_RUNNER_TARBALL}" ]; then
+  TARBALL="${GOSTI_RUNNER_TARBALL}"
   log "using pre-downloaded runner tarball: $TARBALL"
 else
   TARBALL="/tmp/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
@@ -629,7 +629,7 @@ cat "$TARBALL" | "${INCUS[@]}" exec "$BLD" -- sh -c "
   test -x '${RUNNER_CACHE}/config.sh'
 "
 # Sanity: the runner binary must load with the base deps.
-# The staged binary must also BE the pinned version: a VMH_RUNNER_TARBALL for a
+# The staged binary must also BE the pinned version: a GOSTI_RUNNER_TARBALL for a
 # different release would otherwise publish an image whose label lies about
 # the runner it carries.
 log "smoke: Runner.Listener --version"
@@ -657,8 +657,8 @@ log "clearing root-owned runtime dirs + re-asserting ${RUNNER_USER} ownership"
 "
 
 # 5a-REPRO. HR-REPRO — bake the pinned `repro` CLI onto PATH + PRE-WARM its
-#     extraction so per-job first-run is fast. Default-ON (VMH_RUNNER_REPRO=1);
-#     set VMH_RUNNER_REPRO=0 to reproduce the pre-repro image. See the header
+#     extraction so per-job first-run is fast. Default-ON (GOSTI_RUNNER_REPRO=1);
+#     set GOSTI_RUNNER_REPRO=0 to reproduce the pre-repro image. See the header
 #     for the full rationale (ephemeral runners must not pay the ~50 s cold
 #     extraction per job).
 if [ "$REPRO" != "0" ]; then
@@ -913,7 +913,7 @@ if [ -n "$KVM" ]; then
     # groups, so a nixosTest could not open /dev/kvm and fell back to TCG.
     # 0666 is the NixOS default for this node.
     printf '%s\n' 'KERNEL==\"kvm\", GROUP=\"kvm\", MODE=\"0666\", OPTIONS+=\"static_node=kvm\"' \
-      > /etc/udev/rules.d/99-vmh-nested-kvm.rules
+      > /etc/udev/rules.d/99-gosti-nested-kvm.rules
     # Same file name in /etc masks the packaged one; only the kvm line changes.
     sed 's#^z /dev/kvm .*#z /dev/kvm 0666 - kvm -#' \
       /usr/lib/tmpfiles.d/static-nodes-permissions.conf \
@@ -945,8 +945,8 @@ if [ "$REPRO" != "0" ]; then
   REPRO_PROV=" + repro-portable [HR-REPRO pin ${REPRO_PIN}]"
 fi
 "${INCUS[@]}" exec "$BLD" -- sh -c "
-  printf 'vmh-linux-runner: %s (cloud) + actions-runner %s + cloud-init%s%s%s\n' \
-    '${CLOUD_BASE}' '${RUNNER_VERSION}' \"${DOCKER:+ + docker ${DOCKER_VERSION} (${DOCKER_STORAGE_DRIVER}) [HR1 nested]}\" \"${KVM:+ + qemu-system-x86 [HR2 nested-kvm]}\" \"${REPRO_PROV}\" > /etc/vmh-linux-runner-release
+  printf 'gosti-linux-runner: %s (cloud) + actions-runner %s + cloud-init%s%s%s\n' \
+    '${CLOUD_BASE}' '${RUNNER_VERSION}' \"${DOCKER:+ + docker ${DOCKER_VERSION} (${DOCKER_STORAGE_DRIVER}) [HR1 nested]}\" \"${KVM:+ + qemu-system-x86 [HR2 nested-kvm]}\" \"${REPRO_PROV}\" > /etc/gosti-linux-runner-release
 "
 
 # 7. Stop + publish, then move the runner image alias onto the new image.
@@ -962,7 +962,7 @@ log "stopping container + publishing image alias '$ALIAS'"
 OLD_FP="$("${INCUS[@]}" image info "$ALIAS" 2>/dev/null | awk '/^Fingerprint:/ {print $2; exit}' || true)"
 PUBLISH_OUT="$("${INCUS[@]}" publish "$BLD" \
   --public=false \
-  description="vmh linux runner: ${CLOUD_BASE} + actions-runner ${RUNNER_VERSION} + cloud-init" 2>&1)" || {
+  description="gosti linux runner: ${CLOUD_BASE} + actions-runner ${RUNNER_VERSION} + cloud-init" 2>&1)" || {
   printf '%s\n' "$PUBLISH_OUT" >&2
   log "ERROR: incus publish of '$BLD' failed" >&2
   exit 1
@@ -972,10 +972,10 @@ if [ -z "$NEW_FP" ]; then
   log "ERROR: could not read the published image fingerprint from: $PUBLISH_OUT" >&2
   exit 1
 fi
-"${INCUS[@]}" image set-property "$NEW_FP" vmh.recipe_revision "$RECIPE_REVISION"
+"${INCUS[@]}" image set-property "$NEW_FP" gosti.recipe_revision "$RECIPE_REVISION"
 # Machine-readable runner version, so fleet checks can compare what an image
 # actually carries against upstream without parsing the description.
-"${INCUS[@]}" image set-property "$NEW_FP" vmh.runner_version "$RUNNER_VERSION"
+"${INCUS[@]}" image set-property "$NEW_FP" gosti.runner_version "$RUNNER_VERSION"
 "${INCUS[@]}" image alias delete "$ALIAS" >/dev/null 2>&1 || true
 "${INCUS[@]}" image alias create "$ALIAS" "$NEW_FP"
 if [ -n "$OLD_FP" ] && [ "$OLD_FP" != "$NEW_FP" ]; then

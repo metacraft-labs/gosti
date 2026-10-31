@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## integration_vm_harness_tart_lifecycle (M2 verification).
+## integration_gosti_tart_lifecycle (M2 verification).
 ##
 ## Exercises every ``TartBackend`` method against a real Tart-managed
 ## Linux ARM guest cloned from the cirruslabs Ubuntu golden image. The
@@ -25,18 +25,18 @@
 ## the per-host backend tooling).
 
 import std/[options, os, strutils, tables, tempfiles, unittest]
-import vm_harness
+import gosti
 
 when not defined(macosx):
   echo "[skip] t_tart_lifecycle: integration test requires a macOS host"
   quit(0)
 
-# Tunable via VMH_TART_LINUX_GOLDEN for CI override; default is the
+# Tunable via GOSTI_TART_LINUX_GOLDEN for CI override; default is the
 # canonical cirruslabs Linux ARM image.
 let
-  goldenOverride = getEnv("VMH_TART_LINUX_GOLDEN", "")
-  envBootTimeout = getEnv("VMH_TART_BOOT_TIMEOUT", "120")
-  envSshTimeout = getEnv("VMH_TART_SSH_TIMEOUT", "90")
+  goldenOverride = getEnv("GOSTI_TART_LINUX_GOLDEN", "")
+  envBootTimeout = getEnv("GOSTI_TART_BOOT_TIMEOUT", "120")
+  envSshTimeout = getEnv("GOSTI_TART_SSH_TIMEOUT", "90")
 
 proc makeBackend(): TartBackend =
   result = newTartBackend(
@@ -76,24 +76,24 @@ suite "TartBackend lifecycle (Linux ARM guest)":
 
       # 1. execInGuest with env carries the environment through SSH.
       let r = b.execInGuest(vm,
-        env = {"VMH_TEST_KEY": "vmh-test-value"}.toTable,
-        cmd = @["/bin/sh", "-c", "echo $VMH_TEST_KEY; hostname"],
+        env = {"GOSTI_TEST_KEY": "gosti-test-value"}.toTable,
+        cmd = @["/bin/sh", "-c", "echo $GOSTI_TEST_KEY; hostname"],
         timeoutSec = 30)
       check r.exitCode == 0
-      check "vmh-test-value" in r.stdout
+      check "gosti-test-value" in r.stdout
       # The cirruslabs ubuntu golden sets the guest hostname to
       # "ubuntu"; we just check it's non-empty.
       check r.stdout.strip().len > 0
 
       # 2. copyToGuest + copyFromGuest round-trip.
-      let tmpDir = createTempDir("vmh-tart-copy-", "")
+      let tmpDir = createTempDir("gosti-tart-copy-", "")
       defer: removeDir(tmpDir)
       let srcPath = tmpDir / "payload.txt"
       let dstPath = tmpDir / "harvested.txt"
-      let payload = "vm-harness-tart-roundtrip-" & $getCurrentProcessId()
+      let payload = "gosti-tart-roundtrip-" & $getCurrentProcessId()
       writeFile(srcPath, payload)
-      b.copyToGuest(vm, srcPath, "/tmp/vmh-payload.txt")
-      b.copyFromGuest(vm, "/tmp/vmh-payload.txt", dstPath)
+      b.copyToGuest(vm, srcPath, "/tmp/gosti-payload.txt")
+      b.copyFromGuest(vm, "/tmp/gosti-payload.txt", dstPath)
       check fileExists(dstPath)
       check readFile(dstPath) == payload
 

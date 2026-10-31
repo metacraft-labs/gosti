@@ -8,7 +8,8 @@
 ## filesystem, executable discovery and subprocess boundary are all real.
 
 import std/[json, os, strutils, tables, tempfiles, unittest]
-import vm_harness
+import gosti
+import gosti/cli
 
 const IncusFixtureName = when defined(windows): "incus-fixture.exe" else: "incus-fixture"
 
@@ -44,27 +45,69 @@ proc lineIndex(lines: seq[string], wanted: string): int =
   -1
 
 suite "Incus ephemeral operator capabilities":
-  test "defaults preserve the original launch argv byte-for-byte":
-    let work = createTempDir("vmh-incus-default", "")
+  test "CLI preserves default root and NIC profile before the store overlay":
+    let work = createTempDir("gosti-incus-cli-profiles", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
     let shim = work / IncusFixtureName
     writeIncusShim(shim, logPath)
-    let b = newIncusBackend(incusCmd = @[shim], baseImage = "vmh-base")
+    let previous = getEnv("GOSTI_INCUS_CMD")
+    putEnv("GOSTI_INCUS_CMD", quoteShellCommand(@[shim]))
+    defer: putEnv("GOSTI_INCUS_CMD", previous)
+
+    check runCli(@[
+      "run", "--ephemeral", "--backend", "incus", "--keep",
+      "--baseline", "profiled", "--base-image", "runner-base",
+      "--incus-profile", "default", "--incus-profile", "ci-store",
+    ]) == 0
+    check readFile(logPath).strip().splitLines() == @[
+      "info profiled",
+      "launch runner-base profiled --profile default --profile ci-store",
+    ]
+
+  test "a failed profile attachment cleans the exact container":
+    let work = createTempDir("gosti-incus-profile-failure", "")
+    defer: removeDir(work)
+    let logPath = work / "argv.log"
+    let shim = work / IncusFixtureName
+    let launch = "launch runner-base profile-failure --profile default " &
+      "--profile unavailable"
+    writeIncusShim(shim, logPath, failExact = launch)
+    let previous = getEnv("GOSTI_INCUS_CMD")
+    putEnv("GOSTI_INCUS_CMD", quoteShellCommand(@[shim]))
+    defer: putEnv("GOSTI_INCUS_CMD", previous)
+
+    expect GostiError:
+      discard runCli(@[
+        "run", "--ephemeral", "--backend", "incus", "--keep",
+        "--baseline", "profile-failure", "--base-image", "runner-base",
+        "--incus-profile", "default", "--incus-profile", "unavailable",
+      ])
+    check readFile(logPath).strip().splitLines() == @[
+      "info profile-failure", launch, "delete --force profile-failure",
+    ]
+
+  test "defaults preserve the original launch argv byte-for-byte":
+    let work = createTempDir("gosti-incus-default", "")
+    defer: removeDir(work)
+    let logPath = work / "argv.log"
+    let shim = work / IncusFixtureName
+    writeIncusShim(shim, logPath)
+    let b = newIncusBackend(incusCmd = @[shim], baseImage = "gosti-base")
 
     discard b.provisionEphemeralClone(EphemeralIncusSpec(name: "plain"))
     let lines = readFile(logPath).strip().splitLines()
-    check lines == @["info plain", "launch vmh-base plain"]
+    check lines == @["info plain", "launch gosti-base plain"]
     check lines.join("\n").find("security.nesting") < 0
     check lines.join("\n").find("/dev/kvm") < 0
 
   test "default launch keeps legacy option ordering; user-data never reaches incus config":
-    let work = createTempDir("vmh-incus-default-options", "")
+    let work = createTempDir("gosti-incus-default-options", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
     let shim = work / IncusFixtureName
     writeIncusShim(shim, logPath)
-    let b = newIncusBackend(incusCmd = @[shim], baseImage = "vmh-base")
+    let b = newIncusBackend(incusCmd = @[shim], baseImage = "gosti-base")
 
     discard b.provisionEphemeralClone(EphemeralIncusSpec(
       name: "plain-options",
@@ -78,7 +121,7 @@ suite "Incus ephemeral operator capabilities":
     # which also keeps the registration token out of ``incus config show``.
     check lines == @[
       "info plain-options",
-      "launch vmh-base plain-options --ephemeral --profile runner " &
+      "launch gosti-base plain-options --ephemeral --profile runner " &
         "--profile network",
     ]
     check lines.join("\n").find("cloud-init.user-data") < 0
@@ -87,7 +130,7 @@ suite "Incus ephemeral operator capabilities":
     check lines.join("\n").find("/dev/kvm") < 0
 
   test "nesting and KVM are configured in fixed order before first start":
-    let work = createTempDir("vmh-incus-capabilities", "")
+    let work = createTempDir("gosti-incus-capabilities", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
     let shim = work / IncusFixtureName
@@ -123,7 +166,7 @@ suite "Incus ephemeral operator capabilities":
     check lines.join("\n").find("launch runner-base nested") < 0
 
   test "resource limits are applied before first start alongside nesting":
-    let work = createTempDir("vmh-incus-limits", "")
+    let work = createTempDir("gosti-incus-limits", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
     let shim = work / IncusFixtureName
@@ -150,7 +193,7 @@ suite "Incus ephemeral operator capabilities":
     check lines.join("\n").find("launch runner-base capped") < 0
 
   test "resource limits alone take the pre-start path without capabilities":
-    let work = createTempDir("vmh-incus-limits-only", "")
+    let work = createTempDir("gosti-incus-limits-only", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
     let shim = work / IncusFixtureName
@@ -168,7 +211,7 @@ suite "Incus ephemeral operator capabilities":
     ]
 
   test "nested KVM alone implies nesting without Docker intercepts":
-    let work = createTempDir("vmh-incus-kvm-only", "")
+    let work = createTempDir("gosti-incus-kvm-only", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
     let shim = work / IncusFixtureName
@@ -185,7 +228,7 @@ suite "Incus ephemeral operator capabilities":
     check "security.syscalls.intercept.setxattr" notin joined
 
   test "fixed capability policy overrides conflicting raw config before start":
-    let work = createTempDir("vmh-incus-fixed-policy", "")
+    let work = createTempDir("gosti-incus-fixed-policy", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
     let shim = work / IncusFixtureName
@@ -210,7 +253,7 @@ suite "Incus ephemeral operator capabilities":
     check fixedValue < startPos
 
   test "device-attachment failure cleans up and never starts the guest":
-    let work = createTempDir("vmh-incus-device-fail", "")
+    let work = createTempDir("gosti-incus-device-fail", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
     let shim = work / IncusFixtureName
@@ -219,7 +262,7 @@ suite "Incus ephemeral operator capabilities":
     writeIncusShim(shim, logPath, failExact = failing)
     let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
 
-    expect VmHarnessError:
+    expect GostiError:
       discard b.provisionEphemeralClone(EphemeralIncusSpec(
         name: "no-device", nestedKvm: true))
     let lines = readFile(logPath).strip().splitLines()
@@ -228,7 +271,7 @@ suite "Incus ephemeral operator capabilities":
     check lines[^1] == "delete --force no-device"
 
   test "post-start access failure cleans up the started container":
-    let work = createTempDir("vmh-incus-access-fail", "")
+    let work = createTempDir("gosti-incus-access-fail", "")
     defer: removeDir(work)
     let logPath = work / "argv.log"
     let shim = work / IncusFixtureName
@@ -236,7 +279,7 @@ suite "Incus ephemeral operator capabilities":
     writeIncusShim(shim, logPath, failExact = failing)
     let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
 
-    expect VmHarnessError:
+    expect GostiError:
       discard b.provisionEphemeralClone(EphemeralIncusSpec(
         name: "inaccessible", nestedKvm: true))
     let lines = readFile(logPath).strip().splitLines()
@@ -263,7 +306,7 @@ suite "Incus ephemeral operator capabilities":
         "exec fail-open -- sh -c exec 3<>/dev/kvm"),
     ]
     for failure in failures:
-      let work = createTempDir("vmh-incus-failure-" & failure.suffix, "")
+      let work = createTempDir("gosti-incus-failure-" & failure.suffix, "")
       let logPath = work / "argv.log"
       let shim = work / IncusFixtureName
       writeIncusShim(shim, logPath, failExact = failure.command)
@@ -279,7 +322,7 @@ suite "Incus ephemeral operator capabilities":
           config: rawConfig,
           securityNesting: true,
           nestedKvm: true))
-      except VmHarnessError:
+      except GostiError:
         raised = true
       check raised
       let lines = readFile(logPath).strip().splitLines()
@@ -292,14 +335,14 @@ suite "Incus ephemeral operator capabilities":
 
   test "readiness failure and wrong numeric mode both clean exact container":
     block readinessFailure:
-      let work = createTempDir("vmh-incus-readiness-failure", "")
+      let work = createTempDir("gosti-incus-readiness-failure", "")
       defer: removeDir(work)
       let logPath = work / "argv.log"
       let shim = work / IncusFixtureName
       writeIncusShim(shim, logPath, rejectReady = true)
       let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base",
                               readyTimeoutSec = 0)
-      expect VmHarnessError:
+      expect GostiError:
         discard b.provisionEphemeralClone(EphemeralIncusSpec(
           name: "fail-ready", nestedKvm: true))
       let lines = readFile(logPath).strip().splitLines()
@@ -307,13 +350,13 @@ suite "Incus ephemeral operator capabilities":
       check lines[^1] == "delete --force fail-ready"
 
     block wrongMode:
-      let work = createTempDir("vmh-incus-wrong-mode", "")
+      let work = createTempDir("gosti-incus-wrong-mode", "")
       defer: removeDir(work)
       let logPath = work / "argv.log"
       let shim = work / IncusFixtureName
       writeIncusShim(shim, logPath, statMode = "660")
       let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
-      expect VmHarnessError:
+      expect GostiError:
         discard b.provisionEphemeralClone(EphemeralIncusSpec(
           name: "wrong-mode", nestedKvm: true))
       let lines = readFile(logPath).strip().splitLines()

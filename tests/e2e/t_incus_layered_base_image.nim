@@ -12,7 +12,7 @@
 ## The chain proven (each step against a genuinely launched container, NOT a
 ## mock):
 ##
-##   1. Launch ``c1`` from ``vmh-base`` (the empty base).
+##   1. Launch ``c1`` from ``gosti-base`` (the empty base).
 ##   2. Edge A (stand-in for "+reprobuild"): write a distinctive marker file
 ##      ``/opt/edge-a`` in c1.
 ##   3. ``snapshot(c1, "edge-a")`` — the edge's cached output.
@@ -24,27 +24,27 @@
 ##      published alias, then ``importBaseline(exportDir)`` re-registers it.
 ##   7. Launch ``c2`` from the imported base-image alias.
 ##   8. NON-VACUOUS: ``cat /opt/edge-a`` in c2 returns EXACTLY the marker —
-##      proving edge A composed through the chain (a bare ``vmh-base``
+##      proving edge A composed through the chain (a bare ``gosti-base``
 ##      container has NO ``/opt/edge-a``; asserted explicitly on c1 at launch).
 ##   9. Edge B (+config): write ``/opt/edge-b`` in c2; assert BOTH edge-a and
 ##      edge-b are present (the layers compose).
 ##  10. Teardown + residue assertion: no c1/c2, no temp/published images,
 ##      export dir removed.
 ##
-## Skip/teardown discipline mirrors ``t_vmharness_incus_ephemeral_run``: the
+## Skip/teardown discipline mirrors ``t_gosti_incus_ephemeral_run``: the
 ## test self-skips cleanly (quit 0) when not Linux, or Incus is unusable, or
-## the ``vmh-base`` image is absent, and ALL created containers + images +
+## the ``gosti-base`` image is absent, and ALL created containers + images +
 ## the export dir are destroyed on exit (even on failure). Unique throwaway
 ## names embed the PID so this never collides with live containers/images
-## (``garm-*``, ``k3s-*``, ``nomad-*``, ``vmh-base``, ``vmh-linux-*``,
+## (``garm-*``, ``k3s-*``, ``nomad-*``, ``gosti-base``, ``gosti-linux-*``,
 ## ``ah-*``, ``sc15-*``, ``im2-*``).
 ##
-## Run (from a vm-harness checkout on a Linux host with Incus):
-##   export VMH_INCUS_CMD="sudo -n incus"   # only if group not yet active
+## Run (from a gosti checkout on a Linux host with Incus):
+##   export GOSTI_INCUS_CMD="sudo -n incus"   # only if group not yet active
 ##   nim r --hints:off tests/e2e/t_incus_layered_base_image.nim
 
 import std/[os, strutils, tables, unittest]
-import vm_harness
+import gosti
 
 when not defined(linux):
   echo "[skip] t_incus_layered_base_image: Linux host required"
@@ -52,15 +52,15 @@ when not defined(linux):
 
 let baseImage =
   block:
-    let e = getEnv("VMH_INCUS_BASE")
-    if e.len > 0: e else: "vmh-base"
+    let e = getEnv("GOSTI_INCUS_BASE")
+    if e.len > 0: e else: "gosti-base"
 
 let tag = "p" & $getCurrentProcessId()
-let c1 = "vmh-layered-c1-" & tag
-let c2 = "vmh-layered-c2-" & tag
-let bareCheck = "vmh-layered-bare-" & tag
-let publishedAlias = "vmh-base-plus-edgea-" & tag
-let exportDir = getTempDir() / ("vmh-layered-export-" & tag)
+let c1 = "gosti-layered-c1-" & tag
+let c2 = "gosti-layered-c2-" & tag
+let bareCheck = "gosti-layered-bare-" & tag
+let publishedAlias = "gosti-base-plus-edgea-" & tag
+let exportDir = getTempDir() / ("gosti-layered-export-" & tag)
 
 const
   MarkerPath = "/opt/edge-a"
@@ -105,7 +105,7 @@ proc cleanupAll(be: IncusBackend) =
   # The transient export alias exportBaseline uses (cleaned by export, but
   # be defensive if a failure left it behind).
   try:
-    let exAlias = "vmh-export-" & c1 & "-" & SnapName
+    let exAlias = "gosti-export-" & c1 & "-" & SnapName
     if be.imageAliasExists(exAlias):
       discard be.runIncus(@["image", "delete", exAlias], timeoutSec = 60)
   except CatchableError: discard
@@ -119,7 +119,7 @@ suite "t_incus_layered_base_image":
   test "incus usable + base image present (else skip)":
     if not be.probeAvailability():
       echo "[skip] incus daemon not reachable via the configured command " &
-           "(set VMH_INCUS_CMD=\"sudo -n incus\" if the incus-admin group " &
+           "(set GOSTI_INCUS_CMD=\"sudo -n incus\" if the incus-admin group " &
            "is not active in this session)"
       skip()
     else:
@@ -153,7 +153,7 @@ suite "t_incus_layered_base_image":
         # Pre-clean any residue from a crashed prior run.
         cleanupAll(be)
         try:
-          # -- (0) A bare vmh-base container has NO /opt/edge-a. This makes
+          # -- (0) A bare gosti-base container has NO /opt/edge-a. This makes
           #        the later c2 assertion genuinely non-vacuous.
           block:
             let bareVm = launchAndReady(be, bareCheck, baseImage)
@@ -238,5 +238,5 @@ suite "t_incus_layered_base_image":
         check (not be.containerExists(c2))
         check (not be.containerExists(bareCheck))
         check (not be.imageAliasExists(publishedAlias))
-        check (not be.imageAliasExists("vmh-export-" & c1 & "-" & SnapName))
+        check (not be.imageAliasExists("gosti-export-" & c1 & "-" & SnapName))
         check (not dirExists(exportDir))

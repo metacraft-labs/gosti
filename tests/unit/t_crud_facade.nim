@@ -17,7 +17,7 @@
 ## emits and the exit code it returns.
 
 import std/[json, options, os, strutils, tables, tempfiles, unittest]
-import vm_harness
+import gosti
 
 proc params(name = ""): CrudParams =
   ## Bare params with only a name; individual tests fill the rest.
@@ -117,7 +117,7 @@ suite "CRUD façade — happy-path lifecycle over noop":
 
   test "copy_to_vm + copy_from_vm round-trip a real file":
     discard runCrud(session, "create_vm", params("vm1"))
-    let host = createTempDir("vmh-crud-", "")
+    let host = createTempDir("gosti-crud-", "")
     defer: removeDir(host)
     writeFile(host / "payload.txt", "hello")
     var toP = params("vm1")

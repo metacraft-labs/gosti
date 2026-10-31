@@ -21,5 +21,5 @@ ships the empty skeleton; M3 onward fills it in:
   pinned archive (`--arch x64|arm64`); parses the pin out of
   `provision-git.ps1` rather than repeating it.
 
-vm-harness's lifecycle primitives operate on already-existing baselines;
+gosti's lifecycle primitives operate on already-existing baselines;
 the recipes here document how to create them.

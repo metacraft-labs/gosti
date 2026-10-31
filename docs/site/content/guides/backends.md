@@ -14,9 +14,9 @@ actually available on your host with `gosti probe`.
 
 For the deep per-backend transport details (SSH vs PowerShell Direct vs
 `incus exec`, file-transfer mechanism, snapshot strategy) read the
-[per-backend notes](https://github.com/metacraft-labs/gosti/blob/main/docs/per-backend-notes)
+[per-backend notes](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/per-backend-notes)
 and the
-[design reference](https://github.com/metacraft-labs/gosti/blob/main/docs/design.md).
+[design reference](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/architecture.md).
 
 ## Support matrix (shipped)
 
@@ -55,9 +55,9 @@ without any real hypervisor — the only mock allowed by the test methodology
   recipe that assembles an autounattend ISO; a controller SSH pubkey and a
   first-boot script can be baked into that ISO (`--controller-pubkey`,
   `--first-boot-script`, both require `--recipe`). See the
-  [M4 libvirt notes](https://github.com/metacraft-labs/gosti/blob/main/docs/m4-libvirt.md)
-  for the canonical command shapes and the Phase B/C scope (snapshot/restore,
-  GPU/SR-IOV/USB passthrough are outstanding).
+  [libvirt notes](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/libvirt.md)
+  for the canonical command shapes. GPU, SR-IOV and USB passthrough are not
+  supported.
 - Caveat: the golden qcow2 and every parent directory must be readable by
   the libvirt/QEMU user, or the clone fails to open its backing file.
 
@@ -71,15 +71,15 @@ without any real hypervisor — the only mock allowed by the test methodology
 - Reset: ephemeral only — default `incus launch`; capability runners use
   `incus init` → fixed config/device → `incus start`; both end with
   `incus delete --force`, with no residual container or storage volume.
-- Constructor defaults: `baseImage = vmh-base`, `storagePool = default`.
+- Constructor defaults: `baseImage = gosti-base`, `storagePool = default`.
 - Socket-access caveat: if your session pre-dates the `incus-admin` group
   grant (or you are in a sandbox), prefix the CLI:
-  `export VMH_INCUS_CMD="sudo -n incus"`. The backend reads `VMH_INCUS_CMD`
+  `export GOSTI_INCUS_CMD="sudo -n incus"`. The backend reads `GOSTI_INCUS_CMD`
   (space-split) as its command vector; production leaves it unset.
 - JIT seam: `provisionEphemeralClone` leaves a cloud-init `user-data`
   injection point (`incus config set <name> cloud-init.user-data ...`) for a
   GARM JIT bootstrap. The base image is pinned locally, e.g.
-  `incus image copy images:debian/12 local: --alias vmh-base`.
+  `incus image copy images:debian/12 local: --alias gosti-base`.
 - Nested capability seam: `--incus-security-nesting` and
   `--incus-nested-kvm` are accepted only for `run --ephemeral --backend incus`.
   They are trusted-controller privileges, never guest/workflow inputs; nested
@@ -88,7 +88,7 @@ without any real hypervisor — the only mock allowed by the test methodology
   not lease, a static per-job IP is injected via cloud-init and large files are
   streamed in via `cat | incus exec tar` rather than `incus file push` (which
   can corrupt large tarballs on some hosts). See the
-  [Incus backend notes](https://github.com/metacraft-labs/gosti/blob/main/docs/per-backend-notes/incus.md).
+  [Incus backend notes](https://github.com/metacraft-labs/gosti/blob/dev/docs/contributors/per-backend-notes/incus.md).
 
 ## Lima (macOS or Linux host, Linux guest)
 
@@ -97,7 +97,7 @@ without any real hypervisor — the only mock allowed by the test methodology
 - Reset: delete + recreate + start (targets ≤ 30 s). `provisionBaseline`
   also reaps stale `repro-vm-lima-*` instances from aborted prior runs.
 - Constructor: `newLimaBackend(cpus, memoryGiB, diskGiB, bootTimeoutSec)`;
-  boot timeout is tunable (the tests read `VMH_LIMA_BOOT_TIMEOUT` for slow CI
+  boot timeout is tunable (the tests read `GOSTI_LIMA_BOOT_TIMEOUT` for slow CI
   disks).
 - Note: the library gates Lima to macOS in the integration test, but the
   backend is offered on Linux hosts too.
@@ -118,7 +118,7 @@ without any real hypervisor — the only mock allowed by the test methodology
 ## UTM (Apple-Silicon macOS host, Windows-on-ARM guest)
 
 - Host needs: UTM installed out-of-band (provides `utmctl`).
-- Guests: Windows on ARM (`utm-windows-arm`). Partial support (M3).
+- Guests: Windows on ARM (`utm-windows-arm`). Partial support.
 - Reset: `utmctl clone` from a local bundle (≤ 20 s).
 - Recipe: built from `guest-recipes/windows-arm-base` (autounattend ISO
   assembly, with an offline Win32-OpenSSH ARM64 fallback).
@@ -127,7 +127,7 @@ without any real hypervisor — the only mock allowed by the test methodology
 
 - An alternative Windows-on-ARM path driven directly through `qemu-system-aarch64`
   + `qemu-img` + `swtpm`, with SSH into the guest. Heavily env-tunable — see the
-  `VMH_QEMU_WINDOWS_ARM_*` and `VMH_QEMU_EFI_*` variables in the [Parameters
+  `GOSTI_QEMU_WINDOWS_ARM_*` and `GOSTI_QEMU_EFI_*` variables in the [Parameters
   catalog](/reference/parameters). Has a dedicated `prune` scope for its per-job state
   directory.
 

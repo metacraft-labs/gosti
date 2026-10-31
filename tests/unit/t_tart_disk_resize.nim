@@ -28,14 +28,14 @@
 ## get --format json`` reports the same ``Disk`` field real Tart prints, and
 ## ``tart set --disk-size`` refuses to shrink as real Tart does — and record
 ## every invocation so the test asserts on the argv the backend really issued.
-## The real-Tart counterpart is the host gate
-## ``checks/t_vmharness_tart_ephemeral_run.sh`` in metacraft-labs/infra.
+## The real-Tart counterpart is the CI fleet's Tart ephemeral-run host gate,
+## which runs outside this repository.
 
 import std/[json, os, strutils, tables, tempfiles, unittest]
 import ../native_command_fixture
-import vm_harness/backends/tart
-import vm_harness/cli
-import vm_harness/types
+import gosti/backends/tart
+import gosti/cli
+import gosti/types
 
 const NativeSuffix = when defined(windows): ".exe" else: ""
 
@@ -85,7 +85,7 @@ proc newFixture(guestOs: GuestOs, imageGB: int,
   ## ``imageGB`` is the golden's disk size, inherited by every clone.
   ## ``rootFsBytes`` is what ``df`` reports for ``/`` in the guest; when
   ## ``growpartGrowsTo`` is non-zero an in-guest growpart run changes it.
-  result.dir = createTempDir("vmh-tart-disk-", "")
+  result.dir = createTempDir("gosti-tart-disk-", "")
   result.log = result.dir / "tart.log"
   result.sshLog = result.dir / "ssh.log"
   let d = result.dir
@@ -97,7 +97,7 @@ proc newFixture(guestOs: GuestOs, imageGB: int,
   let ssh = diskFixtureCommand(d, "ssh-disk")
   result.backend = newTartBackend(guestOs = guestOs, tartCmd = tart,
     sshpassCmd = sshpass, sshCmd = ssh, bootTimeoutSec = 5,
-    sshReadyTimeoutSec = 10, ephemeralPrefix = "vmh-disk-test")
+    sshReadyTimeoutSec = 10, ephemeralPrefix = "gosti-disk-test")
 
 proc provision(f: Fixture, diskGB: int, defaulted = false) =
   f.backend.provisionBaseline(BaselineSpec(
@@ -156,7 +156,7 @@ suite "Tart per-job disk size":
     let calls = f.tartCalls()
     check f.diskSizeCalls().len == 0
     check calls.indexOfPrefix("run ") == -1
-    check calls.indexOfPrefix("delete vmh-disk-test-") >= 0
+    check calls.indexOfPrefix("delete gosti-disk-test-") >= 0
 
   test "a defaulted size below the image's keeps the image's size":
     let f = newFixture(goLinux, imageGB = 80, rootFsBytes = 78 * GB)
@@ -200,11 +200,11 @@ suite "Tart per-job disk size":
       raised = true
       check "50" in e.msg
     check raised
-    check f.tartCalls().indexOfPrefix("delete vmh-disk-test-") >= 0
+    check f.tartCalls().indexOfPrefix("delete gosti-disk-test-") >= 0
 
 suite "CLI disk size reaches the backend":
   test "an omitted --disk-gb is a DEFAULT, an explicit one is not":
-    # garm-provider-vmharness sends no --disk-gb for Tart, so the default is
+    # garm-provider-gosti sends no --disk-gb for Tart, so the default is
     # what every m3 arm64 runner gets: it must grow the 20 GB golden, and it
     # must never refuse a golden that is already larger.
     var defaulted: BaselineSpec

@@ -182,7 +182,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: the wait":
     delEnv(FakeDieBySignalEnv)
 
   test "a dead QEMU ends the wait at once, with its exit status":
-    let tmp = createTempDir("vmh-qwa-deadwait-", "")
+    let tmp = createTempDir("gosti-qwa-deadwait-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     let pid = spawnAndAwaitDeath("exit 0")
@@ -199,7 +199,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: the wait":
   test "with no pid named, the deadline is still the only bound":
     ## Behaviour preservation, asserted rather than assumed: every existing
     ## caller that does not pass a pid must wait exactly as it did before.
-    let tmp = createTempDir("vmh-qwa-nopid-", "")
+    let tmp = createTempDir("gosti-qwa-nopid-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     createDir(tmp / "ssh")
@@ -213,7 +213,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: the wait":
     ## A guest that RESTARTS FOREVER and a guest that is GONE are different
     ## failures and MA8 exists because the second was being reported as
     ## neither. The reboot bound must still fire on a live guest...
-    let tmp = createTempDir("vmh-qwa-bothbounds-", "")
+    let tmp = createTempDir("gosti-qwa-bothbounds-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     let serial = tmp / QwaSerialLogName
@@ -253,7 +253,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: the wait":
     ## outcomes into a bool is a legitimate thing for an out-of-tree caller to
     ## want — but it must not be a way to opt out of the liveness check by
     ## accident, so it takes the pid too.
-    let tmp = createTempDir("vmh-qwa-wrapper-", "")
+    let tmp = createTempDir("gosti-qwa-wrapper-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp)
     createDir(tmp / "ssh")
@@ -296,7 +296,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: the per-job boot":
     ## report a worse message — it sits out the whole ``sshReadyTimeoutSec``
     ## below and then blames SSH, which is precisely the 2026-09-15 and
     ## 2026-09-16 measurements on m3.
-    let tmp = createTempDir("vmh-qwa-deadguest-", "")
+    let tmp = createTempDir("gosti-qwa-deadguest-", "")
     defer: removeDir(tmp)
     # 120s, not the production 300s, purely so a FALSIFIED build fails in two
     # minutes instead of five. It is still 20x the time the check needs, so
@@ -366,7 +366,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: the per-job boot":
   test "a guest whose QEMU is KILLED is named as killed, with the signal":
     ## ``-no-reboot`` is one cause. The check has to report the process being
     ## gone whatever ended it, so this one is shot rather than exiting.
-    let tmp = createTempDir("vmh-qwa-killedguest-", "")
+    let tmp = createTempDir("gosti-qwa-killedguest-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp, sshReadyTimeoutSec = 120)
     createDir(tmp / "ssh")
@@ -402,7 +402,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: the per-job boot":
     ##
     ## Driven through the one per-job failure that leaves QEMU running: a
     ## guest that answers SSH but refuses ``set-action``.
-    let tmp = createTempDir("vmh-qwa-screen-", "")
+    let tmp = createTempDir("gosti-qwa-screen-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp, sshReadyTimeoutSec = 45)
     createDir(tmp / "ssh")
@@ -437,7 +437,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: the per-job boot":
     ## started is gone" and never "SSH is slow", or it turns a slow but
     ## healthy boot into a failure. Same argv, same fake, same mandatory
     ## reboot as MA4's end-to-end test — only without the death clock.
-    let tmp = createTempDir("vmh-qwa-liveguest-", "")
+    let tmp = createTempDir("gosti-qwa-liveguest-", "")
     defer: removeDir(tmp)
     let b = goldenBackend(tmp, sshReadyTimeoutSec = 45)
     createDir(tmp / "ssh")
@@ -465,7 +465,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: retained diagnostics":
   ## many of them a CI host accumulates.
 
   test "only the small files are copied, and the count is bounded":
-    let tmp = createTempDir("vmh-qwa-diagkeep-", "")
+    let tmp = createTempDir("gosti-qwa-diagkeep-", "")
     defer: removeDir(tmp)
     let stateDir = tmp / "state"
     createDir(stateDir)
@@ -474,7 +474,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: retained diagnostics":
     for i in 1 .. QwaRetainedFailedBoots + 3:
       # ephemeralName embeds the creation epoch, so lexicographic order is
       # chronological order and the pruner can rely on it.
-      let name = "vmh-qwa-" & align($i, 4, '0')
+      let name = "gosti-qwa-" & align($i, 4, '0')
       let vmDir = tmp / name
       createDir(vmDir)
       writeFile(vmDir / QwaSerialLogName, FakeFirmwareBanner)
@@ -496,11 +496,11 @@ suite "t_qemu_windows_arm_dead_guest_is_named: retained diagnostics":
     check retained == QwaRetainedFailedBoots
     # The NEWEST are the ones kept.
     check dirExists(stateDir / QwaFailedBootDirName /
-                    ("vmh-qwa-" & align($(QwaRetainedFailedBoots + 3), 4, '0')))
-    check not dirExists(stateDir / QwaFailedBootDirName / "vmh-qwa-0001")
+                    ("gosti-qwa-" & align($(QwaRetainedFailedBoots + 3), 4, '0')))
+    check not dirExists(stateDir / QwaFailedBootDirName / "gosti-qwa-0001")
 
   test "an instance with nothing to keep retains nothing, and says so":
-    let tmp = createTempDir("vmh-qwa-diagnone-", "")
+    let tmp = createTempDir("gosti-qwa-diagnone-", "")
     defer: removeDir(tmp)
     let stateDir = tmp / "state"
     createDir(stateDir)
@@ -511,7 +511,7 @@ suite "t_qemu_windows_arm_dead_guest_is_named: retained diagnostics":
     check "No diagnostics could be retained" in qwaPerJobDiagnostics("")
 
   test "the framebuffer is named FIRST when one was captured":
-    let tmp = createTempDir("vmh-qwa-diagscreen-", "")
+    let tmp = createTempDir("gosti-qwa-diagscreen-", "")
     defer: removeDir(tmp)
     createDir(tmp / "diag")
     check QwaGoldenScreenshotName notin qwaPerJobDiagnostics(tmp / "diag")

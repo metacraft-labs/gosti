@@ -6,7 +6,7 @@
 ## inner loop of ``recycle-from-pool-per-task``; this one measures the inner
 ## loop of ``clone-per-task``. Run both against the same backend and the
 ## comparison decides which algorithm that backend should use -- see
-## ``docs/pool-algorithms.md`` for the rule and the recorded selections.
+## ``docs/contributors/pool-algorithms.md`` for the rule and the recorded selections.
 ##
 ## Emits the same JSON shape and reports the same median so the two are
 ## directly comparable. Report the MEDIAN, not the mean: both loops throw
@@ -47,7 +47,7 @@
 ## reporting a number that would be quietly mislabelled.
 
 import std/[json, os, sequtils, algorithm, strutils, times]
-import vm_harness
+import gosti
 
 type
   BenchOpts = object

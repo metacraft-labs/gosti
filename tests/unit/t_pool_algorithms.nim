@@ -24,12 +24,12 @@
 ## moment; it proves NOTHING about whether a real hot checkpoint carries
 ## RAM, restores cheaply, or preserves a member's identity. That evidence
 ## lives per backend --
-## `docs/per-backend-notes/hyperv-snapshot-benchmarks.md` (measured) and
+## `docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md` (measured) and
 ## `tests/e2e/t_libvirt_live_snapshot_restore.nim` (the libvirt gate,
 ## pending a maintenance window).
 
 import std/[strutils, unittest]
-import vm_harness
+import gosti
 
 proc mkPool(alg: PoolAlgorithm, size: int = 2): Pool =
   let b = newNoopBackend()
@@ -66,7 +66,7 @@ suite "pool: the development-time backend selection":
     # The cost is not the guest: resume -> SSH-ready is 1.7 s (better than
     # Hyper-V's 5.08 s). It is `snapshot-revert --running` re-reading a
     # 2.61 GiB memory image, at 34.4 s. Flip this only if that changes.
-    # Numbers: docs/per-backend-notes/libvirt-snapshot-benchmarks.md.
+    # Numbers: docs/contributors/per-backend-notes/libvirt-snapshot-benchmarks.md.
     check defaultAlgorithmFor(biLibvirt) == paClonePerTask
 
   test "incus clones pending the ZFS-vs-dir measurement":

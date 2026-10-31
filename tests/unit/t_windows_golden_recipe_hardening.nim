@@ -567,8 +567,8 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
     # which is only safe because the gate below refuses to capture the image.
     let script = readLib("provision-pwsh.ps1")
     const label = "provision-pwsh.ps1"
-    script.mustContain("vmh-pwsh-provision-failed", label)
-    script.mustContain("vmh-pwsh-provision-done", label)
+    script.mustContain("gosti-pwsh-provision-failed", label)
+    script.mustContain("gosti-pwsh-provision-done", label)
     # The last statement of the catch block, so no path out of it can carry a
     # non-zero status back to Windows Setup.
     checkpoint label & ": the catch block must end with `exit 0`"
@@ -601,7 +601,7 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
     # mechanism at length and quotes the same registry key, so a whole-file
     # `contains` stays green even with the check itself removed.
     let gateCode = gate.codeOnly()
-    gateCode.mustContain("vmh-pwsh-provision-failed", label & " (code)")
+    gateCode.mustContain("gosti-pwsh-provision-failed", label & " (code)")
     gateCode.mustContain(MachineEnvKey, label & " (code)")
     gateCode.mustContain("DoNotExpandEnvironmentNames", label & " (code)")
     gateCode.mustContain("RegistryValueKind]::ExpandString", label & " (code)")
@@ -691,7 +691,7 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
     const label = "build-sysprep-golden.sh"
     let buildCode = build.codeOnly()
     buildCode.mustContain("assert-pwsh-provisioned.ps1", label & " (code)")
-    buildCode.mustContain("VMH_SKIP_PWSH_GATE", label & " (code)")
+    buildCode.mustContain("GOSTI_SKIP_PWSH_GATE", label & " (code)")
 
     # The gate's failure must ABORT the build, not warn and continue -- and the
     # abort must be the one guarding the GATE RUN, not the incidental
@@ -739,7 +739,7 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
     #
     #     Get-MpPreference -> ExclusionPath:
     #       C:\pwsh
-    #       C:\Windows\Temp\vmh-pwsh-extract-6752
+    #       C:\Windows\Temp\gosti-pwsh-extract-6752
     #
     # The second one is this script's own PID-named staging directory. It is
     # added before the extract and never removed, so it is CAPTURED into the
@@ -762,7 +762,7 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
 
     # Non-vacuity: this test is meaningless if the staging path is gone or
     # renamed, so locate it first and fail loudly rather than pass on nothing.
-    let stagingLines = script.codeLinesWith("vmh-pwsh-extract-")
+    let stagingLines = script.codeLinesWith("gosti-pwsh-extract-")
     checkpoint label & ": lines naming the staging directory: " & $stagingLines.len
     check stagingLines.len > 0
 
@@ -818,7 +818,7 @@ suite "Windows goldens put PowerShell 7 on the machine PATH":
 ##
 ##     Get-MpPreference -> ExclusionPath:
 ##       C:\pwsh
-##       C:\Windows\Temp\vmh-pwsh-extract-6752
+##       C:\Windows\Temp\gosti-pwsh-extract-6752
 ##
 ## weeks after the recipe was correct, and every `eph-win-x64` clone inherited
 ## it. Nothing anywhere refused to ship that image -- which is precisely how it
@@ -835,9 +835,9 @@ suite "Windows goldens ship no Defender exclusion that outlived its directory":
   const DefenderGate = "assert-defender-exclusions-sane.ps1"
 
   test "the Defender gate asserts an invariant, not the one PID that was found":
-    # The stale rule was `vmh-pwsh-extract-6752`. The NEXT one will carry a
+    # The stale rule was `gosti-pwsh-extract-6752`. The NEXT one will carry a
     # different PID, from a different run, possibly from a recipe that does not
-    # exist yet. A gate that greps for 6752 -- or for `vmh-pwsh-extract-` --
+    # exist yet. A gate that greps for 6752 -- or for `gosti-pwsh-extract-` --
     # would pass the next golden while it shipped the same hole.
     check fileExists(libFile(DefenderGate))
     let gate = readLib(DefenderGate)
@@ -856,7 +856,7 @@ suite "Windows goldens ship no Defender exclusion that outlived its directory":
     # header explains the incident and names both, which is why this runs
     # against codeOnly() rather than the whole file.
     code.mustNotContain("6752", label & " (code)")
-    code.mustNotContain("vmh-pwsh-extract", label & " (code)")
+    code.mustNotContain("gosti-pwsh-extract", label & " (code)")
 
     # Finding a stale rule must FAIL the gate, not merely narrate it. The
     # script has several `exit 1`s (the non-vacuity refusals), so asserting
@@ -933,7 +933,7 @@ suite "Windows goldens ship no Defender exclusion that outlived its directory":
     let code = build.codeOnly()
 
     code.mustContain(DefenderGate, label & " (code)")
-    code.mustContain("VMH_SKIP_DEFENDER_GATE", label & " (code)")
+    code.mustContain("GOSTI_SKIP_DEFENDER_GATE", label & " (code)")
 
     # The gate must be RUN, not merely copied in. Anchor on the invocation.
     let runs = code.codeLinesWith("-File C:\\Windows\\Temp\\" & DefenderGate)
@@ -958,3 +958,45 @@ suite "Windows goldens ship no Defender exclusion that outlived its directory":
     check gateAt > 0
     check resetBaseAt > 0
     check gateAt < resetBaseAt
+
+suite "the Hyper-V runner golden's offline check reads the disk it verifies":
+  # win-ci-bare-001, 2026-10-27 20:54:31Z: the check refused a good build one
+  # second after Mount-VHD, reporting all six required files missing. The
+  # Windows volume had not surfaced with a drive letter yet, so the root it
+  # tested was a bare ':' and every Test-Path was against ':\...'. The next
+  # tick published the identical build. These gates hold the shape of the fix.
+  proc verifySection(): string =
+    let code = readRecipe("windows-x64-base",
+      "build-hyperv-runner-golden.ps1").codeOnly()
+    let start = code.find("Mount-VHD -Path $tmp -ReadOnly")
+    let stop = code.find("Dismount-VHD -Path $tmp", start)
+    check start > 0
+    check stop > start
+    code[start ..< stop]
+
+  test "the volume lookup is retried until a deadline, not tried once":
+    let s = verifySection()
+    s.mustContain("$deadline", "offline verification")
+    s.mustContain("Start-Sleep", "offline verification")
+    let loops = s.codeLinesWith("while (-not $r)")
+    checkpoint "lines polling for the Windows root: " & $loops.len
+    check loops.len == 1
+
+  test "an unreadable disk is refused as unreadable, before any file check":
+    let s = verifySection()
+    let refuse = s.find("could not locate the Windows volume")
+    let firstCheck = s.find("foreach ($must in")
+    checkpoint "refusal at " & $refuse & ", first file check at " & $firstCheck
+    check refuse > 0
+    check firstCheck > refuse
+    let refusals = s.codeLinesWith("could not locate the Windows volume")
+    check refusals.len == 1
+    for line in refusals:
+      line.mustContain("throw ", "unreadable-disk refusal")
+
+  test "the root is never built from a volume that may have no letter":
+    # The old fallback did `$r = "$($win.DriveLetter):"` on whatever
+    # `$part | Get-Volume` returned, letter or not.
+    let s = verifySection()
+    check s.codeLinesWith("$r = \"$($win.DriveLetter):\"").len == 0
+    s.mustContain("ntoskrnl.exe", "offline verification root probe")

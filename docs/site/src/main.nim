@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## vm-harness docs -- client JS mount entry.
+## gosti docs -- client JS mount entry.
 ##
 ## The compiled `nim js` bundle every docs page loads (via
 ## `bookDocsConfig().appScriptHref` -> `/assets/app.js`, injected in `<head>`

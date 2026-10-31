@@ -85,14 +85,14 @@ $gitExe = Join-Path $binDir 'git.exe'
 Write-Host 'assert-git-provisioned: verifying the golden is fit to capture'
 
 # -- 1. provisioning failure marker ------------------------------------------
-$failMarker = 'C:\Windows\Temp\vmh-git-provision-failed'
+$failMarker = 'C:\Windows\Temp\gosti-git-provision-failed'
 if (Test-Path -LiteralPath $failMarker) {
   $why = ''
   try { $why = (Get-Content -LiteralPath $failMarker -Raw).Trim() } catch { }
   Bad "provision-git.ps1 recorded a failure: $why"
-  $logPath = 'C:\Windows\Temp\vmh-git-provision.log'
+  $logPath = 'C:\Windows\Temp\gosti-git-provision.log'
   if (Test-Path -LiteralPath $logPath) {
-    Write-Host '  ---- tail of vmh-git-provision.log ----'
+    Write-Host '  ---- tail of gosti-git-provision.log ----'
     Get-Content -LiteralPath $logPath -Tail 25 | ForEach-Object { Write-Host "  | $_" }
   }
 } else {
@@ -164,7 +164,7 @@ if (-not (Test-Path -LiteralPath $bashExe)) {
   # with $PID so concurrent runs cannot truncate each other's probe, and removed
   # in a `finally` so the gate leaves no residue in an image about to be
   # captured for the whole fleet.
-  $probeScript = "C:\Windows\Temp\vmh-git-gate-probe-$PID.sh"
+  $probeScript = "C:\Windows\Temp\gosti-git-gate-probe-$PID.sh"
   $probe = @()
   try {
     [System.IO.File]::WriteAllText(
@@ -220,7 +220,7 @@ if ($problems.Count -gt 0) {
   Write-Host 'and without Git on the MACHINE PATH every `shell: bash` step fails with'
   Write-Host '"bash: command not found" while actions/checkout degrades to the REST-API'
   Write-Host 'tarball. Re-run guest-recipes/lib/provision-git.ps1 in the guest (elevated)'
-  Write-Host 'and inspect C:\Windows\Temp\vmh-git-provision.log.'
+  Write-Host 'and inspect C:\Windows\Temp\gosti-git-provision.log.'
   exit 1
 }
 

@@ -29,7 +29,7 @@
 ## are read back from ``/proc``, the filesystem and ``virsh``.
 
 import std/[os, osproc, strutils, unittest]
-import vm_harness
+import gosti
 
 when not defined(linux):
   echo "[skip] t_boot_smoke_harness_tears_down_on_failure: " &
@@ -71,7 +71,7 @@ proc libvirtDomainNames(): tuple[names: seq[string], urisSeen: seq[string]] =
       discard
 
 proc scratchDir(stem: string): string =
-  getTempDir() / ("vmh-boot-smoke-teardown-" & stem & "-" &
+  getTempDir() / ("gosti-boot-smoke-teardown-" & stem & "-" &
                   $getCurrentProcessId())
 
 template assertNothingSurvives(r: BootSmokeResult) =

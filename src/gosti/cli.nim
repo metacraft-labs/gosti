@@ -1,0 +1,3301 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+## gosti CLI dispatcher.
+##
+## Subcommands per design doc §6:
+##
+## - ``provision``: ensure a baseline image exists.
+## - ``boot``: boot a transient VM directly from ISO, QCOW2, or VHDX media.
+## - ``run``: revert, exec, harvest, cleanup — the one-shot gate runner.
+## - ``probe``: print available backends (capability detection).
+## - ``shell``: interactive shell against a baseline (debug aid).
+## - ``backends``: tabular listing of every backend the library knows about.
+##
+## ``--backend auto`` resolves to the dispatch table in
+## ``auto.autoSelectBackendId``. When a real backend isn't registered the
+## CLI falls back to NoopBackend if ``--allow-noop-fallback`` is set
+## (used by the M0 selection test on hosts without real hypervisors).
+
+import std/[json, options, os, osproc, sequtils, strformat, strutils, tables,
+            terminal, times]
+import ./types, ./output, ./auto, ./orchestrator, ./detached_bootstrap
+import ./cloud_init_seed
+export detached_bootstrap
+# Import every backend module so its registerBackend bootstrap runs.
+# Each import is a static side-effect: the backend's factory lands in
+# auto.factoryRegistry at module-init time. The CLI itself only ever
+# touches the registry through ``newBackend(id)`` / ``newBackendForGuest``,
+# so the imports themselves look "unused" to the compiler — silence the
+# warning with ``{.warning[UnusedImport]: off.}`` for this block.
+{.push warning[UnusedImport]: off.}
+import ./backends/noop
+import ./backends/hyperv
+import ./backends/wsl
+import ./backends/tart
+import ./backends/utm
+import ./backends/qemu_windows_arm
+import ./backends/qemu_boot
+import ./backends/lima
+import ./backends/libvirt
+import ./backends/incus
+import ./backends/mock
+{.pop.}
+import ./prune
+import ./ephemeral_handle
+import ./ephemeral_inventory
+import ./layer_gc
+import ./instances
+import ./crud
+import ./crud_store
+when defined(posix):
+  import std/posix as keptPosix
+import ./serve/server
+import ./serve/client
+
+type
+  LogFormat* = enum
+    lfHuman = "human"
+    lfJson = "json"
+
+  CliOpts* = object
+    subcommand*: string
+    detachScript*: string        ## run: guest script to start detached
+    backend*: string             ## raw flag value; "auto" for dispatch
+    guest*: GuestOs
+    guestSet*: bool
+    baseline*: string
+    sourceImage*: string
+    secondaryIsoPath*: string
+    targetDiskPath*: string
+    mediaKind*: string
+    expectPattern*: string
+    generation*: int
+    generationSet*: bool
+      ## Distinguishes "the caller asked for generation 2" from "nobody
+      ## said", so ``bmkKernel``'s legacy-BIOS default is not silently
+      ## overridden by this parser's own default.
+    tpmEnabled*: bool
+    secureBootEnabled*: bool
+    acceleration*: string
+    graphics*: string
+    videoModel*: string
+    viewer*: bool
+    screenshotPath*: string
+    screenshotDelaySec*: int
+    sshForwardPort*: int
+    sshUser*: string
+    sshPasswordEnv*: string
+    sshPrivateKey*: string
+    sshKnownHosts*: string
+    sshHostKeyAlias*: string
+    instanceId*: string
+    lockTimeoutSec*: int
+    follow*: bool
+    force*: bool
+    purge*: bool
+    cpus*: int
+    memoryMB*: int
+    diskGB*: int
+    outputDir*: string
+    ephemeralPrefix*: string
+    labels*: seq[string]
+      ## ``--label key=value`` (repeatable): attribution recorded by
+      ## ``ephemeral-label`` and matched (all must hold) by ``ephemeral-list``.
+    envPairs*: Table[string, string]
+    copyTo*: seq[tuple[host: string, guest: string]]
+    copyFrom*: seq[tuple[guest: string, host: string]]
+    # GOSTI2 PR-3: crud surface-growth flags (ah-vm VmCreateOptions/ExecOptions
+    # forwarding). --user-data/--ssh-user reuse the existing fields above.
+    mounts*: seq[tuple[host: string, guest: string]]
+                                 ## ``crud create_vm --mount host:guest``
+                                 ## (repeatable) — host→guest share requests.
+    cwd*: string                 ## ``crud exec --cwd <dir>`` — guest CWD.
+    runAs*: string               ## ``crud exec --run-as <user>`` — guest user.
+    execTimeout*: int            ## ``crud exec --timeout <sec>`` — guest-side
+                                 ## wall-clock kill (0 ⇒ none). Distinct from
+                                 ## --timeout-sec (the harness/RPC budget).
+    shims*: seq[ArgvTraceShim]
+    cmd*: seq[string]
+    logFormat*: LogFormat
+    allowNoopFallback*: bool
+    timeoutSec*: int
+    sshReadyTimeoutSec*: int
+    waitForShutdown*: bool
+    running*: bool               ## `--running` flag for `snapshot create`.
+    # M4 libvirt-slice canonical-command flags. See
+    # docs/contributors/libvirt.md → "Operator command examples" for the
+    # invocation these wire up.
+    recipe*: string              ## ``--recipe <id>`` — selects a recipe
+                                 ## directory under ``guest-recipes/<id>/``.
+                                 ## Resolved to ``recipeDir`` in CliOpts and
+                                 ## threaded into ``BaselineSpec.recipeDir``.
+    recipeDir*: string           ## resolved absolute path to the recipe dir
+                                 ## (parseCliOpts performs the lookup so the
+                                 ## error surfaces at parse time).
+    recipeBuildDir*: string      ## ``--recipe-build-dir <path>`` — writable
+                                 ## location for the recipe's ``build/`` outputs
+                                 ## (autounattend.iso, virtio-win.iso symlink,
+                                 ## Win11_*.iso symlink). When unset the backend
+                                 ## falls back to ``<recipeDir>/build`` which is
+                                 ## read-only when the recipe is shipped under
+                                 ## /nix/store.
+    name*: string                ## ``--name <vm>`` — alias for ``--baseline``
+                                 ## per the canonical libvirt M4 command.
+                                 ## When both are passed the values must match.
+    networkBridge*: string       ## ``--network-bridge <name>`` — libvirt-only
+                                 ## override for the guest's primary NIC.
+    imagePoolDir*: string        ## ``--image-pool-dir <dir>`` — libvirt-only
+                                 ## override for the directory the domain's
+                                 ## qcow2 disk is written to (disk lands at
+                                 ## ``<dir>/<name>.qcow2``). Empty ⇒ backend
+                                 ## default (``/var/lib/libvirt/images``).
+    firstBootScript*: string     ## ``--first-boot-script <path>`` — file the
+                                 ## recipe's build-autounattend-iso.sh wraps
+                                 ## into the per-VM autounattend ISO.
+    provisionScripts*: seq[string] ## ``--provision-script <path>`` (repeatable)
+                                 ## — lima-only: each file's CONTENTS is read at
+                                 ## parse time and baked into the generated Lima
+                                 ## template's ``provision:`` block so every
+                                 ## per-gate ephemeral boots already provisioned.
+                                 ## Empty ⇒ no ``provision:`` block.
+    ephemeral*: bool             ## ``--ephemeral`` — libvirt-only: run one
+                                 ## per-job CoW-clone VM (fresh overlay from
+                                 ## ``--golden-image``, boot, then destroy +
+                                 ## remove overlay). This is the M2 per-job
+                                 ## reset the GARM provider drives.
+    keepEphemeral*: bool         ## ``--keep`` — libvirt-only (M3): with
+                                 ## ``--ephemeral``, clone + attach the
+                                 ## config-drive + boot (UEFI) and RETURN
+                                 ## LEAVING THE DOMAIN RUNNING (no probe, no
+                                 ## teardown). The caller drives an in-guest
+                                 ## probe (e.g. SSH the Windows JIT bootstrap)
+                                 ## then reclaims the VM via the
+                                 ## ``ephemeral-destroy`` subcommand. Without
+                                 ## ``--keep`` the M2 boot→probe→destroy
+                                 ## lifecycle is unchanged.
+    goldenImage*: string         ## ``--golden-image <path>`` — golden qcow2 the
+                                 ## ephemeral overlay is CoW-cloned from.
+    baseImage*: string           ## ``--base-image <alias>`` — incus-only: the
+                                 ## base image alias/fingerprint the ephemeral
+                                 ## per-job container is launched from. Empty ⇒
+                                 ## the IncusBackend default (``gosti-base``).
+    incusSecurityNesting*: bool  ## ``--incus-security-nesting`` — trusted
+                                 ## controller opt-in for the fixed Incus
+                                 ## nesting/intercept configuration.
+    incusNestedKvm*: bool        ## ``--incus-nested-kvm`` — trusted controller
+                                 ## opt-in for the fixed /dev/kvm device.
+    incusProfiles*: seq[string]  ## Ordered, administrator-selected Incus
+                                 ## profiles; empty retains Incus's default.
+    kernel*: string              ## ``--kernel <path>`` — optional direct-kernel
+                                 ## boot bzImage for the ephemeral clone (the
+                                 ## tiny Linux golden). Omit for a disk-bootable
+                                 ## golden (firmware boots the overlay).
+    initrd*: string              ## ``--initrd <path>`` — optional initramfs for
+                                 ## the direct-kernel ephemeral boot.
+    kernelCmdline*: string       ## ``--kernel-cmdline <str>`` — optional kernel
+                                 ## cmdline for the direct-kernel ephemeral boot.
+    userDataFile*: string        ## ``--user-data <path>`` — rendered GARM
+                                 ## bootstrap. Libvirt puts it in a config-drive;
+                                 ## Incus sets cloud-init.user-data (pre-start
+                                 ## when an operator capability is selected).
+    metaDataFile*: string        ## ``--meta-data <path>`` — optional override for
+                                 ## the config-drive ``meta_data.json``.
+    uefiLoader*: string          ## ``--uefi-loader <path>`` — OVMF code fd; when
+                                 ## set the ephemeral clone boots UEFI (Windows).
+    uefiNvramTemplate*: string   ## ``--uefi-nvram-template <path>`` — OVMF vars
+                                 ## template donor for the per-job nvram copy.
+    controllerPubKey*: string    ## ``--controller-pubkey <path>`` — SSH public
+                                 ## key (``id_ed25519.pub`` or similar) that
+                                 ## the recipe's build-autounattend-iso.sh
+                                 ## wraps into the per-VM autounattend ISO so
+                                 ## the guest's FirstLogonCommands can install
+                                 ## it in ``authorized_keys`` before the
+                                 ## controller first reaches out over SSH.
+    stateDir*: string            ## ``--state-dir <dir>`` — ``prune`` scope for
+                                 ## the qemu-windows-arm state directory.
+    olderThanSec*: int           ## ``--older-than <sec>`` — ``prune`` age guard.
+    olderThanSet*: bool          ## whether ``--older-than`` was supplied.
+    dryRun*: bool                ## ``--dry-run`` — ``prune`` reports only.
+    sweepTmp*: bool              ## ``--sweep-tmp`` — also age-sweep transient
+                                 ## ``/tmp`` scratch files during ``prune``.
+    # ``serve`` daemon + ``--remote`` client (RA1 remoting).
+    remote*: string              ## ``--remote <host:port>`` — route this
+                                 ## subcommand to a remote ``gosti serve``
+                                 ## daemon instead of running it locally.
+    authToken*: string           ## ``--auth-token <tok>`` — bearer token for
+                                 ## ``serve`` (server side) or ``--remote``
+                                 ## (client side). Prefer ``--auth-token-file``.
+    authTokenFile*: string       ## ``--auth-token-file <path>`` — read the
+                                 ## bearer token from a file (agenix/systemd
+                                 ## ``LoadCredential`` friendly).
+    listen*: string              ## ``serve --listen <host:port>`` — bind
+                                 ## address. Default ``127.0.0.1:8873``. In
+                                 ## production this is a NetBird overlay IP,
+                                 ## NEVER a public interface.
+    workerExe*: string           ## ``serve --worker-exe <path>`` — gosti
+                                 ## binary the daemon execs per request.
+                                 ## Default: the daemon's own binary.
+    portFile*: string            ## ``serve --port-file <path>`` — write the
+                                 ## bound port here once listening (readiness
+                                 ## signal for tests + ops health checks).
+    tlsCert*: string             ## ``serve --tls-cert <path>`` (only under
+                                 ## ``-d:ssl``; otherwise rely on NetBird).
+    tlsKey*: string              ## ``serve --tls-key <path>``.
+    quiet*: bool                 ## ``serve --quiet`` — suppress access logs.
+    # RA6 enrollment / signed capability manifest.
+    enrollSecret*: string        ## ``serve --enroll-secret <s>`` (prefer file).
+    enrollSecretFile*: string    ## ``serve --enroll-secret-file <path>`` —
+                                 ## per-host enrollment secret (agenix/systemd
+                                 ## ``LoadCredential`` friendly). Also
+                                 ## ``$GOSTI_ENROLL_SECRET``; else self-bootstrapped
+                                 ## under ``--state-dir``.
+    identityTtlSec*: int         ## ``serve --identity-ttl-sec <n>`` — signed
+                                 ## identity lifetime (default 3600).
+    hostId*: string              ## ``serve --host-id <name>`` — identity host
+                                 ## label; default the OS hostname.
+    tartVmsDir*: string          ## ``--tart-vms-dir <dir>`` — ``prune`` scope
+                                 ## for Tart's local VM directory. Defaults to
+                                 ## ``$TART_HOME/vms`` (then
+                                 ## ``$GOSTI_TART_STATE_DIR/vms``, then
+                                 ## ``~/.tart/vms``); naming it explicitly is
+                                 ## what a scheduled sweeper should do rather
+                                 ## than depend on its inherited environment.
+    serveThreads*: int           ## ``serve --serve-threads <n>`` — request
+                                 ## handler threads; 0 ⇒ auto-size (see
+                                 ## serve/server.nim ``resolveThreadCount``).
+    execDeadlineSec*: int        ## ``serve --exec-deadline-sec <n>`` — wall
+                                 ## clock budget for one ``/v1/exec``; 0 ⇒
+                                 ## ``DefaultExecDeadlineSec``.
+
+const HelpText = """
+gosti <subcommand> [flags]
+
+(`gosti` is the same binary under its pre-rename name.)
+
+Subcommands:
+  provision               Ensure a baseline image exists (idempotent).
+  boot                    Boot ISO/QCOW2/VHDX media in a transient VM.
+                          Use --keep to leave it running, or --expect REGEX
+                          to assert a serial boot marker and clean it up.
+  install                 Boot an ISO into a caller-owned target disk, require
+                          a serial success marker and clean guest shutdown,
+                          then remove the transient VM but preserve the disk.
+  run                     One-shot revert + exec + harvest + cleanup.
+  ephemeral-destroy       libvirt/incus: reclaim an ephemeral instance left
+                          running by `run --ephemeral --keep` (destroy +
+                          undefine --nvram + remove overlay/config-drive/
+                          nvram — no residue). Requires --baseline.
+                          incus: retries a busy delete and exits non-zero
+                          if the container still exists afterwards.
+  ephemeral-list          List the per-job instances `run --ephemeral --keep`
+                          left on --backend (libvirt/incus/tart/qemu/utm) as
+                          one JSON line; --name selects one, --ephemeral-prefix
+                          and --label k=v narrow. Exits non-zero, printing no
+                          list, when the backend cannot be enumerated.
+  ephemeral-label         Record --label k=v attribution for a kept instance
+                          (--backend, --baseline); removed by ephemeral-destroy.
+  instance wait <name>    Wait for an existing Incus container to accept exec.
+  instance exec <name> -- <command...>
+                          Execute argv in an existing Incus container.
+  instance copy-to <name> <host-path> <guest-path>
+  instance copy-from <name> <guest-path> <host-path>
+                          Transfer a file or directory through the backend.
+  instance start <name>   Start and await an existing Incus container.
+  instance stop <name>    Stop an existing Incus container without deleting it.
+  instance <start|ssh|exec|status|logs|stop|destroy|screenshot> <name>
+        --state-dir <root> [--instance-id <uuid>]
+                          Linux/libvirt durable media lifecycle. Start also
+                          restores a default-destroyed instance from saved XML.
+                          Bare ssh is interactive; exec takes argv after --.
+                          status/start emit status with --log-format json.
+                          logs accepts --follow; screenshot requires --screenshot.
+                          stop/destroy accept --force for hard poweroff.
+                          destroy preserves data unless --purge AND --instance-id
+                          are supplied. Purge never removes caller-owned inputs.
+  probe                   Print available backends as JSON.
+  manifest                Print THIS host's capability manifest as JSON (RA6).
+                          With --remote <addr>, fetch the remote daemon's
+                          SIGNED identity + manifest over GET /v1/manifest.
+  shell                   (placeholder) Open an interactive shell into a baseline.
+  backends                Tabular listing of every known backend.
+  snapshot create [--running] <vm> <name>
+                          Take a named snapshot of <vm>. With --running, the
+                          snapshot includes memory + CPU + device state and
+                          restore is a memory load rather than a fresh boot
+                          (Hyper-V: Standard Checkpoint; Tart: tart suspend
+                          — planned).
+  snapshot restore <vm> <name>
+                          Restore <vm> from snapshot <name>.
+  snapshot list <vm>      List snapshots for <vm>.
+  baseline export <vm> <dest-dir> [--baseline <name>]
+                          Export a baseline VM (and its snapshot tree) to
+                          <dest-dir> as a self-contained, transferable
+                          artifact. --baseline asserts the named snapshot
+                          exists before exporting.
+  baseline import <src-dir>
+                          Import a previously-exported baseline bundle.
+                          Prints the snapshot names now available.
+  layer gc <layer-path> --image-pool-dir <dir> [--dry-run]
+                          Delete a base image / snapshot / backing file --
+                          REFUSING with exit 3, and naming the referent, while
+                          any overlay, defined domain, container or snapshot
+                          still resolves onto it. Deleting a layer under a
+                          live overlay destroys that overlay outright, so
+                          there is no warn-and-continue mode.
+  layer sweep-overlays --image-pool-dir <dir> [--older-than <sec>] [--dry-run]
+                          Remove per-job CoW overlays that no defined instance
+                          owns and that are older than the age guard (default
+                          86400s). A base image has no backing file and is
+                          therefore never a candidate. Reports reclaimed bytes
+                          as BOTH apparent and allocated: a CoW overlay is
+                          sparse and one number alone misstates it by orders
+                          of magnitude.
+  prune --ephemeral-prefix <p> [--backend all|tart|qemu-windows-arm]
+        [--state-dir <dir>] [--tart-vms-dir <dir>] [--older-than <sec>]
+        [--sweep-tmp] [--dry-run]
+                          Reclaim ephemeral instances/clones leaked by
+                          hard-killed launchers, scoped to --ephemeral-prefix.
+                          A running instance (advisory lock held, or creator
+                          PID alive) is never removed. --older-than guards the
+                          PID-fallback path (default 3600s; 0 disables).
+                          The tart sweep also reclaims VM directories that
+                          `tart list` cannot see because they carry no
+                          disk.img — `tart delete` cannot reach those, so
+                          nothing else can. --tart-vms-dir names Tart's VM
+                          directory explicitly (default $TART_HOME/vms).
+                          --sweep-tmp also age-removes transient /tmp scratch
+                          files (SSH password files, mount-share scripts).
+                          --dry-run reports what would be reclaimed.
+  crud <verb> [<name>] [args] [--backend <id>] [--baseline <name>] ...
+                          Generic-CRUD façade for the ah-vm Rust binding.
+                          Verbs: create_vm, start_vm, stop_vm, delete_vm,
+                          get_vm, list_vms, exec (-- <argv>), copy_to_vm
+                          <src> <dst>, copy_from_vm <src> <dst>, ssh_endpoint,
+                          snapshot <snap>, restore_snapshot <snap>,
+                          list_snapshots.
+                          create_vm also accepts --user-data <path> (cloud-init
+                          user-data — how a sandbox VM boots its runner/agent),
+                          --mount host:guest (repeatable), and --ssh-user <user>.
+                          exec also accepts --cwd <dir>, --run-as <user>, and
+                          --timeout <sec> (a portable guest-side argv wrap).
+                          ALWAYS prints one stable JSON
+                          envelope on stdout; exit codes: 0 ok, 2 bad-args,
+                          3 not-found, 4 backend-unavailable, 5 backend-error,
+                          1 internal. See src/gosti/crud.nim for the
+                          verb→backend mapping and the JSON schema.
+                          VMs persist across invocations in the crud store
+                          (--state-dir <root> ⇒ <root>/crud; else
+                          $GOSTI_CRUD_STATE_DIR, $STATE_DIRECTORY/crud, or the
+                          user state dir). --backend mock is a deterministic
+                          file-backed fixture for hermetic consumers
+                          (docs/contributors/architecture.md §8.6).
+
+Common flags:
+  --backend <auto|noop|hyperv|wsl|tart-macos|tart-linux-arm|
+             utm-windows-arm|qemu-windows-arm|libvirt|lima>
+  --guest <linux|windows|macos>   Required when --backend auto.
+  --baseline <name>               Logical baseline tag (== libvirt domain name).
+  --name <vm>                     Alias for --baseline (canonical libvirt M4
+                                  command shape; see docs/contributors/libvirt.md).
+                                  With boot --keep --state-dir, durable name.
+  --state-dir <root>             Durable boot/instance receipts and owned disks.
+  --instance-id <uuid>           Expected actual libvirt UUID (optional ownership
+                                  precondition; required for destroy --purge).
+  --lock-timeout-sec <sec>       Durable operation lock wait, 0..300 (default 10).
+  --recipe <id>                   Selects guest-recipes/<id>/ as the source of
+                                  per-baseline artifacts (autounattend.xml,
+                                  build-autounattend-iso.sh, ...). Required by
+                                  backends that consume recipe-shaped inputs.
+  --source-image <ref>
+  --secondary-iso <path>          `boot`/`install`: attach a second read-only ISO.
+  --target-disk <path>            `install`: create and preserve this blank disk.
+  --kind <auto|iso|qcow2|vhdx|rootfs-tar|kernel>
+                                  Media kind for `boot` (default: extension).
+                                  `kernel` direct-boots --source-image as a
+                                  Linux kernel (qemu-boot backend); pair it
+                                  with --initrd and --kernel-cmdline below.
+  --expect <regex>                `boot`: wait for a serial-console match.
+  --wait-for-shutdown             `boot`: require a clean guest poweroff after
+                                  the serial assertion before cleanup.
+  --generation <1|2>             `boot`: legacy BIOS or UEFI (default: 2,
+                                  or 1 for --kind kernel).
+  --tpm                          `boot`: attach a virtual TPM 2.0 (swtpm).
+  --secure-boot                  `boot`: request a secure-boot firmware
+                                  profile (needs key-enrolled OVMF vars).
+  --acceleration <auto|kvm|tcg> `boot`: execution mode (default: auto).
+  --graphics <none|vnc|spice>    `boot`: graphical console (default: none).
+  --video <model>                `boot`: video model (default: virtio).
+  --viewer                       `boot`: open virt-viewer for libvirt and
+                                  clean up when the window closes.
+  --screenshot <path>            `boot`: capture the graphical console after
+                                  --expect succeeds, then clean up by default.
+  --screenshot-delay-sec <int>   `boot`: settle time after --expect before
+                                  capture (default: 0).
+  --ssh-forward-port <port|auto> `boot`: forward a loopback host port to
+                                  guest TCP 22 (`auto` selects a free port).
+  --ssh-user <name>              `boot`: SSH user for a command after `--`.
+  --ssh-password-env <name>      `boot`: environment variable containing the
+                                  SSH password; the value is never put in argv.
+  --ssh-private-key <path>       `boot`: private key for key-only SSH.
+  --ssh-known-hosts <path>       `boot`: persist and verify the guest host key.
+  --ssh-host-key-alias <name>    `boot`: stable host identity across forwarded
+                                  port changes; requires --ssh-known-hosts.
+  --cpus <int>                    Backend default applies when omitted.
+  --vcpu <int>                    Alias for --cpus (canonical libvirt M4 shape).
+  --memory-mb <int>
+  --memory-gb <int>               Alias for --memory-mb, expressed in GiB.
+  --disk-gb <int>                 Per-job guest disk size (default 50). A
+                                  clone smaller than this is grown before boot
+                                  and its system volume grown in the guest; an
+                                  explicit size below the image's is refused.
+  --network-bridge <name>         libvirt-only: host bridge for the guest NIC
+                                  (default: backend's configured value, e.g.
+                                  virbr0). Ignored by other backends.
+  --image-pool-dir <dir>          libvirt-only: directory the domain's qcow2
+                                  disk is written to; the disk lands at
+                                  <dir>/<name>.qcow2. Use it when your storage
+                                  lives outside the default
+                                  /var/lib/libvirt/images (e.g. a ZFS pool at
+                                  /storage). Ignored by other backends.
+  --first-boot-script <path>      libvirt-only: host path to a script the
+                                  recipe wraps into the per-VM autounattend
+                                  ISO. Requires --recipe.
+  --provision-script <path>       lima-only (repeatable): host path to a shell
+                                  script baked into the generated Lima
+                                  template's provision: block so every per-gate
+                                  ephemeral boots already provisioned.
+  --controller-pubkey <path>      libvirt-only: SSH public key the recipe
+                                  bakes into the autounattend ISO so the
+                                  guest's FirstLogonCommands installs it in
+                                  authorized_keys before first boot.
+                                  Requires --recipe.
+  --ephemeral                     run ONE per-job clone VM then destroy it, no
+                                  residue (the per-job reset the GARM provider
+                                  drives). libvirt: CoW overlay from
+                                  --golden-image booted on KVM. incus: fresh
+                                  container from --base-image. hyperv (RA4):
+                                  New-VHD/New-VM clone of the --golden-image
+                                  VHDX, boot, JIT-probe, Remove-VM (see the
+                                  GOSTI_HYPERV_* env seams). A positional arg
+                                  after -- is a serial marker (libvirt) or the
+                                  in-guest probe command (incus/hyperv).
+  --keep                          Leave a `boot` VM running, or keep an
+                                  ephemeral clone after startup.
+  --golden-image <path>           libvirt/hyperv: the golden image the
+                                  ephemeral clone is derived from (libvirt: a
+                                  qcow2 CoW backing file; hyperv: a golden
+                                  VHDX). Requires --ephemeral.
+  --incus-security-nesting       Incus run --ephemeral only: configure
+                                  security.nesting and the mknod/setxattr
+                                  intercepts before first start.
+  --incus-nested-kvm             Incus run --ephemeral only: configure
+                                  security.nesting and attach a fixed
+                                  read/write /dev/kvm device before first
+                                  start. Requires host nested KVM support.
+  --cpus/--memory-mb (Incus)      With run --ephemeral --backend incus, set
+                                  the container's limits.cpu (a CPU count)
+                                  and limits.memory (MiB) before first start.
+                                  Omitted ⇒ the container is uncapped.
+  --incus-profile <name>         Ordered Incus profile (repeatable), accepted
+                                  only with run --ephemeral --backend incus.
+                                  Include default explicitly to retain its
+                                  root disk and NIC alongside other profiles.
+  --kernel <path>                 libvirt-only: optional direct-kernel-boot
+                                  bzImage for --ephemeral (tiny Linux golden).
+  --initrd <path>                 Initramfs for a direct-kernel boot: the
+                                  libvirt --ephemeral clone, or `boot --kind
+                                  kernel` on the qemu-boot backend.
+  --kernel-cmdline <str>          Kernel cmdline for the same two paths.
+  --output-dir <path>
+  --ephemeral-prefix <prefix>     Backend-specific prefix for ephemeral VMs.
+  --env KEY=VAL                   (repeatable)
+  --copy-to host:guest            (repeatable)
+  --copy-from guest:host          (repeatable)
+  --detach-script <guest-path>    run: start this guest script detached from
+                                  the SSH session and follow it with short
+                                  polling sessions instead of one long one; a
+                                  transient SSH failure no longer kills it.
+                                  Replaces the `--` command (linux/macOS).
+  --mount host:guest              crud create_vm (repeatable): host→guest share.
+  --cwd <dir>                     crud exec: run argv with this guest CWD.
+  --run-as <user>                 crud exec: run argv as this guest user.
+  --timeout <sec>                 crud exec: guest-side wall-clock kill (0=none).
+  --install-shim binary:logpath   (repeatable)
+  --timeout-sec <int>
+  --ssh-ready-timeout-sec <int>   Maximum wait for SSH before a boot command.
+  --log-format <human|json>
+  --allow-noop-fallback           Use NoopBackend if the real one isn't installed.
+  --remote <host:port>            Route this subcommand to a remote
+                                  `gosti serve` daemon (drives that host's
+                                  VMs) instead of running it locally. Requires
+                                  a bearer token (--auth-token/--auth-token-file
+                                  or $GOSTI_SERVE_TOKEN). The daemon's output is
+                                  streamed back live.
+  --auth-token <tok>              Bearer token (serve + --remote). Prefer
+                                  --auth-token-file so the secret is not in argv.
+  --auth-token-file <path>        Read the bearer token from a file.
+  --                              End of flags; remainder is the gate command.
+
+serve daemon (RA1 remoting — the authenticated network access point):
+  gosti serve --listen <host:port> [--auth-token-file <f> | --auth-token <t>]
+                   [--worker-exe <path>] [--port-file <f>] [--quiet]
+                   [--serve-threads <n>] [--exec-deadline-sec <n>]
+                   [--enroll-secret-file <f>] [--identity-ttl-sec <n>]
+                   [--host-id <name>]
+    Expose the gosti CLI backend ops over a versioned HTTP/JSON RPC
+    (protocol v1) so a remote controller can drive this host's VMs/containers.
+    Every op runs the SAME local gosti binary (a thin network front-end,
+    not a reimplementation). Bind to a NetBird overlay IP only — NEVER a public
+    interface. The bearer token also reads from $GOSTI_SERVE_TOKEN. Connections
+    are served CONCURRENTLY by a pool of handler threads (--serve-threads,
+    default: max(4, CPU count) capped at 32) behind a dedicated acceptor, so
+    one slow op cannot stall others and a fully saturated pool answers 503
+    rather than letting connections pile up unanswered. --exec-deadline-sec
+    bounds ONE exec (default 46800 = 13h, sized above the 12h runner lifetime
+    the GARM provider forwards) so a hung guest op cannot hold a slot forever.
+    See docs/contributors/serve.md.
+
+  RA6 enrollment / signed capability manifest (GET /v1/manifest):
+  --enroll-secret-file <path>     Per-host enrollment secret (prefer over
+                                  --enroll-secret; agenix/LoadCredential
+                                  friendly). Also $GOSTI_ENROLL_SECRET; else a
+                                  secret is self-bootstrapped under --state-dir.
+                                  The daemon prints its keyId at startup — enroll
+                                  that keyId on the controller. See
+                                  docs/contributors/serve-enrollment.md.
+  --enroll-secret <s>             The secret inline (avoid — visible in argv).
+  --identity-ttl-sec <n>          Signed-identity lifetime (default 3600).
+  --host-id <name>                Identity host label (default: OS hostname).
+"""
+
+proc parseEnvPair(s: string): tuple[k: string, v: string] =
+  let idx = s.find('=')
+  if idx < 0:
+    raise newException(ValueError, &"--env expects KEY=VAL, got '{s}'")
+  (k: s[0 ..< idx], v: s[idx + 1 .. ^1])
+
+proc parsePathPair(flag: string, s: string,
+                   sourceIsPath: bool): tuple[a: string, b: string] =
+  var idx = s.find(':')
+  # A Windows absolute source carries its own drive colon. Prefer the next
+  # colon as the pair separator, while leaving a single-colon POSIX pair
+  # intact. A shim's first field is a binary name, never a source path.
+  if sourceIsPath and s.len >= 3 and s[0].isAlphaAscii and
+      s[1] == ':' and s[2] in {'/', '\\'}:
+    let afterDrive = s.find(':', 2)
+    if afterDrive >= 0:
+      idx = afterDrive
+  if idx <= 0 or idx == s.high:
+    raise newException(ValueError, &"{flag} expects non-empty A:B, got '{s}'")
+  (a: s[0 ..< idx], b: s[idx + 1 .. ^1])
+
+proc parseGuest(s: string): GuestOs =
+  for g in GuestOs:
+    if $g == s.toLowerAscii: return g
+  raise newException(ValueError, &"Unknown guest OS: '{s}'")
+
+proc resolveRecipeDir*(recipeId: string): string =
+  ## Resolve ``--recipe <id>`` to an absolute directory under
+  ## ``guest-recipes/<id>/``. The search order is:
+  ##
+  ##   1. ``$GOSTI_RECIPES_DIR/<id>``        (operator escape hatch)
+  ##   2. ``<cwd>/guest-recipes/<id>``     (running from a repo checkout)
+  ##   3. ``<exe-dir>/../guest-recipes/<id>``
+  ##   4. ``<exe-dir>/../../guest-recipes/<id>``
+  ##                                       (installed binary under build/bin/)
+  ##   5. ``<exe-dir>/../share/gosti/guest-recipes/<id>``
+  ##                                       (Nix-packaged binary; matches
+  ##                                       the flake's installPhase).
+  ##
+  ## Raises ``ValueError`` when the directory doesn't exist anywhere — the
+  ## parse-time error surfaces the typo immediately instead of failing
+  ## later inside a backend method.
+  if recipeId.len == 0:
+    raise newException(ValueError, "--recipe requires a non-empty id")
+  # No path separators allowed — the id picks one directory by name, not
+  # a relative path that could escape guest-recipes/.
+  if '/' in recipeId or '\\' in recipeId or recipeId.startsWith("."):
+    raise newException(ValueError,
+      &"--recipe expects a bare id (e.g. 'windows-x64-base'), got '{recipeId}'")
+  var candidates: seq[string] = @[]
+  let envOverride = getEnv("GOSTI_RECIPES_DIR")
+  if envOverride.len > 0:
+    candidates.add(envOverride / recipeId)
+  candidates.add(getCurrentDir() / "guest-recipes" / recipeId)
+  let exeDir = getAppDir()
+  candidates.add(exeDir / ".." / "guest-recipes" / recipeId)
+  candidates.add(exeDir / ".." / ".." / "guest-recipes" / recipeId)
+  candidates.add(
+    exeDir / ".." / "share" / "gosti" / "guest-recipes" / recipeId)
+  for c in candidates:
+    if dirExists(c):
+      return absolutePath(c)
+  raise newException(ValueError,
+    &"--recipe '{recipeId}': directory not found. Searched: " &
+    candidates.join(", "))
+
+proc parseCliOpts*(args: seq[string]): CliOpts =
+  ## Minimal hand-rolled parser. Keeps the binary dependency-free.
+  result.logFormat = lfHuman
+  result.cpus = 0
+  result.memoryMB = 0
+  result.diskGB = 0
+  result.generation = 2
+  result.acceleration = "auto"
+  result.graphics = "none"
+  result.videoModel = "virtio"
+  result.lockTimeoutSec = 10
+  if args.len == 0 or args[0] in ["-h", "--help", "help"]:
+    result.subcommand = "help"
+    return
+  result.subcommand = args[0]
+  var i = 1
+  var afterDoubleDash = false
+  while i < args.len:
+    let a = args[i]
+    if afterDoubleDash:
+      result.cmd.add(a)
+      inc i
+      continue
+    case a
+    of "--":
+      afterDoubleDash = true
+      inc i
+    of "--backend":
+      inc i; result.backend = args[i]; inc i
+    of "--guest":
+      inc i; result.guest = parseGuest(args[i]); result.guestSet = true; inc i
+    of "--baseline":
+      inc i; result.baseline = args[i]; inc i
+    of "--name":
+      # Canonical libvirt-M4 alias for --baseline. The dispatch code
+      # resolves precedence in ``parseCliOpts``'s post-loop block so
+      # both can be passed (they must agree) and `applyDefaults`
+      # always sees a single source of truth.
+      inc i; result.name = args[i]; inc i
+    of "--recipe":
+      inc i
+      result.recipe = args[i]
+      result.recipeDir = resolveRecipeDir(args[i])
+      inc i
+    of "--recipe-build-dir":
+      inc i; result.recipeBuildDir = args[i]; inc i
+    of "--source-image":
+      inc i; result.sourceImage = args[i]; inc i
+    of "--secondary-iso":
+      inc i; result.secondaryIsoPath = args[i]; inc i
+    of "--target-disk":
+      inc i; result.targetDiskPath = args[i]; inc i
+    of "--kind":
+      inc i; result.mediaKind = args[i]; inc i
+    of "--expect":
+      inc i; result.expectPattern = args[i]; inc i
+    of "--generation":
+      inc i
+      result.generation = parseInt(args[i])
+      if result.generation notin [1, 2]:
+        raise newException(ValueError, "--generation expects 1 or 2")
+      result.generationSet = true
+      inc i
+    of "--tpm":
+      result.tpmEnabled = true
+      inc i
+    of "--secure-boot":
+      result.secureBootEnabled = true
+      inc i
+    of "--acceleration":
+      inc i
+      result.acceleration = args[i].toLowerAscii()
+      if result.acceleration notin ["auto", "kvm", "tcg"]:
+        raise newException(ValueError,
+          "--acceleration expects auto, kvm, or tcg")
+      inc i
+    of "--graphics":
+      inc i
+      result.graphics = args[i].toLowerAscii()
+      if result.graphics notin ["none", "vnc", "spice"]:
+        raise newException(ValueError,
+          "--graphics expects none, vnc, or spice")
+      inc i
+    of "--video":
+      inc i; result.videoModel = args[i]; inc i
+    of "--viewer":
+      result.viewer = true
+      inc i
+    of "--screenshot":
+      inc i; result.screenshotPath = args[i]; inc i
+    of "--screenshot-delay-sec":
+      inc i
+      result.screenshotDelaySec = parseInt(args[i])
+      if result.screenshotDelaySec < 0:
+        raise newException(ValueError,
+          "--screenshot-delay-sec expects a non-negative integer")
+      inc i
+    of "--ssh-forward-port":
+      inc i
+      if args[i] == "auto":
+        result.sshForwardPort = -1
+      else:
+        result.sshForwardPort = parseInt(args[i])
+        if result.sshForwardPort notin 1 .. 65535:
+          raise newException(ValueError,
+            "--ssh-forward-port expects auto or a TCP port from 1 to 65535")
+      inc i
+    of "--ssh-user":
+      inc i; result.sshUser = args[i]; inc i
+    of "--ssh-password-env":
+      inc i; result.sshPasswordEnv = args[i]; inc i
+    of "--ssh-private-key":
+      inc i; result.sshPrivateKey = args[i]; inc i
+    of "--ssh-known-hosts":
+      inc i; result.sshKnownHosts = args[i]; inc i
+    of "--ssh-host-key-alias":
+      inc i; result.sshHostKeyAlias = args[i]; inc i
+    of "--cpus", "--vcpu":
+      # ``--vcpu`` is the canonical libvirt M4 spelling; ``--cpus`` is
+      # the historical gosti spelling. Both produce the same
+      # internal field. We deliberately accept either without a
+      # deprecation warning because both spellings show up in active
+      # docs (architecture.md uses --cpus; libvirt.md uses --vcpu).
+      inc i; result.cpus = parseInt(args[i]); inc i
+    of "--memory-mb":
+      inc i; result.memoryMB = parseInt(args[i]); inc i
+    of "--memory-gb":
+      # Convenience: libvirt operators think in GiB, gosti's
+      # historical surface in MiB. Convert once at parse time.
+      inc i; result.memoryMB = parseInt(args[i]) * 1024; inc i
+    of "--disk-gb":
+      inc i; result.diskGB = parseInt(args[i]); inc i
+    of "--network-bridge":
+      inc i; result.networkBridge = args[i]; inc i
+    of "--image-pool-dir":
+      inc i; result.imagePoolDir = args[i]; inc i
+    of "--first-boot-script":
+      inc i; result.firstBootScript = args[i]; inc i
+    of "--provision-script":
+      inc i
+      let p = args[i]
+      if not fileExists(p):
+        raise newException(ValueError,
+          &"--provision-script '{p}': file not found")
+      result.provisionScripts.add(readFile(p))
+      inc i
+    of "--controller-pubkey":
+      inc i; result.controllerPubKey = args[i]; inc i
+    of "--ephemeral":
+      result.ephemeral = true
+      inc i
+    of "--keep":
+      result.keepEphemeral = true
+      inc i
+    of "--golden-image":
+      inc i; result.goldenImage = args[i]; inc i
+    of "--base-image":
+      inc i; result.baseImage = args[i]; inc i
+    of "--incus-security-nesting":
+      result.incusSecurityNesting = true
+      inc i
+    of "--incus-nested-kvm":
+      result.incusNestedKvm = true
+      inc i
+    of "--incus-profile":
+      inc i
+      if i >= args.len or args[i].len == 0 or '\0' in args[i]:
+        raise newException(ValueError, "--incus-profile requires a non-empty profile name")
+      result.incusProfiles.add(args[i])
+      inc i
+    of "--kernel":
+      inc i; result.kernel = args[i]; inc i
+    of "--initrd":
+      inc i; result.initrd = args[i]; inc i
+    of "--kernel-cmdline":
+      inc i; result.kernelCmdline = args[i]; inc i
+    of "--user-data":
+      inc i; result.userDataFile = args[i]; inc i
+    of "--meta-data":
+      inc i; result.metaDataFile = args[i]; inc i
+    of "--uefi-loader":
+      inc i; result.uefiLoader = args[i]; inc i
+    of "--uefi-nvram-template":
+      inc i; result.uefiNvramTemplate = args[i]; inc i
+    of "--output-dir":
+      inc i; result.outputDir = args[i]; inc i
+    of "--ephemeral-prefix":
+      inc i; result.ephemeralPrefix = args[i]; inc i
+    of "--label":
+      inc i
+      discard parseLabel(args[i])   # validate eagerly: a usage error, exit 2
+      result.labels.add(args[i]); inc i
+    of "--timeout-sec":
+      inc i; result.timeoutSec = parseInt(args[i]); inc i
+    of "--detach-script":
+      inc i; result.detachScript = args[i]; inc i
+    of "--ssh-ready-timeout-sec":
+      inc i
+      result.sshReadyTimeoutSec = parseInt(args[i])
+      if result.sshReadyTimeoutSec <= 0:
+        raise newException(ValueError,
+          "--ssh-ready-timeout-sec expects a positive integer")
+      inc i
+    of "--wait-for-shutdown":
+      result.waitForShutdown = true
+      inc i
+    of "--env":
+      inc i
+      let p = parseEnvPair(args[i])
+      result.envPairs[p.k] = p.v
+      inc i
+    of "--copy-to":
+      inc i
+      let p = parsePathPair("--copy-to", args[i],
+        sourceIsPath = true)
+      result.copyTo.add((host: p.a, guest: p.b))
+      inc i
+    of "--copy-from":
+      inc i
+      let p = parsePathPair("--copy-from", args[i],
+        sourceIsPath = true)
+      result.copyFrom.add((guest: p.a, host: p.b))
+      inc i
+    of "--mount":
+      inc i
+      let p = parsePathPair("--mount", args[i],
+        sourceIsPath = true)
+      result.mounts.add((host: p.a, guest: p.b))
+      inc i
+    of "--cwd":
+      inc i; result.cwd = args[i]; inc i
+    of "--run-as":
+      inc i; result.runAs = args[i]; inc i
+    of "--timeout":
+      inc i; result.execTimeout = parseInt(args[i]); inc i
+      if result.execTimeout < 0:
+        raise newException(ValueError, "--timeout expects a non-negative integer")
+    of "--install-shim":
+      inc i
+      let p = parsePathPair("--install-shim", args[i],
+        sourceIsPath = false)
+      result.shims.add(ArgvTraceShim(wrappedBinaryName: p.a,
+                                    traceLogPath: p.b))
+      inc i
+    of "--log-format":
+      inc i
+      case args[i]
+      of "human": result.logFormat = lfHuman
+      of "json": result.logFormat = lfJson
+      else: raise newException(ValueError,
+                              &"--log-format expects human|json, got '{args[i]}'")
+      inc i
+    of "--allow-noop-fallback":
+      result.allowNoopFallback = true
+      inc i
+    of "--running":
+      result.running = true
+      inc i
+    of "--state-dir":
+      inc i; result.stateDir = args[i]; inc i
+    of "--instance-id":
+      inc i; result.instanceId = args[i]; inc i
+      validateInstanceId(result.instanceId)
+    of "--lock-timeout-sec":
+      inc i; result.lockTimeoutSec = parseInt(args[i]); inc i
+      if result.lockTimeoutSec notin 0..300:
+        raise newException(ValueError, "--lock-timeout-sec expects 0 through 300")
+    of "--follow":
+      result.follow = true; inc i
+    of "--force":
+      result.force = true; inc i
+    of "--purge":
+      result.purge = true; inc i
+    of "--older-than":
+      inc i; result.olderThanSec = parseInt(args[i]); result.olderThanSet = true
+      inc i
+    of "--dry-run":
+      result.dryRun = true
+      inc i
+    of "--sweep-tmp":
+      result.sweepTmp = true
+      inc i
+    of "--remote":
+      inc i; result.remote = args[i]; inc i
+    of "--auth-token":
+      inc i; result.authToken = args[i]; inc i
+    of "--auth-token-file":
+      inc i; result.authTokenFile = args[i]; inc i
+    of "--listen":
+      inc i; result.listen = args[i]; inc i
+    of "--worker-exe":
+      inc i; result.workerExe = args[i]; inc i
+    of "--port-file":
+      inc i; result.portFile = args[i]; inc i
+    of "--tls-cert":
+      inc i; result.tlsCert = args[i]; inc i
+    of "--tls-key":
+      inc i; result.tlsKey = args[i]; inc i
+    of "--quiet":
+      result.quiet = true
+      inc i
+    of "--enroll-secret":
+      inc i; result.enrollSecret = args[i]; inc i
+    of "--enroll-secret-file":
+      inc i; result.enrollSecretFile = args[i]; inc i
+    of "--identity-ttl-sec":
+      inc i; result.identityTtlSec = parseInt(args[i]); inc i
+      if result.identityTtlSec < 0:
+        raise newException(ValueError, "--identity-ttl-sec must be >= 0")
+    of "--host-id":
+      inc i; result.hostId = args[i]; inc i
+    of "--tart-vms-dir":
+      inc i; result.tartVmsDir = args[i]; inc i
+    of "--serve-threads":
+      inc i; result.serveThreads = parseInt(args[i]); inc i
+      if result.serveThreads < 0:
+        raise newException(ValueError, "--serve-threads must be >= 0")
+    of "--exec-deadline-sec":
+      inc i; result.execDeadlineSec = parseInt(args[i]); inc i
+      if result.execDeadlineSec < 0:
+        raise newException(ValueError, "--exec-deadline-sec must be >= 0")
+    of "-h", "--help":
+      result.subcommand = "help"
+      inc i
+    else:
+      if a.startsWith("-"):
+        raise newException(ValueError, &"Unknown flag: '{a}'")
+      else:
+        # First positional after subcommand is treated as part of cmd.
+        result.cmd.add(a)
+        inc i
+
+  # Post-loop reconciliation for the libvirt M4 ``--name`` alias.
+  # The canonical command uses ``--name <vm>`` rather than ``--baseline
+  # <name>``; downstream code only sees ``baseline``. Resolve precedence
+  # here so the rest of the CLI doesn't have to know about the alias.
+  if result.name.len > 0:
+    if result.baseline.len == 0:
+      result.baseline = result.name
+    elif result.baseline != result.name:
+      raise newException(ValueError,
+        &"--name '{result.name}' and --baseline '{result.baseline}' " &
+        "must match (they refer to the same logical VM)")
+  # --first-boot-script requires --recipe to know which script the
+  # recipe's build-autounattend-iso.sh wants. Fail fast at parse time.
+  if result.firstBootScript.len > 0 and result.recipeDir.len == 0:
+    raise newException(ValueError,
+      "--first-boot-script requires --recipe <id>; the script is wrapped " &
+      "into the per-VM autounattend ISO by the recipe's " &
+      "build-autounattend-iso.sh helper")
+  if result.firstBootScript.len > 0 and not fileExists(result.firstBootScript):
+    raise newException(ValueError,
+      &"--first-boot-script '{result.firstBootScript}': file not found")
+  # --controller-pubkey is wrapped into the autounattend ISO the same way as
+  # --first-boot-script, so we apply the same gating: it requires --recipe
+  # (only recipes that ship build-autounattend-iso.sh can pick it up) and
+  # the file must exist on the host.
+  if result.controllerPubKey.len > 0 and result.recipeDir.len == 0:
+    raise newException(ValueError,
+      "--controller-pubkey requires --recipe <id>; the pubkey is wrapped " &
+      "into the per-VM autounattend ISO by the recipe's " &
+      "build-autounattend-iso.sh helper")
+  if result.controllerPubKey.len > 0 and not fileExists(result.controllerPubKey):
+    raise newException(ValueError,
+      &"--controller-pubkey '{result.controllerPubKey}': file not found")
+  if result.sshPasswordEnv.len > 0 and result.sshPrivateKey.len > 0:
+    raise newException(ValueError,
+      "--ssh-password-env and --ssh-private-key are mutually exclusive")
+  if result.sshPrivateKey.len > 0 and not fileExists(result.sshPrivateKey):
+    raise newException(ValueError,
+      &"--ssh-private-key '{result.sshPrivateKey}': file not found")
+  if result.sshHostKeyAlias.len > 0 and result.sshKnownHosts.len == 0:
+    raise newException(ValueError,
+      "--ssh-host-key-alias requires --ssh-known-hosts")
+  if result.sshHostKeyAlias.anyIt(it.isSpaceAscii or ord(it) < 32):
+    raise newException(ValueError,
+      "--ssh-host-key-alias must not contain whitespace or control characters")
+  if result.incusSecurityNesting or result.incusNestedKvm or
+      result.incusProfiles.len > 0:
+    if result.subcommand != "run" or not result.ephemeral or
+       result.backend.toLowerAscii() != $biIncus:
+      raise newException(ValueError,
+        "--incus-security-nesting/--incus-nested-kvm/--incus-profile require " &
+        "run --ephemeral --backend incus")
+
+proc logEvent*(format: LogFormat, level: string, msg: string,
+              fields: openArray[(string, string)] = []) =
+  case format
+  of lfHuman:
+    let useColor = isatty(stderr)
+    let prefix = case level
+                 of "error": (if useColor: "\e[31m" else: "") & "[ERR] " &
+                              (if useColor: "\e[0m" else: "")
+                 of "warn":  (if useColor: "\e[33m" else: "") & "[WRN] " &
+                              (if useColor: "\e[0m" else: "")
+                 else:        "[" & level & "] "
+    stderr.writeLine(prefix & msg)
+    for (k, v) in fields:
+      stderr.writeLine("    " & k & ": " & v)
+  of lfJson:
+    var obj = %*{"level": level, "msg": msg}
+    for (k, v) in fields:
+      obj[k] = %v
+    stderr.writeLine($obj)
+
+proc resolveBackend(opts: CliOpts): tuple[id: BackendId, backend: VmBackend] =
+  if opts.backend == "" or opts.backend == "auto":
+    if not opts.guestSet:
+      raise newException(ValueError,
+        "--backend auto requires --guest <linux|windows|macos>")
+    let id = autoSelectBackendId(detectHostPlatform(), opts.guest)
+    let b = newBackend(id, noopFallback = opts.allowNoopFallback)
+    (id: id, backend: b)
+  else:
+    let id = parseBackendId(opts.backend)
+    if id == biMock:
+      # The test fixture is deliberately NOT in the registry (never advertised
+      # or auto-selected); it exists only when a caller names it (§8.6).
+      if mockUnavailable():
+        raise newException(BackendUnavailableError,
+          "backend 'mock' is unavailable (" & MockUnavailableEnv & " is set)")
+      return (id: id, backend: VmBackend(newMockBackend(biMock)))
+    let b = newBackend(id, noopFallback = opts.allowNoopFallback)
+    (id: id, backend: b)
+
+proc resolveBootMediaPath*(sourceImage: string): string =
+  ## Accept either one media file or a recipe output directory. Directory
+  ## selection is useful for content-addressed outputs whose filename embeds
+  ## the image digest.
+  if sourceImage.len == 0:
+    raise newException(ValueError, "boot: --source-image is required")
+  if fileExists(sourceImage):
+    return absolutePath(sourceImage)
+  if not dirExists(sourceImage):
+    raise newException(ValueError,
+      "boot: source image does not exist: " & sourceImage)
+
+  var newestPath = ""
+  var newestTime = fromUnix(0)
+  for kind, path in walkDir(sourceImage):
+    if kind != pcFile:
+      continue
+    let ext = splitFile(path).ext.toLowerAscii()
+    if ext notin [".iso", ".qcow2", ".vhdx"]:
+      continue
+    let modified = getLastModificationTime(path)
+    if newestPath.len == 0 or modified > newestTime or
+        (modified == newestTime and path < newestPath):
+      newestPath = path
+      newestTime = modified
+  if newestPath.len == 0:
+    raise newException(ValueError,
+      "boot: no .iso, .qcow2, or .vhdx media found in " & sourceImage)
+  absolutePath(newestPath)
+
+proc parseBootMediaKind*(value, mediaPath: string): BootMediaKind =
+  let normalized = value.toLowerAscii()
+  case normalized
+  of "", "auto":
+    case splitFile(mediaPath).ext.toLowerAscii()
+    of ".iso": bmkIso
+    of ".qcow2": bmkQcow2
+    of ".vhdx": bmkVhdx
+    else:
+      raise newException(ValueError,
+        "boot: cannot infer media kind from: " & mediaPath &
+        "; pass --kind iso|qcow2|vhdx|rootfs-tar|kernel")
+  of "iso": bmkIso
+  of "qcow2": bmkQcow2
+  of "vhdx": bmkVhdx
+  of "rootfs-tar": bmkRootfsTar
+  of "kernel": bmkKernel
+  else:
+    raise newException(ValueError,
+      "boot: --kind expects auto|iso|qcow2|vhdx|rootfs-tar|kernel, got '" &
+      value & "'")
+
+proc resolveBootBackendId*(opts: CliOpts; mediaKind: BootMediaKind;
+                           host: HostPlatform): BackendId =
+  if opts.backend.len > 0 and opts.backend != "auto":
+    return parseBackendId(opts.backend)
+  case host
+  of hpWindows:
+    if mediaKind == bmkRootfsTar: biWsl else: biHyperv
+  of hpLinux:
+    if mediaKind == bmkRootfsTar:
+      raise newException(ValueError,
+        "boot: rootfs tar media is supported by the Windows WSL backend only")
+    # Direct kernel boot is a qemu-boot capability; libvirt's
+    # bootFromMedia rejects it, so auto-selection must not route there.
+    if mediaKind == bmkKernel: biQemuBoot else: biLibvirt
+  of hpMacosArm:
+    raise newException(ValueError,
+      "boot: no macOS backend currently implements bootFromMedia; " &
+      "pass an explicit backend after adding that capability")
+
+proc probeBackendIds*(opts: CliOpts): seq[BackendId] =
+  if opts.backend == "" or opts.backend == "auto":
+    registeredBackends()
+  else:
+    @[parseBackendId(opts.backend)]
+
+const DefaultDiskGB* = 50
+  ## The per-job disk size when ``--disk-gb`` is omitted. It is marked as a
+  ## default (``diskGBDefaulted``), so a golden that is already larger keeps
+  ## its size; only an explicit ``--disk-gb`` below a golden's is refused.
+
+proc effectiveDiskGB*(opts: CliOpts): int =
+  if opts.diskGB > 0: opts.diskGB else: DefaultDiskGB
+
+proc applyDefaults*(spec: var BaselineSpec, opts: CliOpts) =
+  spec.name = opts.baseline
+  spec.sourceImage = opts.sourceImage
+  spec.cpus = if opts.cpus > 0: opts.cpus else: 2
+  spec.memoryMB = if opts.memoryMB > 0: opts.memoryMB else: 4096
+  spec.diskGB = effectiveDiskGB(opts)
+  spec.diskGBDefaulted = opts.diskGB <= 0
+  if opts.guestSet:
+    spec.guestOs = opts.guest
+  # M4 libvirt-slice canonical-command extensions. Backends that don't
+  # consume these fields ignore them (the contract is intentionally
+  # tolerant — see types.nim's BaselineSpec docstrings).
+  spec.recipeDir = opts.recipeDir
+  spec.recipeBuildDir = opts.recipeBuildDir
+  spec.firstBootScript = opts.firstBootScript
+  spec.provisionScripts = opts.provisionScripts
+  spec.controllerPubKey = opts.controllerPubKey
+  spec.networkBridge = opts.networkBridge
+  spec.imagePoolDir = opts.imagePoolDir
+  spec.backendOptions = initTable[string, string]()
+  if opts.ephemeralPrefix.len > 0:
+    spec.backendOptions["ephemeralPrefix"] = opts.ephemeralPrefix
+
+proc resolveBootOutputDir*(requested: string;
+                           processId = getCurrentProcessId()): string =
+  ## Separate default boot artifacts for concurrent CLI invocations. Explicit
+  ## output directories remain caller-owned and intentionally reusable.
+  if requested.len > 0:
+    absolutePath(requested)
+  else:
+    getTempDir() / ("gosti-boot-" & $processId)
+
+proc printInstanceStatus(opts: CliOpts, data: JsonNode) =
+  if opts.logFormat == lfJson: echo $data
+  else:
+    echo data["name"].getStr() & " " & data["state"].getStr() &
+      " " & data["instance_id"].getStr()
+
+proc cmdDurableBoot(opts: CliOpts, b: LibvirtBackend, media: BootMediaSpec): int =
+  var spec = media
+  let instance = beginDurableBoot(opts.stateDir, opts.name, opts.instanceId,
+                                  b, spec, opts.lockTimeoutSec)
+  defer: instance.close()
+  var portLock: InstanceLock
+  defer: portLock.release()
+  var serial: SerialStream
+  var handedOff = false
+  var failure = "durable boot did not complete"
+  try:
+    portLock = acquireInstanceOperationLock(opts.stateDir, "ports", opts.lockTimeoutSec, true)
+    if opts.sshForwardPort == -1:
+      b.sshPort = pickTcpPort(0)
+      spec.sshForwardPort = b.sshPort
+      instance.receipt["ssh"]["port"] = %b.sshPort
+      instance.save("creating")
+    let vm = b.bootFromMedia(spec)
+    portLock.release()
+    instance.preserveDomainXml()
+    if opts.expectPattern.len > 0:
+      serial = b.captureSerial(vm)
+      let timeout = if opts.timeoutSec > 0: opts.timeoutSec else: 180
+      if not b.expectLine(serial, opts.expectPattern, timeout).matched:
+        failure = "boot marker not observed: " & opts.expectPattern
+        return 1
+    let readyTimeout = if opts.sshReadyTimeoutSec > 0: opts.sshReadyTimeoutSec else: 120
+    b.startAndAwaitReady(vm, readyTimeout)
+    if opts.screenshotPath.len > 0:
+      instance.screenshot(opts.screenshotPath, opts.screenshotDelaySec)
+    if opts.cmd.len > 0:
+      let timeout = if opts.timeoutSec > 0: opts.timeoutSec else: 120
+      let r = instance.exec(opts.cmd, opts.envPairs, timeout)
+      stdout.write(r.stdout)
+      stderr.write(r.stderr)
+      if r.exitCode != 0:
+        failure = "boot command failed with exit " & $r.exitCode
+        return r.exitCode
+    instance.save("running")
+    printInstanceStatus(opts, instance.status())
+    handedOff = true
+    return 0
+  except CatchableError as error:
+    failure = error.msg
+    raise
+  finally:
+    try:
+      if serial != nil: b.closeSerial(serial)
+    except:
+      handedOff = false
+      raise
+    finally:
+      if not handedOff: instance.failBoot(failure)
+
+proc cmdBoot(opts: CliOpts; installMode = false): int =
+  let durable = opts.name.len > 0 or opts.stateDir.len > 0 or opts.instanceId.len > 0
+  if durable and (installMode or not opts.keepEphemeral or
+      opts.name.len == 0 or opts.stateDir.len == 0):
+    raise newException(ValueError,
+      "durable boot requires --keep --name NAME --state-dir ROOT")
+  if installMode:
+    if opts.targetDiskPath.len == 0:
+      raise newException(ValueError,
+        "install: --target-disk is required")
+    if opts.expectPattern.len == 0:
+      raise newException(ValueError,
+        "install: --expect is required so a failed installer poweroff cannot " &
+        "be accepted as success")
+    if opts.keepEphemeral or opts.viewer or opts.screenshotPath.len > 0 or
+        opts.cmd.len > 0:
+      raise newException(ValueError,
+        "install: viewer, screenshot, SSH command, and --keep modes are not " &
+        "valid during target-disk installation")
+  if not installMode and not opts.keepEphemeral and opts.expectPattern.len == 0 and
+      not opts.viewer and opts.screenshotPath.len == 0 and opts.cmd.len == 0:
+    raise newException(ValueError,
+      "boot: pass --keep to leave the VM running, --viewer for manual " &
+      "inspection, --expect <regex> for a self-cleaning assertion, or " &
+      "--screenshot <path> or an SSH command after -- for a self-cleaning " &
+      "assertion")
+  if opts.screenshotPath.len > 0 and opts.expectPattern.len == 0:
+    raise newException(ValueError,
+      "boot --screenshot requires --expect so capture has a readiness gate")
+  if opts.screenshotPath.len == 0 and opts.screenshotDelaySec > 0:
+    raise newException(ValueError,
+      "boot --screenshot-delay-sec requires --screenshot")
+  if opts.screenshotPath.len > 0 and opts.graphics == "none" and not opts.viewer:
+    raise newException(ValueError,
+      "boot --screenshot requires --graphics vnc or --graphics spice")
+
+  let mediaPath = resolveBootMediaPath(opts.sourceImage)
+  let mediaKind = parseBootMediaKind(opts.mediaKind, mediaPath)
+  if opts.targetDiskPath.len > 0 and mediaKind != bmkIso:
+    raise newException(ValueError,
+      "--target-disk is valid only when booting installer ISO media")
+  if mediaKind != bmkKernel and
+      (opts.initrd.len > 0 or opts.kernelCmdline.len > 0):
+    raise newException(ValueError,
+      "boot: --initrd and --kernel-cmdline are valid only with --kind kernel")
+  let id = resolveBootBackendId(opts, mediaKind, detectHostPlatform())
+  if durable:
+    if detectHostPlatform() != hpLinux:
+      raise newException(BackendUnavailableError, "durable media requires Linux/libvirt")
+    if id != biLibvirt or mediaKind != bmkQcow2 or
+        (opts.guestSet and opts.guest != goLinux):
+      raise newException(BackendUnavailableError,
+        "durable media currently supports Linux guests on libvirt with QCOW2 media only")
+    if opts.viewer or opts.waitForShutdown or opts.targetDiskPath.len > 0:
+      raise newException(ValueError, "durable boot does not support viewer, shutdown or install modes")
+  let backend = newBackend(id, noopFallback = opts.allowNoopFallback)
+  if not backend.probeAvailability():
+    raise newException(BackendUnavailableError,
+      "boot: backend is not available: " & $id)
+
+  var sshForwardPort = opts.sshForwardPort
+  if sshForwardPort == -1:
+    sshForwardPort = pickTcpPort(0)
+  if sshForwardPort != 0 and id != biLibvirt:
+    raise newException(BackendUnavailableError,
+      "boot: --ssh-forward-port is currently supported by libvirt")
+  if opts.cmd.len > 0 or durable:
+    if id != biLibvirt:
+      raise newException(BackendUnavailableError,
+        "boot: an SSH guest command is currently supported by libvirt")
+    if sshForwardPort == 0:
+      raise newException(ValueError,
+        "boot: a guest command requires --ssh-forward-port")
+    if opts.sshUser.len == 0:
+      raise newException(ValueError,
+        "boot: a guest command requires --ssh-user")
+    if durable and opts.sshPrivateKey.len == 0:
+      raise newException(ValueError, "durable media requires --ssh-private-key")
+    if opts.sshPasswordEnv.len == 0 and opts.sshPrivateKey.len == 0:
+      raise newException(ValueError,
+        "boot: a guest command requires --ssh-password-env or " &
+        "--ssh-private-key")
+    let lb = LibvirtBackend(backend)
+    lb.sshPort = sshForwardPort
+    lb.sshUser = opts.sshUser
+    if opts.sshPrivateKey.len > 0:
+      lb.sshPassword = ""
+      lb.sshKeyPath = absolutePath(opts.sshPrivateKey)
+    else:
+      let password = getEnv(opts.sshPasswordEnv)
+      if password.len == 0:
+        raise newException(ValueError,
+          "boot: SSH password environment variable is unset or empty: " &
+          opts.sshPasswordEnv)
+      lb.sshPassword = password
+      lb.sshKeyPath = ""
+    if opts.sshKnownHosts.len > 0:
+      lb.sshKnownHostsPath = absolutePath(opts.sshKnownHosts)
+    lb.sshHostKeyAlias = opts.sshHostKeyAlias
+    if opts.guestSet:
+      lb.sshGuestOs = opts.guest
+    elif durable:
+      lb.sshGuestOs = goLinux
+
+  let outputDir = resolveBootOutputDir(opts.outputDir)
+  createDir(outputDir)
+  var extra = initTable[string, string]()
+  if opts.uefiLoader.len > 0:
+    extra["uefiLoader"] = absolutePath(opts.uefiLoader)
+  if opts.uefiNvramTemplate.len > 0:
+    extra["uefiNvramTemplate"] = absolutePath(opts.uefiNvramTemplate)
+  if opts.initrd.len > 0:
+    extra["initrdPath"] = absolutePath(opts.initrd)
+  if opts.kernelCmdline.len > 0:
+    extra["kernelCmdline"] = opts.kernelCmdline
+  let requestedGraphics =
+    if opts.viewer and opts.graphics == "none": "vnc" else: opts.graphics
+  let graphics = case requestedGraphics
+    of "vnc": bgVnc
+    of "spice": bgSpice
+    else: bgNone
+  let acceleration = case opts.acceleration
+    of "kvm": baKvm
+    of "tcg": baTcg
+    else: baAuto
+  let spec = BootMediaSpec(
+    name: "",
+    kind: mediaKind,
+    mediaPath: mediaPath,
+    secondaryIsoPath: (if opts.secondaryIsoPath.len > 0:
+                         absolutePath(opts.secondaryIsoPath)
+                       else: ""),
+    targetDiskPath: (if opts.targetDiskPath.len > 0:
+                       absolutePath(opts.targetDiskPath)
+                     else: ""),
+    cpus: (if opts.cpus > 0: opts.cpus else: 2),
+    memoryMB: (if opts.memoryMB > 0: opts.memoryMB else: 4096),
+    # 0 means "backend default"; only bmkKernel has one that differs
+    # from this parser's 2, and only when the caller stayed silent.
+    generation: (if mediaKind == bmkKernel and not opts.generationSet: 0
+                 else: opts.generation),
+    # Both threaded from the CLI. ``secureBootEnabled`` was hardcoded
+    # false here, which made ``BootMediaSpec.secureBootEnabled``
+    # unreachable from the command line even though both the libvirt and
+    # Hyper-V backends honour it; a spec field no caller can set is the
+    # same defect as a spec field no backend reads.
+    secureBootEnabled: opts.secureBootEnabled,
+    tpmEnabled: opts.tpmEnabled,
+    acceleration: acceleration,
+    graphics: graphics,
+    videoModel: opts.videoModel,
+    sshForwardPort: sshForwardPort,
+    diskGB: (if opts.diskGB > 0: opts.diskGB else: 8),
+    diskGBDefaulted: opts.diskGB <= 0,
+    serialPipeName: "",
+    serialLogPath: outputDir / "boot.serial.log",
+    extra: extra)
+
+  if durable:
+    return cmdDurableBoot(opts, LibvirtBackend(backend), spec)
+
+  logEvent(opts.logFormat, "info", "booting media",
+           {"backend": $id, "media": mediaPath, "kind": $mediaKind})
+  var vm: VmHandle
+  var serial: SerialStream
+  var keptSuccessfully = false
+  try:
+    vm = backend.bootFromMedia(spec)
+
+    # Hyper-V creates the VM in the Off state; captureSerial starts it while
+    # wiring COM1. Libvirt starts the domain during bootFromMedia.
+    if id == biHyperv or opts.expectPattern.len > 0:
+      serial = backend.captureSerial(vm)
+
+    if opts.expectPattern.len > 0:
+      let timeout = if opts.timeoutSec > 0: opts.timeoutSec
+                    elif installMode: 1800
+                    else: 180
+      let match = backend.expectLine(serial, opts.expectPattern, timeout)
+      if not match.matched:
+        logEvent(opts.logFormat, "error", "boot marker not observed",
+                 {"vm": vm.name, "pattern": opts.expectPattern,
+                  "serialLog": serial.logPath})
+        return 1
+      logEvent(opts.logFormat, "info", "boot marker observed",
+               {"vm": vm.name, "match": match.matchedText.strip(),
+                "serialLog": serial.logPath})
+    elif id == biHyperv:
+      # Let Start-VM leave the PowerShell launcher before closing its serial
+      # reader. Closing the reader does not stop the VM.
+      sleep(1000)
+
+    if installMode or opts.waitForShutdown:
+      let shutdownTimeout = if opts.timeoutSec > 0: opts.timeoutSec
+                            elif installMode: 1800
+                            else: 180
+      if not backend.waitForShutdown(vm, shutdownTimeout):
+        logEvent(opts.logFormat, "error", "clean guest shutdown not observed",
+                 {"vm": vm.name, "serialLog": serial.logPath})
+        return 1
+      logEvent(opts.logFormat, "info", "clean guest shutdown observed",
+               {"vm": vm.name})
+
+    if opts.screenshotPath.len > 0:
+      if opts.screenshotDelaySec > 0:
+        sleep(opts.screenshotDelaySec * 1000)
+      let screenshotPath = absolutePath(opts.screenshotPath)
+      backend.captureScreenshot(vm, screenshotPath)
+      logEvent(opts.logFormat, "info", "graphical console captured",
+               {"backend": $id, "vm": vm.name,
+                "screenshot": screenshotPath})
+
+    if opts.cmd.len > 0:
+      let timeout = if opts.timeoutSec > 0: opts.timeoutSec else: 180
+      let readyTimeout = if opts.sshReadyTimeoutSec > 0:
+                           opts.sshReadyTimeoutSec
+                         else:
+                           min(timeout, 300)
+      backend.startAndAwaitReady(vm, readyTimeout)
+      let execution = backend.execInGuest(
+        vm, opts.envPairs, opts.cmd, timeoutSec = timeout)
+      if execution.stdout.len > 0:
+        stdout.write(execution.stdout)
+      if execution.stderr.len > 0:
+        stderr.write(execution.stderr)
+      if execution.exitCode != 0:
+        return execution.exitCode
+
+    if opts.viewer:
+      if id != biLibvirt:
+        raise newException(BackendUnavailableError,
+          "boot --viewer is currently supported by the libvirt backend")
+      let viewer = findExe("virt-viewer")
+      if viewer.len == 0:
+        raise newException(BackendUnavailableError,
+          "boot --viewer requires virt-viewer on PATH")
+      let lb = LibvirtBackend(backend)
+      logEvent(opts.logFormat, "info", "opening graphical console",
+               {"backend": $id, "vm": vm.name})
+      let viewerProcess = startProcess(viewer,
+        args = @["--connect", lb.libvirtUri, "--wait", vm.name],
+        options = {poUsePath, poParentStreams})
+      let viewerExit = viewerProcess.waitForExit()
+      viewerProcess.close()
+      if viewerExit != 0:
+        raise newException(GostiError,
+          "virt-viewer exited with status " & $viewerExit)
+
+    if opts.keepEphemeral:
+      logEvent(opts.logFormat, "info", "VM left running",
+               {"backend": $id, "vm": vm.name})
+      echo vm.name
+      keptSuccessfully = true
+    0
+  finally:
+    try:
+      if serial != nil:
+        backend.closeSerial(serial)
+    except:
+      keptSuccessfully = false
+      raise
+    finally:
+      if vm != nil and not keptSuccessfully:
+        backend.stopAndCleanup(vm, deleteVm = true)
+
+proc cmdProvision(opts: CliOpts): int =
+  let (id, backend) = resolveBackend(opts)
+  if opts.baseline.len == 0:
+    raise newException(ValueError, "provision: --baseline is required")
+  var spec: BaselineSpec
+  applyDefaults(spec, opts)
+  logEvent(opts.logFormat, "info",
+           "provisioning baseline",
+           {"backend": $id, "baseline": opts.baseline})
+  backend.provisionBaseline(spec)
+  logEvent(opts.logFormat, "info", "provision complete",
+           {"backend": $id, "baseline": opts.baseline})
+  0
+
+proc cmdRunEphemeralIncus(opts: CliOpts): int =
+  ## Incus per-job ephemeral CONTAINER: launch a FRESH container from the
+  ## base image, run an exec probe, then destroy it (``incus delete
+  ## --force``) leaving NO residue. The container analog of the libvirt
+  ## CoW-clone path — the same create→probe→destroy lifecycle the GARM
+  ## provider's CreateInstance/DeleteInstance drive. Plain containers need no
+  ## /dev/kvm; a trusted controller may explicitly select the fixed nested-KVM
+  ## capability path below.
+  ##
+  ## ``--baseline`` names the per-job container; ``--base-image`` the image
+  ## to launch from (default ``gosti-base``). ``--user-data`` (when set) is the
+  ## runner BOOTSTRAP payload; on incus it is delivered + launched DETACHED
+  ## over ``incus exec`` once the container is exec-ready (NOT via cloud-init,
+  ## which incus does not drive — see ``injectAndRunBootstrap``). Args after
+  ## ``--`` are the in-guest probe command (default ``true``).
+  let backend = newBackend(biIncus)
+  if opts.baseline.len == 0:
+    raise newException(ValueError,
+      "run --ephemeral --backend incus: --baseline (container name) is required")
+  let ib = IncusBackend(backend)
+  var userData = ""
+  if opts.userDataFile.len > 0:
+    if not fileExists(opts.userDataFile):
+      raise newException(ValueError,
+        "run --ephemeral: --user-data file not found: " & opts.userDataFile)
+    userData = readFile(opts.userDataFile)
+  let spec = EphemeralIncusSpec(
+    name: opts.baseline,
+    baseImage: opts.baseImage,
+    ephemeral: false,
+    profiles: opts.incusProfiles,
+    userData: userData,
+    config: incusEphemeralLimits(opts.cpus, opts.memoryMB),
+    securityNesting: opts.incusSecurityNesting,
+    nestedKvm: opts.incusNestedKvm)
+  logEvent(opts.logFormat, "info", "ephemeral container: launch",
+           {"backend": $biIncus, "name": opts.baseline,
+            "base": (if opts.baseImage.len > 0: opts.baseImage else: ib.baseImage)})
+  var vm = ib.provisionEphemeralClone(spec)
+  if opts.keepEphemeral:
+    # The GARM CreateInstance path (`run --ephemeral --keep`). When a bootstrap
+    # payload is present, deliver + launch it DETACHED over `incus exec` once
+    # the container is exec-ready (incus does not drive the golden's cloud-init
+    # datasource). The exec returns promptly — it does not block on the runner
+    # — so the "launch + return" contract holds. The payload/token is never
+    # logged and never placed on a command line.
+    if userData.len > 0:
+      let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 60
+      ib.startAndAwaitReady(vm, readyTimeout)
+      ib.injectAndRunBootstrap(vm, userData)
+      logEvent(opts.logFormat, "info", "ephemeral container: bootstrap launched",
+               {"name": opts.baseline})
+    logEvent(opts.logFormat, "info", "ephemeral container: kept running",
+             {"name": opts.baseline})
+    echo opts.baseline
+    return 0
+  var verdict = 2
+  try:
+    let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 60
+    ib.startAndAwaitReady(vm, readyTimeout)
+    # A bootstrap payload (the runner registration script) is delivered +
+    # launched DETACHED after readiness, then the diagnostic probe runs. In
+    # this NON-keep path the container is torn down after the probe, so the
+    # bootstrap is exercised but not left running (production uses --keep).
+    if userData.len > 0:
+      ib.injectAndRunBootstrap(vm, userData)
+    let probeCmd = if opts.cmd.len > 0: opts.cmd else: @["true"]
+    let r = ib.execInGuest(vm, initTable[string, string](), probeCmd,
+                           timeoutSec = readyTimeout)
+    if r.exitCode == 0:
+      logEvent(opts.logFormat, "info", "ephemeral probe: ok",
+               {"cmd": probeCmd.join(" "), "stdout": r.stdout.strip()})
+      verdict = 0
+    else:
+      logEvent(opts.logFormat, "error", "ephemeral probe: FAILED",
+               {"cmd": probeCmd.join(" "), "exit": $r.exitCode,
+                "stdout": r.stdout.strip()})
+      verdict = 1
+    if opts.outputDir.len > 0:
+      try:
+        createDir(opts.outputDir)
+        writeFile(opts.outputDir / "probe.log", r.stdout)
+      except CatchableError: discard
+  finally:
+    ib.stopAndCleanup(vm, deleteVm = true)
+    logEvent(opts.logFormat, "info", "ephemeral container: destroyed",
+             {"name": opts.baseline})
+  verdict
+
+proc cmdRunEphemeralHyperV(opts: CliOpts): int =
+  ## Hyper-V per-job ephemeral VM (RA4): CoW-clone (or ReFS block-copy) a
+  ## GOLDEN VHDX into a fresh Gen-2 VM (`New-VHD`/`New-VM`/`Start-VM`), run an
+  ## optional in-guest JIT probe over PowerShell Direct, then `Remove-VM` +
+  ## delete the per-job disk — no residue, golden untouched. The Windows-host
+  ## analog of the libvirt CoW-overlay ephemeral path; `gosti serve`
+  ## forwards exactly this invocation for the `t_gosti_serve_win_hyperv`
+  ## gate on win-ci-bare-001.
+  ##
+  ## Flags: `--baseline` names the per-job VM (must start with the ephemeral
+  ## prefix); `--golden-image` the golden VHDX. Env seams keep the CLI
+  ## surface small and match how the reprobuild-declared serve service is
+  ## configured: `GOSTI_HYPERV_SWITCH` (vSwitch for the JIT metadata NIC),
+  ## `GOSTI_HYPERV_CRED_CACHE` (PowerShell-Direct credential cache for the
+  ## in-guest probe), `GOSTI_HYPERV_FULL_COPY=1` (ReFS block-copy instead of a
+  ## differencing overlay), `GOSTI_HYPERV_CONFIG_DRIVE` (a prebuilt
+  ## cloudbase-init ConfigDrive ISO). Args after `--` are the in-guest probe.
+  if opts.baseline.len == 0:
+    raise newException(ValueError,
+      "run --ephemeral --backend hyperv: --baseline (VM name) is required")
+  # garm-provider-gosti forwards the golden VHDX under the GENERIC
+  # --source-image/--base-image flags (the same naming the incus/libvirt
+  # backends take), not --golden-image. Accept those as aliases so the
+  # provider's CreateInstance argv drives the hyperv path unmodified; an
+  # explicit --golden-image still wins when supplied.
+  let golden =
+    if opts.goldenImage.len > 0: opts.goldenImage
+    elif opts.sourceImage.len > 0: opts.sourceImage
+    else: opts.baseImage
+  if golden.len == 0:
+    raise newException(ValueError,
+      "run --ephemeral --backend hyperv: golden VHDX is required " &
+      "(pass --golden-image, or --source-image/--base-image)")
+  let credCache = getEnv("GOSTI_HYPERV_CRED_CACHE")
+  let hb = HyperVBackend(newBackend(biHyperv))
+  if credCache.len > 0:
+    hb.credentialCachePath = credCache
+  # `--user-data` (the GARM-rendered runner bootstrap the serve daemon staged
+  # from the /v1/exec userData field): the backend injects + starts it in-guest
+  # over PowerShell Direct on the `--keep` path so the JIT runner serves its job.
+  var userData = ""
+  if opts.userDataFile.len > 0:
+    if not fileExists(opts.userDataFile):
+      raise newException(ValueError,
+        "run --ephemeral --backend hyperv: --user-data file not found: " &
+        opts.userDataFile)
+    userData = readFile(opts.userDataFile)
+  let spec = HyperVEphemeralCloneSpec(
+    name: opts.baseline,
+    goldenVhdx: golden,
+    useDifferencing: getEnv("GOSTI_HYPERV_FULL_COPY") == "",
+    cpus: opts.cpus,
+    memoryMB: opts.memoryMB,
+    generation: 2,
+    secureBootEnabled: true,
+    tpmEnabled: true,
+    switchName: getEnv("GOSTI_HYPERV_SWITCH"),
+    configDriveIso: getEnv("GOSTI_HYPERV_CONFIG_DRIVE"),
+    userData: userData,
+    diskGB: effectiveDiskGB(opts),
+    diskGBDefaulted: opts.diskGB <= 0)
+  logEvent(opts.logFormat, "info", "ephemeral hyperv: clone+boot",
+           {"backend": $biHyperv, "name": opts.baseline,
+            "golden": golden})
+  let timeoutSec = if opts.timeoutSec > 0: opts.timeoutSec else: 300
+  # Record where the per-job disk will live BEFORE it exists: a later
+  # `ephemeral-destroy` gets only the name, and must still find (and verify
+  # the removal of) the disk when the VM is already gone.
+  saveDiskRecord(opts.backend, opts.baseline, ephemeralClonePathFor(spec))
+  let code = runEphemeralHyperVJob(hb, spec,
+    probeArgv = opts.cmd,
+    timeoutSec = timeoutSec,
+    keep = opts.keepEphemeral)
+  if not opts.keepEphemeral:
+    # Torn down in-process (no later `ephemeral-destroy` will ask for it).
+    forgetDiskRecord(opts.backend, opts.baseline)
+    logEvent(opts.logFormat, "info", "ephemeral hyperv: destroyed",
+             {"name": opts.baseline, "exit": $code})
+  code
+
+const VmRunEphemeralBackends* = {
+  biTartMacos, biTartLinuxArm, biQemuWindowsArm, biUtmWindowsArm}
+  ## The backends whose ephemeral lifecycle is provision → revert → start →
+  ## inject, rather than libvirt's clone-an-overlay-and-boot-it. They are
+  ## exactly the backends `garm-provider-gosti` drives by LOCAL EXEC with a
+  ## long-lived supervising process, and the reason they need their own
+  ## ephemeral path is in `cmdRunEphemeralVmRun`.
+
+type
+  EphemeralPath* = enum
+    ## Which `run --ephemeral` lifecycle a backend gets. Pulled out as a value
+    ## so the ROUTING is testable without booting anything: the defect this
+    ## replaced was purely a routing one, and it was invisible precisely
+    ## because the fallthrough looked like a default rather than a decision.
+    epLibvirt = "libvirt"
+    epIncus = "incus"
+    epHyperV = "hyperv"
+    epVmRun = "gosti-run"
+
+proc ephemeralPathFor*(backend: string): EphemeralPath =
+  ## Route a `--backend` string to its ephemeral lifecycle.
+  ##
+  ## Matching is on the STRING, not on a parsed `BackendId`: `parseBackendId`
+  ## RAISES for an unknown name, and an unknown `--backend` must still reach
+  ## the libvirt body and fail the way it always has rather than turning into
+  ## a parse error from the dispatcher.
+  ##
+  ## `epLibvirt` is the fallback, and that is now a deliberate, named choice
+  ## instead of an accident of control flow — which is what made every tart and
+  ## QEMU request from the remote provider die on `--golden-image is required`.
+  if backend == $biIncus: return epIncus
+  if backend == $biHyperv: return epHyperV
+  for vmRunId in VmRunEphemeralBackends:
+    if backend == $vmRunId: return epVmRun
+  epLibvirt
+
+proc resolveEphemeralGolden*(goldenImage, sourceImage, baseImage,
+                             backend: string): string =
+  ## The golden for a gosti-run ephemeral instance.
+  ##
+  ## `garm-provider-gosti` forwards the golden under the GENERIC
+  ## `--source-image` / `--base-image` flags — the same naming incus and
+  ## libvirt take — not `--golden-image`. Accept all three, explicit
+  ## `--golden-image` winning, exactly as the hyperv path already does.
+  ##
+  ## Failing without any of them must NAME THE FLAGS THE CALLER CAN SEND. The
+  ## old libvirt fallthrough said "--golden-image is required", pointing every
+  ## reader at a flag the provider has no reason to pass and away from the real
+  ## fault, which was that the request had been routed to libvirt at all.
+  if goldenImage.len > 0: return goldenImage
+  if sourceImage.len > 0: return sourceImage
+  if baseImage.len > 0: return baseImage
+  raise newException(ValueError,
+    "run --ephemeral --backend " & backend &
+    ": a golden image is required (pass --source-image, --base-image " &
+    "or --golden-image)")
+
+proc guestOsFor*(id: BackendId): GuestOs =
+  ## The guest a backend produces. Needed because the remote provider's argv
+  ## carries no `--guest` (see `ephemeralRecipe` in the provider), and the
+  ## bootstrap has to be launched with the right shell.
+  case id
+  of biTartMacos: goMacos
+  of biTartLinuxArm: goLinux
+  of biQemuWindowsArm, biUtmWindowsArm: goWindows
+  else: goLinux
+
+
+proc cmdRunEphemeralVmRun(opts: CliOpts): int =
+  ## Per-job ephemeral instance for the gosti-run backends (tart-macos,
+  ## tart-linux-arm, qemu-windows-arm, utm-windows-arm).
+  ##
+  ## WHY THIS EXISTS AT ALL. `cmdRunEphemeral` used to dispatch only `incus`
+  ## and `hyperv` and send EVERY other backend into the libvirt path, which
+  ## demands `--golden-image` and knows nothing about tart or QEMU. So the
+  ## central GARM's remote (RB1) provider — whose recipe is
+  ## `run --ephemeral --backend <target> … --keep` — could never drive these
+  ## backends: every CreateInstance died with
+  ## "run --ephemeral: --golden-image is required". That is why m3's
+  ## linux-arm64, macos-arm64 and windows-arm64 POOLS sat with every runner in
+  ## `error` while the same guest classes served CI happily through the
+  ## per-host GARM, which uses the local-exec path instead.
+  ##
+  ## THE LIFECYCLE, and how it differs from libvirt's. There is no CoW overlay
+  ## to boot here: the backend owns cloning. Provision resolves the golden,
+  ## revert mints the per-job clone, start waits for SSH, and the runner
+  ## bootstrap arrives as `--user-data` (the provider sends it in the /v1/exec
+  ## `userData` field; the serve daemon materialises it to a temp file). With
+  ## `--keep` the guest is LEFT RUNNING and the handle is persisted, because
+  ## `stopAndCleanup` for these backends needs `qemuPid`/`swtpmPid`/`vmDir`
+  ## from the live handle and those are not derivable from `--baseline` the way
+  ## libvirt's artifact paths are. See `ephemeral_handle.nim`.
+  let id = parseBackendId(opts.backend)
+  if opts.baseline.len == 0:
+    raise newException(ValueError,
+      "run --ephemeral --backend " & opts.backend &
+      ": --baseline (instance name) is required")
+  # The provider forwards the golden under the generic --source-image /
+  # --base-image flags, exactly as it does for hyperv; accept both, and let an
+  # explicit --golden-image win. Without this the tart backends silently
+  # substitute their built-in cirruslabs image and run something nobody asked
+  # for.
+  let golden = resolveEphemeralGolden(opts.goldenImage, opts.sourceImage,
+                                      opts.baseImage, opts.backend)
+
+  var userData = ""
+  if opts.userDataFile.len > 0:
+    if not fileExists(opts.userDataFile):
+      raise newException(ValueError,
+        "run --ephemeral: --user-data file not found: " & opts.userDataFile)
+    userData = readFile(opts.userDataFile)
+
+  let backend = newBackend(id)
+  let guest = guestOsFor(id)
+  var spec: BaselineSpec
+  applyDefaults(spec, opts)
+  spec.sourceImage = golden
+  if opts.ephemeralPrefix.len > 0:
+    spec.backendOptions["ephemeralPrefix"] = opts.ephemeralPrefix
+  logEvent(opts.logFormat, "info", "ephemeral vm: provision",
+           {"backend": $id, "name": opts.baseline, "golden": golden})
+  backend.provisionBaseline(spec)
+  var vm = backend.revertToBaseline(opts.baseline)
+  let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 600
+  var started = false
+  try:
+    backend.startAndAwaitReady(vm, readyTimeout)
+    started = true
+    if userData.len > 0:
+      # Land the bootstrap in the guest, then start it detached. The guest path
+      # mirrors the local-exec path's so an operator reading either log finds
+      # the same file in the same place.
+      let guestPath =
+        if guest == goWindows: "C:\\garm-bootstrap.ps1" else: "/tmp/garm-bootstrap.sh"
+      let hostPath = getTempDir() / ("gosti-userdata-" & opts.baseline &
+                                     (if guest == goWindows: ".ps1" else: ".sh"))
+      writeFile(hostPath, userData)
+      try:
+        setFilePermissions(hostPath, {fpUserRead, fpUserWrite, fpUserExec})
+      except CatchableError:
+        discard
+      backend.copyToGuest(vm, hostPath, guestPath)
+      try:
+        removeFile(hostPath)
+      except CatchableError:
+        discard
+      let launch = buildDetachedBootstrapCommand(guest, guestPath)
+      let r = backend.execInGuest(vm, initTable[string, string](), launch,
+                                  timeoutSec = min(readyTimeout,
+                                                   BootstrapLaunchTimeoutSec))
+      if r.exitCode != 0:
+        raise newGostiError($id, lpExec,
+          "ephemeral bootstrap did not start in the guest (exit " &
+          $r.exitCode & "): " & (r.stdout & r.stderr).strip())
+      if guest != goWindows:
+        # Readiness, checked separately from the launch: the bootstrap must
+        # still be running, or have finished successfully. Give a bootstrap
+        # that dies on its first line a moment to do so, so the failure
+        # surfaces here (and the guest is reclaimed) rather than as a runner
+        # that never registers.
+        sleep(2000)
+        let st = backend.execInGuest(vm, initTable[string, string](),
+                                     buildBootstrapStatusCommand(guestPath),
+                                     timeoutSec = 60)
+        if st.exitCode != 0:
+          raise newGostiError($id, lpExec,
+            "ephemeral bootstrap is not running in the guest (exit " &
+            $st.exitCode & "): " & (st.stdout & st.stderr).strip())
+      logEvent(opts.logFormat, "info", "ephemeral vm: bootstrap launched",
+               {"name": vm.name, "guest_path": guestPath})
+  except CatchableError:
+    # A guest that booted but could not be provisioned is NOT left running:
+    # it would hold one of the host's few guest slots and never register a
+    # runner, which is the failure shape the pool capacity arithmetic assumes
+    # cannot happen.
+    if started or vm != nil:
+      try:
+        backend.stopAndCleanup(vm, deleteVm = true)
+      except CatchableError:
+        discard
+    raise
+
+  if opts.keepEphemeral:
+    saveEphemeralHandle($id, opts.baseline, vm)
+    logEvent(opts.logFormat, "info", "ephemeral vm: kept running",
+             {"name": vm.name, "baseline": opts.baseline})
+    echo vm.name
+    return 0
+
+  var verdict = 0
+  try:
+    if opts.cmd.len > 0:
+      let r = backend.execInGuest(vm, initTable[string, string](), opts.cmd,
+                                  timeoutSec = readyTimeout)
+      verdict = (if r.exitCode == 0: 0 else: 1)
+      logEvent(opts.logFormat,
+               (if verdict == 0: "info" else: "error"),
+               "ephemeral probe",
+               {"cmd": opts.cmd.join(" "), "exit": $r.exitCode})
+  finally:
+    backend.stopAndCleanup(vm, deleteVm = true)
+    logEvent(opts.logFormat, "info", "ephemeral vm: destroyed",
+             {"name": vm.name})
+  verdict
+
+proc libvirtKeptInfo(path: string): Option[FileInfo] =
+  try:
+    some(getFileInfo(path, followSymlink = false))
+  except OSError as error:
+    when defined(posix):
+      if error.errorCode == int32(keptPosix.ENOENT):
+        return none(FileInfo)
+    raise
+
+proc loadKeptLibvirt(b: LibvirtBackend, baseline, path: string): Option[VmHandle] =
+  # The existing serializer deliberately tolerates old bodies. Lifecycle
+  # authority needs a present record to be valid, never a reason to fall back
+  # to the current same-name generation. The existing v1 envelope is unchanged.
+  if handlePath($biLibvirt, baseline) != path:
+    raise newException(IOError, "kept-instance state root changed during operation")
+  let before = libvirtKeptInfo(path)
+  if before.isNone: return none(VmHandle)
+  let info = before.get
+  if info.kind != pcFile or info.linkCount != 1:
+    raise newException(IOError, "kept libvirt record is not a private regular file")
+  when defined(posix):
+    var nativeInfo: keptPosix.Stat
+    if keptPosix.lstat(path.cstring, nativeInfo) != 0:
+      raiseOSError(osLastError(), path)
+    if nativeInfo.st_uid != keptPosix.geteuid() or
+        (nativeInfo.st_mode and keptPosix.Mode(0o7777)) != keptPosix.Mode(0o600):
+      raise newException(IOError, "kept libvirt record must be owned by this user with mode 0600")
+  let loaded = loadEphemeralHandle($biLibvirt, baseline, b)
+  if loaded.isNone:
+    raise newException(IOError, "present kept libvirt record could not be read")
+  let doc = parseFile(path)
+  if doc.kind != JObject or doc{"schema"}.getStr("") != "gosti/ephemeral-handle/1" or
+      doc{"backend"}.getStr("") != $biLibvirt or doc{"baseline"}.getStr("") != baseline:
+    raise newException(IOError, "kept libvirt record envelope does not match its key")
+  let vm = loaded.get
+  if vm.name != baseline or vm.extra.getOrDefault("cleanupUuid").len == 0 or
+      vm.extra.getOrDefault("libvirtUri") != b.libvirtUri:
+    raise newException(IOError, "kept libvirt acquisition identity is missing or changed")
+  if vm.extra.getOrDefault("cleanupBorrowedBaseline") notin ["", "false"] or
+      vm.extra.getOrDefault("cleanupExplicitSelection") notin ["", "false"]:
+    raise newException(IOError, "kept libvirt record is not an acquired ephemeral clone")
+  let count = parseInt(vm.extra.getOrDefault("cleanupFileCount", "0"))
+  if count <= 0 or vm.extra.getOrDefault("ephemeral") != "true":
+    raise newException(IOError, "kept libvirt artifact evidence is missing")
+  var retainedPaths: seq[string]
+  for i in 0 ..< count:
+    let key = "cleanupFile" & $i
+    for suffix in ["Path", "Identity", "Parents"]:
+      if vm.extra.getOrDefault(key & suffix).len == 0:
+        raise newException(IOError, "kept libvirt artifact evidence is incomplete")
+    retainedPaths.add(vm.extra[key & "Path"])
+  for key in ["overlayPath", "configDriveIso", "noCloudSeedIso", "uefiNvram"]:
+    let ownedPath = vm.extra.getOrDefault(key)
+    if (key == "overlayPath" and ownedPath.len == 0) or
+        (ownedPath.len > 0 and absolutePath(ownedPath) notin retainedPaths):
+      raise newException(IOError, "kept libvirt artifact is not bound to acquisition")
+  let after = libvirtKeptInfo(path)
+  if after.isNone or after.get.id != info.id or
+      after.get.size != info.size or after.get.lastWriteTime != info.lastWriteTime:
+    raise newException(IOError, "kept libvirt record changed while reading")
+  some(vm)
+
+proc forgetKeptLibvirt(baseline, path: string) =
+  if handlePath($biLibvirt, baseline) != path:
+    raise newException(IOError, "kept-instance state root changed during operation")
+  forgetEphemeralHandle($biLibvirt, baseline)
+  if libvirtKeptInfo(path).isSome:
+    raise newException(IOError, "kept libvirt record remains after cleanup")
+
+proc cmdRunEphemeral(opts: CliOpts): int =
+  ## M2 per-job ephemeral CoW clone: clone a fresh overlay from the
+  ## golden, boot it on KVM, harvest the serial console (boot-marker
+  ## probe), then destroy the domain + remove the overlay (no residue).
+  ## This is the exact create→boot→probe→destroy lifecycle the GARM
+  ## provider's CreateInstance/DeleteInstance will drive (M4).
+  ##
+  ## The probe is a serial boot marker rather than an in-guest exec
+  ## because the OS-agnostic tiny golden self-terminates
+  ## (``poweroff -f``); a real Windows/Linux golden that stays up would
+  ## instead use the SSH ``execInGuest`` path. When ``--`` supplies an
+  ## argument it is treated as the expected serial marker substring.
+  ##
+  ## DISPATCH IS ON THE BACKEND, and the libvirt body below is the fallback
+  ## for libvirt ONLY — it is not a generic path. It demands `--golden-image`
+  ## and drives `virsh`, so any backend that reaches it by accident fails with
+  ## a message about a flag the caller never had reason to pass. That is what
+  ## used to happen to every tart and QEMU request from the remote provider.
+  case ephemeralPathFor(opts.backend)
+  of epIncus: return cmdRunEphemeralIncus(opts)
+  of epHyperV: return cmdRunEphemeralHyperV(opts)
+  of epVmRun: return cmdRunEphemeralVmRun(opts)
+  of epLibvirt: discard
+  let id = biLibvirt
+  let backend = newBackend(id)
+  if opts.baseline.len == 0:
+    raise newException(ValueError, "run --ephemeral: --baseline is required")
+  # The golden arrives under the GENERIC flags from the remote provider, not as
+  # `--golden-image`. `garm-provider-gosti` renders its pool image into
+  # `--base-image` + `--source-image` for EVERY target — that is one recipe
+  # shared by incus, libvirt, hyperv and the gosti-run backends — so a
+  # libvirt path that accepts only `--golden-image` cannot be driven remotely at
+  # all. It failed with a message naming a flag the provider has no reason to
+  # send, which reads as a caller mistake rather than a missing alias.
+  #
+  # hyperv already resolved this the same way, and so does
+  # `resolveEphemeralGolden` for tart/qemu. This is the last branch that did
+  # not, and it is why the windows/amd64 pool (hms-libvirt) sat in `error`
+  # while every other failure mode was being fixed around it.
+  let golden = resolveEphemeralGolden(opts.goldenImage, opts.sourceImage,
+                                      opts.baseImage, $id)
+  let lb = LibvirtBackend(backend)
+  let keptPath = handlePath($biLibvirt, opts.baseline)
+  var keptLock: CrudLock
+  defer: keptLock.release()
+  if opts.keepEphemeral:
+    # Use the same existing sanitized record key for create/save and destroy.
+    # This is a cooperative operation lock, not a lifetime or adversarial lease.
+    keptLock = acquire(keptPath & ".lock", timeoutSec = 10)
+    if libvirtKeptInfo(keptPath).isSome or libvirtKeptInfo(keptPath & ".tmp").isSome:
+      raise newException(IOError, "kept libvirt record already exists or is unresolved; resolve it before creating another generation")
+  # M3: build the config-drive ISO from --user-data so cloudbase-init runs
+  # the injected bootstrap on first boot. Per-job artifacts (ISO + nvram)
+  # live next to the overlay and are removed on teardown.
+  #
+  # A Linux guest reads cloud-init's NoCloud `cidata` seed instead, built from
+  # the same --user-data / --meta-data (meta-data defaults to an instance-id
+  # and hostname named after the domain).
+  var configDriveIso = ""
+  var noCloudSeedIso = ""
+  let linuxGuest = opts.guestSet and opts.guest == goLinux
+  if opts.userDataFile.len > 0:
+    if not fileExists(opts.userDataFile):
+      raise newException(ValueError,
+        "run --ephemeral: --user-data file not found: " & opts.userDataFile)
+    if lb.inspectDomain(opts.baseline).present:
+      raise newException(GostiError, "ephemeral domain already exists")
+    let userData = readFile(opts.userDataFile)
+    var metaData = ""
+    if opts.metaDataFile.len > 0 and fileExists(opts.metaDataFile):
+      metaData = readFile(opts.metaDataFile)
+    if linuxGuest:
+      if metaData.len == 0:
+        metaData = "instance-id: " & opts.baseline & "\n" &
+          "local-hostname: " & opts.baseline & "\n"
+      createDir(lb.imagePoolDir)
+      noCloudSeedIso = lb.noCloudSeedIsoPathFor(opts.baseline)
+      if libvirtKeptInfo(noCloudSeedIso).isSome:
+        raise newException(IOError, "per-instance seed already exists")
+      writeNoCloudIso(noCloudSeedIso, userData, metaData)
+    else:
+      configDriveIso = lb.configDriveIsoPathFor(opts.baseline)
+      if libvirtKeptInfo(configDriveIso).isSome:
+        raise newException(IOError, "per-instance config drive already exists")
+      discard buildConfigDriveIso(configDriveIso, userData, metaData)
+  # --ssh-forward-port: reach the guest at 127.0.0.1:<port> over a user-mode
+  # NIC (qemu:///session has no NAT network), and probe with the command after
+  # `--` over SSH instead of waiting for a serial marker.
+  let sshForwardPort =
+    if opts.sshForwardPort == -1: pickTcpPort(0) else: opts.sshForwardPort
+  if sshForwardPort != 0:
+    if opts.sshUser.len == 0 or opts.sshPrivateKey.len == 0:
+      raise newException(ValueError,
+        "run --ephemeral --ssh-forward-port needs --ssh-user and --ssh-private-key")
+    lb.sshUser = opts.sshUser
+    lb.sshPassword = ""
+    lb.sshKeyPath = absolutePath(opts.sshPrivateKey)
+    if opts.sshKnownHosts.len > 0:
+      lb.sshKnownHostsPath = absolutePath(opts.sshKnownHosts)
+    if opts.guestSet:
+      lb.sshGuestOs = opts.guest
+  var uefiNvram = ""
+  if opts.uefiLoader.len > 0:
+    uefiNvram = lb.imagePoolDir / (opts.baseline & "_VARS.fd")
+  let spec = EphemeralCloneSpec(
+    name: opts.baseline,
+    goldenImage: golden,
+    cpus: (if opts.cpus > 0: opts.cpus else: 2),
+    memoryMB: (if opts.memoryMB > 0: opts.memoryMB else: 1024),
+    kernel: opts.kernel,
+    initrd: opts.initrd,
+    cmdline: opts.kernelCmdline,
+    configDriveIso: configDriveIso,
+    noCloudSeedIso: noCloudSeedIso,
+    uefiLoader: opts.uefiLoader,
+    uefiNvramTemplate: opts.uefiNvramTemplate,
+    uefiNvram: uefiNvram,
+    diskGB: effectiveDiskGB(opts),
+    diskGBDefaulted: opts.diskGB <= 0,
+    sshForwardPort: sshForwardPort)
+  if sshForwardPort != 0 and not opts.keepEphemeral:
+    # SSH probe: boot, wait for SSH, run the command, tear down.
+    logEvent(opts.logFormat, "info", "ephemeral clone: boot",
+             {"backend": $id, "name": opts.baseline, "golden": golden,
+              "ssh": "127.0.0.1:" & $sshForwardPort})
+    var vm = lb.provisionEphemeralClone(spec)
+    var verdict = 1
+    try:
+      let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 300
+      lb.startAndAwaitReady(vm, timeoutSec = readyTimeout)
+      if opts.cmd.len > 0:
+        let r = lb.execInGuest(vm, initTable[string, string](), opts.cmd,
+                               timeoutSec = readyTimeout)
+        stdout.write(r.stdout)
+        verdict = (if r.exitCode == 0: 0 else: 1)
+        logEvent(opts.logFormat,
+                 (if verdict == 0: "info" else: "error"),
+                 "ephemeral probe", {"cmd": opts.cmd.join(" "),
+                                     "exit": $r.exitCode})
+      else:
+        verdict = 0
+      if opts.outputDir.len > 0:
+        let serialLog = vm.extra.getOrDefault("serialLogPath", "")
+        if serialLog.len > 0 and fileExists(serialLog):
+          createDir(opts.outputDir)
+          copyFile(serialLog, opts.outputDir / "serial.log")
+    finally:
+      lb.stopAndCleanup(vm, deleteVm = true)
+      logEvent(opts.logFormat, "info", "ephemeral clone: destroyed",
+               {"name": opts.baseline})
+    return verdict
+  let expectMarker = if opts.cmd.len > 0: opts.cmd[0] else: ""
+  let timeoutSec = if opts.timeoutSec > 0: opts.timeoutSec else: 120
+  logEvent(opts.logFormat, "info", "ephemeral clone: boot",
+           {"backend": $id, "name": opts.baseline,
+            "golden": golden})
+  var vm = lb.provisionEphemeralClone(spec)
+
+  # --keep: leave the domain RUNNING for an out-of-band in-guest probe
+  # (e.g. the Windows JIT gate SSHes in and drives the bootstrap). The
+  # caller reclaims the VM via the ``ephemeral-destroy`` subcommand,
+  # which runs the very same ephemeral ``stopAndCleanup`` teardown. This
+  # is the real CLI path the M3 gate exercises for a long-lived Windows
+  # golden that stays up (as opposed to the M2 tiny golden that
+  # self-terminates and is probed via the serial marker below).
+  if opts.keepEphemeral:
+    try:
+      if handlePath($biLibvirt, opts.baseline) != keptPath:
+        raise newException(IOError, "kept-instance state root changed during creation")
+      saveEphemeralHandle($biLibvirt, opts.baseline, vm)
+      let saved = lb.loadKeptLibvirt(opts.baseline, keptPath)
+      if saved.isNone or handleToJson(saved.get) != handleToJson(vm):
+        raise newException(IOError, "kept libvirt handle readback differs from acquisition")
+    except CatchableError as saveError:
+      var cleaned = false
+      try:
+        lb.cleanupAcquiredDomain(vm, true)
+        cleaned = true
+      except CatchableError as cleanupError:
+        # Keep any existing record. If the first save could not publish one,
+        # retry ONLY the same configured store while acquisition authority is
+        # still in memory. Never choose another writable root or claim success.
+        try:
+          if libvirtKeptInfo(keptPath).isNone:
+            saveEphemeralHandle($biLibvirt, opts.baseline, vm)
+          let recovered = lb.loadKeptLibvirt(opts.baseline, keptPath)
+          if recovered.isNone or handleToJson(recovered.get) != handleToJson(vm):
+            raise newException(IOError, "kept libvirt recovery record differs from acquisition")
+        except CatchableError:
+          var recovery = newJObject()
+          for key, value in vm.extra:
+            if key.startsWith("cleanup") or key in ["libvirtUri", "ephemeral", "overlayPath", "configDriveIso", "noCloudSeedIso", "uefiNvram"]:
+              recovery[key] = %value
+          logEvent(opts.logFormat, "error", "kept libvirt recovery record could not be saved",
+            {"name": vm.name, "uuid": vm.extra.getOrDefault("cleanupUuid"),
+             "uri": vm.extra.getOrDefault("libvirtUri"),
+             "recovery_extra": $recovery})
+        logEvent(opts.logFormat, "error", "kept libvirt cleanup after save failure refused",
+          {"name": vm.name, "reason": cleanupError.msg})
+      if cleaned:
+        try: forgetKeptLibvirt(opts.baseline, keptPath)
+        except CatchableError as forgetError:
+          logEvent(opts.logFormat, "error", "failed-create record remains", {"reason": forgetError.msg})
+      raise saveError
+    logEvent(opts.logFormat, "info", "ephemeral clone: kept running",
+             {"name": opts.baseline,
+              "overlay": vm.extra.getOrDefault("overlayPath", ""),
+              "config_drive": vm.extra.getOrDefault("configDriveIso", ""),
+              "uefi_nvram": vm.extra.getOrDefault("uefiNvram", "")})
+    # Emit the domain name on stdout so a shell caller can capture it.
+    echo opts.baseline
+    return 0
+
+  var verdict = 2
+  try:
+    # Poll for self-poweroff (tiny golden) or timeout.
+    let serialLog = vm.extra.getOrDefault("serialLogPath", "")
+    let deadline = epochTime() + timeoutSec.float
+    var poweredOff = false
+    while epochTime() < deadline:
+      if lb.domainState(opts.baseline) == "shut off":
+        poweredOff = true
+        break
+      sleep(500)
+    var serial = ""
+    if serialLog.len > 0 and fileExists(serialLog):
+      serial = readFile(serialLog)
+    if expectMarker.len > 0:
+      if expectMarker in serial:
+        logEvent(opts.logFormat, "info", "ephemeral probe: marker found",
+                 {"marker": expectMarker, "powered_off": $poweredOff})
+        verdict = 0
+      else:
+        logEvent(opts.logFormat, "error",
+                 "ephemeral probe: marker NOT found",
+                 {"marker": expectMarker})
+        verdict = 1
+    else:
+      # No expected marker: success == the domain booted and reached
+      # power-off within the deadline.
+      verdict = if poweredOff: 0 else: 1
+    if opts.outputDir.len > 0 and serial.len > 0:
+      try:
+        createDir(opts.outputDir)
+        writeFile(opts.outputDir / "serial.log", serial)
+      except CatchableError: discard
+  finally:
+    lb.stopAndCleanup(vm, deleteVm = true)
+    logEvent(opts.logFormat, "info", "ephemeral clone: destroyed",
+             {"name": opts.baseline})
+  verdict
+
+proc cmdEphemeralDestroy(opts: CliOpts): int =
+  ## Reclaim an ephemeral clone left running by ``run --ephemeral --keep``.
+  ## Reconstructs the per-job VmHandle (the ephemeral artifact paths are
+  ## deterministic from ``--baseline``) and runs the SAME ephemeral
+  ## ``stopAndCleanup(deleteVm=true)`` teardown the non-keep path runs:
+  ## ``virsh destroy`` + ``virsh undefine --nvram`` + remove the CoW
+  ## overlay + the injected config-drive ISO + the per-job OVMF nvram —
+  ## leaving NO residue. The golden + the OVMF template are never touched.
+  if opts.baseline.len == 0:
+    raise newException(ValueError,
+      "ephemeral-destroy: --baseline is required")
+
+  # The sanctioned test backend keeps nothing, so there is nothing to destroy.
+  # It used to fall through to the libvirt branch below and fail on a host
+  # without `virsh` — invisible while the GARM provider treated every non-zero
+  # teardown exit as success, and a hard failure now that it (correctly) does
+  # not. Mirrors `ephemeral-list --backend noop`, which lists nothing.
+  if opts.backend == "noop":
+    forgetLabels(opts.backend, opts.baseline)
+    logEvent(opts.logFormat, "info", "ephemeral noop: nothing to destroy",
+             {"baseline": opts.baseline})
+    return 0
+
+  # The gosti-run backends cannot have their handle RECONSTRUCTED from
+  # `--baseline` the way libvirt's and incus's can — `revertToBaseline` mints
+  # its own per-job name and `stopAndCleanup` needs pids and a vmDir that only
+  # the live handle carried. `run --ephemeral --keep` persisted it; load it
+  # back. A MISSING record is success, not failure: GARM retries deletes, and
+  # an instance that is already gone must not keep erroring.
+  if ephemeralPathFor(opts.backend) == epVmRun:
+    let vmRunId = parseBackendId(opts.backend)
+    let b = newBackend(vmRunId)
+    let loaded = loadEphemeralHandle($vmRunId, opts.baseline, b)
+    if loaded.isNone:
+      logEvent(opts.logFormat, "info",
+               "ephemeral vm: no kept-instance record — nothing to destroy",
+               {"backend": $vmRunId, "baseline": opts.baseline})
+      return 0
+    let vm = loaded.get
+    b.stopAndCleanup(vm, deleteVm = true)
+    # Only forget the record AFTER a teardown that did not raise, so a
+    # failure leaves the instance reclaimable instead of orphaning it.
+    forgetEphemeralHandle($vmRunId, opts.baseline)
+    forgetLabels(opts.backend, opts.baseline)
+    logEvent(opts.logFormat, "info", "ephemeral vm: destroyed",
+             {"backend": $vmRunId, "name": vm.name,
+              "baseline": opts.baseline})
+    return 0
+
+  if ephemeralPathFor(opts.backend) == epHyperV:
+    # Used to fall through to the libvirt branch below and fail on `virsh` not
+    # being installed on the Windows host — reported by the old provider as
+    # idempotent success, i.e. every kept Hyper-V VM leaked. Raises unless the
+    # VM and its per-job disk are provably gone; absence is success.
+    HyperVBackend(newBackend(biHyperv)).destroyEphemeralVmVerified(
+      opts.baseline, loadDiskRecord(opts.backend, opts.baseline))
+    forgetDiskRecord(opts.backend, opts.baseline)
+    forgetLabels(opts.backend, opts.baseline)
+    logEvent(opts.logFormat, "info", "ephemeral hyperv: destroyed",
+             {"name": opts.baseline})
+    return 0
+
+  if opts.backend.toLowerAscii() == "incus":
+    let ib = IncusBackend(newBackend(biIncus))
+    # NOT `stopAndCleanup`: that is the never-raises `finally` teardown, and it
+    # discarded `incus delete`'s result — so a delete that failed (ZFS
+    # `dataset is busy`) or was killed at its 60s timeout after the stop but
+    # before the destroy exited 0 here, and GARM forgot a container that was
+    # still on disk, STOPPED. ~100 of those filled gpu-server-001/002's 200 GiB
+    # pool. The verified teardown retries transient failures and RAISES if the
+    # container outlives its budget, so this exits non-zero and the instance
+    # stays on GARM's delete-retry list. Absence is still success.
+    let budget = if opts.timeoutSec > 0: opts.timeoutSec
+                 else: DefaultDestroyBudgetSec
+    ib.destroyContainerVerified(opts.baseline, budgetSec = budget)
+    forgetLabels(opts.backend, opts.baseline)
+    logEvent(opts.logFormat, "info", "ephemeral container: destroyed",
+             {"name": opts.baseline})
+    return 0
+
+  let backend = newBackend(biLibvirt)
+  let lb = LibvirtBackend(backend)
+  let keptPath = handlePath($biLibvirt, opts.baseline)
+  var keptLock = acquire(keptPath & ".lock", timeoutSec = 10)
+  defer: keptLock.release()
+  let retained = lb.loadKeptLibvirt(opts.baseline, keptPath)
+  if retained.isNone and libvirtKeptInfo(keptPath & ".tmp").isSome:
+    raise newException(IOError, "unfinished kept libvirt record requires recovery before name selection")
+  if retained.isSome:
+    # Do not replace retained authority with a fresh same-name lookup. Failure
+    # leaves the original record intact for a later checked cleanup retry.
+    lb.cleanupAcquiredDomain(retained.get, deleteVm = true)
+    if lb.inspectDomain(retained.get.name).present:
+      raise newGostiError($biLibvirt, lpCleanup, "kept libvirt domain remains defined")
+    forgetKeptLibvirt(opts.baseline, keptPath)
+    forgetLabels(opts.backend, opts.baseline)
+    logEvent(opts.logFormat, "info", "kept libvirt instance: destroyed", {"name": retained.get.name})
+    return 0
+  var extra = initTable[string, string]()
+  # This command explicitly selects the CURRENT named instance. It cannot
+  # authenticate an earlier --keep generation from the name alone. Retain the
+  # selected UUID before cleanup; subsequent mutations never retarget by name.
+  let selected = lb.inspectDomain(opts.baseline)
+  if not selected.present:
+    for path in [lb.overlayPathFor(opts.baseline),
+        lb.configDriveIsoPathFor(opts.baseline),
+        lb.imagePoolDir / (opts.baseline & "_VARS.fd")]:
+      if fileExists(path) or symlinkExists(path):
+        raise newGostiError($biLibvirt, lpCleanup,
+          "domain absent; retained ownership required to remove residual storage")
+    return 0
+  extra["libvirtUri"] = lb.libvirtUri
+  extra["cleanupUuid"] = selected.uuid
+  extra["cleanupExplicitSelection"] = "true"
+  extra["domain"] = opts.baseline
+  extra["ephemeral"] = "true"
+  extra["overlayPath"] = lb.overlayPathFor(opts.baseline)
+  # The config-drive ISO + per-job OVMF nvram are per-job artifacts named
+  # after the domain; point stopAndCleanup at their deterministic paths so
+  # they are removed only if present (a tiny-Linux clone has neither).
+  extra["configDriveIso"] = lb.configDriveIsoPathFor(opts.baseline)
+  extra["noCloudSeedIso"] = lb.noCloudSeedIsoPathFor(opts.baseline)
+  extra["uefiNvram"] = lb.imagePoolDir / (opts.baseline & "_VARS.fd")
+  let vm = VmHandle(
+    backend: lb,
+    name: opts.baseline,
+    baseline: opts.goldenImage,
+    ipAddress: none(string),
+    sshPort: lb.sshPort,
+    sshUser: lb.sshUser,
+    sshAuth: SshAuth(kind: saNone),
+    extra: extra)
+  lb.cleanupAcquiredDomain(vm, deleteVm = true)
+  if lb.inspectDomain(opts.baseline).present:
+    raise newGostiError($biLibvirt, lpCleanup,
+      "ephemeral-destroy could not remove domain " & opts.baseline)
+  forgetLabels(opts.backend, opts.baseline)
+  logEvent(opts.logFormat, "info", "ephemeral clone: destroyed",
+           {"name": opts.baseline})
+  0
+
+proc ephemeralInventoryFor*(backend: string): InventoryResult =
+  ## Enumerate the per-job instances ``backend``'s ephemeral path creates.
+  ## Routed exactly like ``run --ephemeral`` / ``ephemeral-destroy`` so the
+  ## three verbs agree on what "an ephemeral instance of this backend" is.
+  ##
+  ## A backend that cannot answer is a FAILURE, not an empty answer: an
+  ## unsupported backend, or a hyperv host where `Get-VM` fails, must make the
+  ## remote provider's ListInstances fail — which GARM treats as "try again
+  ## later" — rather than succeed with nothing, which GARM treats as "all gone".
+  if backend == "noop":
+    # The sanctioned test backend keeps nothing between invocations.
+    return inventorySuccess(@[])
+  case ephemeralPathFor(backend)
+  of epIncus:
+    IncusBackend(newBackend(biIncus)).tryListContainers()
+  of epVmRun:
+    let id = parseBackendId(backend)
+    try:
+      var entries: seq[EphemeralEntry]
+      for n in listEphemeralHandles($id):
+        entries.add(EphemeralEntry(name: n, state: "running"))
+      inventorySuccess(entries)
+    except CatchableError as err:
+      inventoryFailure(err.msg)
+  of epHyperV:
+    try:
+      var entries: seq[EphemeralEntry]
+      for vm in HyperVBackend(newBackend(biHyperv)).listEphemeralVms():
+        entries.add(EphemeralEntry(name: vm.name, state: vm.state))
+      inventorySuccess(entries)
+    except CatchableError as err:
+      inventoryFailure(err.msg)
+  of epLibvirt:
+    if backend != $biLibvirt:
+      inventoryFailure("ephemeral-list: unsupported backend '" & backend & "'")
+    else:
+      LibvirtBackend(newBackend(biLibvirt)).tryListDomains()
+
+proc cmdEphemeralList(opts: CliOpts): int =
+  ## ``ephemeral-list --backend <b> [--name <n>] [--ephemeral-prefix <p>]``:
+  ## print ONE result line (see ``ephemeral_inventory``) naming the kept
+  ## per-job instances and their state. Exit 0 only after a successful
+  ## enumeration; exit 1 — with no result line — when the backend could not
+  ## answer. The remote GARM provider depends on that distinction: it turns a
+  ## missing result line into a ListInstances ERROR, never an empty list.
+  if opts.backend.len == 0 or opts.backend == "auto":
+    raise newException(ValueError,
+      "ephemeral-list: --backend is required (auto is not meaningful here)")
+  let inv = ephemeralInventoryFor(opts.backend)
+  if not inv.ok:
+    logEvent(opts.logFormat, "error", "ephemeral-list: enumeration failed",
+             {"backend": opts.backend, "error": inv.message})
+    return 1
+  var all = inv.entries
+  attachLabels(opts.backend, all)
+  let entries = filterEntries(all, name = opts.baseline,
+                              prefix = opts.ephemeralPrefix,
+                              labels = opts.labels)
+  echo inventoryLine(opts.backend, entries)
+  0
+
+proc cmdEphemeralLabel(opts: CliOpts): int =
+  ## ``ephemeral-label --backend <b> --baseline <n> --label k=v…``: record who
+  ## owns a kept instance so ``ephemeral-list --label`` can return exactly one
+  ## pool's instances. See the "Attribution labels" section of
+  ## ``ephemeral_inventory`` for why a host-wide list is unsafe.
+  if opts.backend.len == 0 or opts.baseline.len == 0 or opts.labels.len == 0:
+    raise newException(ValueError,
+      "ephemeral-label: --backend, --baseline and at least one --label are required")
+  saveLabels(opts.backend, opts.baseline, opts.labels)
+  logEvent(opts.logFormat, "info", "ephemeral instance labelled",
+           {"backend": opts.backend, "name": opts.baseline,
+            "labels": opts.labels.join(",")})
+  0
+
+proc cmdRun(opts: CliOpts): int =
+  if opts.ephemeral:
+    return cmdRunEphemeral(opts)
+  let (id, backend) = resolveBackend(opts)
+  if opts.baseline.len == 0:
+    raise newException(ValueError, "run: --baseline is required")
+  if opts.outputDir.len == 0:
+    raise newException(ValueError, "run: --output-dir is required")
+  if opts.cmd.len == 0 and opts.detachScript.len == 0:
+    raise newException(ValueError,
+      "run: no command supplied after `--` (or --detach-script)")
+  if opts.cmd.len > 0 and opts.detachScript.len > 0:
+    raise newException(ValueError,
+      "run: --detach-script and a `--` command are mutually exclusive")
+  if opts.detachScript.len > 0 and opts.envPairs.len > 0:
+    raise newException(ValueError,
+      "run: --env is not forwarded to a --detach-script; set it in the script")
+  # Provision is idempotent — safe to call before every run.
+  var spec: BaselineSpec
+  applyDefaults(spec, opts)
+  backend.provisionBaseline(spec)
+  let envelope = newOutputEnvelope(opts.outputDir)
+  envelope.logProvision(&"backend={id} baseline={opts.baseline}")
+  let gate = GateSpec(
+    name: extractFilename(
+      if opts.detachScript.len > 0: opts.detachScript else: opts.cmd[0]),
+    baseline: opts.baseline,
+    env: opts.envPairs,
+    cmd: opts.cmd,
+    copyTo: opts.copyTo,
+    copyFrom: opts.copyFrom,
+    shims: opts.shims,
+    timeoutSec: opts.timeoutSec,
+    detachScript: opts.detachScript,
+    guest: (if opts.guestSet: opts.guest else: guestOsFor(id)))
+  let r = runGate(backend, gate, envelope)
+  logEvent(opts.logFormat, "info", "gate complete",
+           {"verdict": $r.verdict, "elapsed_ms": $r.elapsedMs})
+  case r.verdict
+  of vPass: 0
+  of vFail: 1
+  of vError: 2
+  of vIncomplete: 130
+
+proc cmdProbe(opts: CliOpts): int =
+  let host = detectHostPlatform()
+  var arr = newJArray()
+  for id in probeBackendIds(opts):
+    var backend: VmBackend
+    try:
+      backend = newBackend(id, noopFallback = opts.allowNoopFallback)
+    except CatchableError:
+      arr.add(%*{"id": $id, "available": false, "reason": "construction failed"})
+      continue
+    let avail =
+      try: backend.probeAvailability()
+      except CatchableError: false
+    arr.add(%*{
+      "id": $id,
+      "available": avail,
+      "host": $host,
+      "supported_guests": toSeq(backend.supportedGuests).map(proc(g: GuestOs): string = $g)
+    })
+  echo($arr)
+  0
+
+proc cmdBackends(opts: CliOpts): int =
+  echo("ID                  HOST          GUESTS")
+  for id in BackendId:
+    let registered = factoryRegistry[id] != nil
+    let host = case id
+               of biNoop: "any"
+               of biHyperv, biWsl: "windows"
+               of biTartMacos, biTartLinuxArm, biUtmWindowsArm,
+                  biQemuWindowsArm: "macos-arm"
+               of biLibvirt, biLima, biQemuBoot: "linux/macos"
+               of biIncus: "linux"
+               of biMock: "any"
+    let guests = case id
+                 of biNoop: "any"
+                 of biHyperv: "linux,windows"
+                 of biWsl: "linux"
+                 of biTartMacos: "macos"
+                 of biTartLinuxArm: "linux"
+                 of biUtmWindowsArm, biQemuWindowsArm: "windows"
+                 of biLibvirt, biQemuBoot: "linux,windows"
+                 of biLima: "linux"
+                 of biIncus: "linux"
+                 of biMock: "any"
+    let marker = if registered: "*" else: " "
+    echo($id & marker & " ".repeat(max(1, 20 - len($id) - 1)) & host &
+         " ".repeat(max(1, 14 - host.len)) & guests)
+  echo("\n* = registered on this host")
+  0
+
+proc cmdShell(opts: CliOpts): int =
+  # M0 ships a placeholder; M1-M5 backends implement the real interactive
+  # transport (SSH, PowerShell Direct). The placeholder documents the
+  # invocation shape and exits 0 so the verification probe can compose it.
+  logEvent(opts.logFormat, "warn",
+           "shell subcommand is a placeholder in M0",
+           {"backend": opts.backend, "baseline": opts.baseline})
+  0
+
+proc existingIncusHandle(opts: CliOpts, name: string):
+    tuple[backend: IncusBackend, vm: VmHandle] =
+  if opts.backend.toLowerAscii() != "incus":
+    raise newException(ValueError,
+      "instance operations currently require --backend incus")
+  if name.len == 0:
+    raise newException(ValueError, "instance operation requires a name")
+  let backend = IncusBackend(newBackend(biIncus))
+  var extra = initTable[string, string]()
+  extra["container"] = name
+  extra["storagePool"] = backend.storagePool
+  let vm = VmHandle(
+    backend: backend,
+    name: name,
+    baseline: backend.baseImage,
+    ipAddress: none(string),
+    sshPort: 0,
+    sshUser: backend.execUser,
+    sshAuth: SshAuth(kind: saNone),
+    extra: extra)
+  (backend: backend, vm: vm)
+
+proc cmdInstance(opts: CliOpts): int =
+  if opts.cmd.len < 2:
+    raise newException(ValueError,
+      "instance requires <wait|exec|copy-to|copy-from|start|stop> <name>")
+  let action = opts.cmd[0]
+  let name = opts.cmd[1]
+  if opts.backend.toLowerAscii() != "incus":
+    if opts.backend notin ["", "auto", "libvirt"]:
+      raise newException(BackendUnavailableError, "durable instances require Linux/libvirt")
+    if detectHostPlatform() != hpLinux:
+      raise newException(BackendUnavailableError, "durable instances require Linux/libvirt")
+    if action notin ["start", "ssh", "exec", "status", "logs", "stop", "destroy", "screenshot"]:
+      raise newException(ValueError, "unknown durable instance action: " & action)
+    if action != "exec" and opts.cmd.len != 2:
+      raise newException(ValueError, "instance " & action & " accepts only NAME")
+    if opts.follow and action != "logs":
+      raise newException(ValueError, "--follow requires instance logs")
+    if opts.force and action notin ["stop", "destroy"]:
+      raise newException(ValueError, "--force requires instance stop or destroy")
+    if opts.purge and action != "destroy":
+      raise newException(ValueError, "--purge requires instance destroy")
+    let path = instanceDirectory(opts.stateDir, name) / "instance.json"
+    if action == "status" and not fileExists(path) and not symlinkExists(path):
+      for dir in [absolutePath(opts.stateDir), parentDir(parentDir(path)), parentDir(path)]:
+        if symlinkExists(dir) or fileExists(dir):
+          raise newException(IOError, "instance state must be directories, not links or files")
+      if dirExists(parentDir(path)):
+        raise newException(IOError, "instance directory exists but receipt is missing")
+      printInstanceStatus(opts, absentInstanceStatus(opts.stateDir, name))
+      return 0
+    let instance = loadInstance(opts.stateDir, name, opts.instanceId, opts.lockTimeoutSec,
+                                readOnly = action in ["status", "logs"])
+    defer: instance.close()
+    let timeout = if opts.timeoutSec > 0: opts.timeoutSec
+                  elif action in ["stop", "destroy"]: 60 else: 120
+    case action
+    of "status":
+      let data = instance.status()
+      printInstanceStatus(opts, data)
+      return (if data["ownership"].getStr() == "mismatch": 3 else: 0)
+    of "start": instance.start(timeout)
+    of "stop": instance.stop(timeout, opts.force)
+    of "destroy":
+      if opts.purge and opts.instanceId.len == 0:
+        raise newException(ValueError, "--purge requires --instance-id UUID")
+      instance.destroy(timeout, opts.force, opts.purge)
+      if opts.purge:
+        printInstanceStatus(opts, absentInstanceStatus(opts.stateDir, name))
+        return 0
+    of "ssh": return instance.ssh()
+    of "exec":
+      if opts.cmd.len < 3: raise newException(ValueError, "exec requires -- ARGV...")
+      let r = instance.exec(opts.cmd[2..^1], opts.envPairs, timeout)
+      stdout.write(r.stdout)
+      stderr.write(r.stderr)
+      return r.exitCode
+    of "logs": instance.logs(opts.follow); return 0
+    of "screenshot":
+      instance.screenshot(opts.screenshotPath, opts.screenshotDelaySec)
+    else: discard
+    printInstanceStatus(opts, instance.status())
+    return 0
+  let (backend, vm) = existingIncusHandle(opts, name)
+  let timeout = if opts.timeoutSec > 0: opts.timeoutSec else: 120
+
+  case action
+  of "wait":
+    if opts.cmd.len != 2:
+      raise newException(ValueError, "instance wait accepts only <name>")
+    backend.startAndAwaitReady(vm, timeout)
+  of "exec":
+    if opts.cmd.len < 3:
+      raise newException(ValueError,
+        "instance exec requires a command after <name>")
+    backend.startAndAwaitReady(vm, timeout)
+    let r = backend.execInGuest(vm, opts.envPairs, opts.cmd[2 .. ^1],
+                                timeoutSec = timeout)
+    stdout.write(r.stdout)
+    stderr.write(r.stderr)
+    return r.exitCode
+  of "copy-to":
+    if opts.cmd.len != 4:
+      raise newException(ValueError,
+        "instance copy-to requires <name> <host-path> <guest-path>")
+    backend.startAndAwaitReady(vm, timeout)
+    backend.copyToGuest(vm, opts.cmd[2], opts.cmd[3])
+  of "copy-from":
+    if opts.cmd.len != 4:
+      raise newException(ValueError,
+        "instance copy-from requires <name> <guest-path> <host-path>")
+    backend.startAndAwaitReady(vm, timeout)
+    backend.copyFromGuest(vm, opts.cmd[2], opts.cmd[3])
+  of "start":
+    if opts.cmd.len != 2:
+      raise newException(ValueError, "instance start accepts only <name>")
+    backend.startContainer(name)
+    backend.startAndAwaitReady(vm, timeout)
+  of "stop":
+    if opts.cmd.len != 2:
+      raise newException(ValueError, "instance stop accepts only <name>")
+    backend.stopContainer(name)
+  else:
+    raise newException(ValueError, "unknown instance action: " & action)
+
+  logEvent(opts.logFormat, "info", "instance operation complete",
+           {"backend": $biIncus, "action": action, "name": name})
+  0
+
+proc cmdSnapshot(opts: CliOpts): int =
+  ## M30: dispatch ``snapshot create|restore|list <vm> [<name>]`` to the
+  ## resolved backend. Positional args land in ``opts.cmd``.
+  if opts.cmd.len < 2:
+    stderr.writeLine("gosti: snapshot requires <action> <vm> [<name>]")
+    stderr.writeLine("  actions: create, restore, list")
+    return 2
+  let action = opts.cmd[0]
+  let vmName = opts.cmd[1]
+  let (id, backend) = resolveBackend(opts)
+  case action
+  of "create":
+    if opts.cmd.len < 3:
+      stderr.writeLine("gosti: snapshot create requires <name>")
+      return 2
+    let snap = opts.cmd[2]
+    let mode = if opts.running: "running" else: "stopped"
+    logEvent(opts.logFormat, "info",
+             "snapshot create",
+             {"backend": $id, "vm": vmName, "name": snap, "mode": mode})
+    let returnedId =
+      if opts.running: backend.snapshotRunning(vmName, snap)
+      else: backend.snapshot(vmName, snap)
+    case opts.logFormat
+    of lfHuman: echo returnedId
+    of lfJson:  echo($(%*{"id": returnedId, "mode": mode}))
+    0
+  of "restore":
+    if opts.cmd.len < 3:
+      stderr.writeLine("gosti: snapshot restore requires <name>")
+      return 2
+    let snap = opts.cmd[2]
+    logEvent(opts.logFormat, "info",
+             "snapshot restore",
+             {"backend": $id, "vm": vmName, "name": snap})
+    backend.restoreSnapshot(vmName, snap)
+    logEvent(opts.logFormat, "info", "snapshot restore complete",
+             {"backend": $id, "vm": vmName, "name": snap})
+    0
+  of "list":
+    let snaps = backend.listSnapshots(vmName)
+    case opts.logFormat
+    of lfHuman:
+      for s in snaps: echo s
+    of lfJson:
+      var arr = newJArray()
+      for s in snaps: arr.add(%s)
+      echo($arr)
+    0
+  else:
+    stderr.writeLine("gosti: unknown snapshot action '" & action & "'")
+    stderr.writeLine("  actions: create, restore, list")
+    2
+
+proc cmdBaseline(opts: CliOpts): int =
+  ## Dispatch `baseline export <vm> <dest-dir> [--baseline <name>]`
+  ## or `baseline import <src-dir>` to the resolved backend.
+  if opts.cmd.len < 2:
+    stderr.writeLine("gosti: baseline requires <action> <vm-or-srcdir> [...]")
+    stderr.writeLine("  actions: export, import")
+    return 2
+  let action = opts.cmd[0]
+  let (id, backend) = resolveBackend(opts)
+  case action
+  of "export":
+    if opts.cmd.len < 3:
+      stderr.writeLine("gosti: baseline export requires <vm> <dest-dir>")
+      return 2
+    let vmName = opts.cmd[1]
+    let destDir = opts.cmd[2]
+    logEvent(opts.logFormat, "info",
+             "baseline export",
+             {"backend": $id, "vm": vmName, "dest": destDir,
+              "baseline": opts.baseline})
+    backend.exportBaseline(vmName, destDir, opts.baseline)
+    case opts.logFormat
+    of lfHuman: echo destDir
+    of lfJson:  echo($(%*{"dest": destDir}))
+    0
+  of "import":
+    let srcDir = opts.cmd[1]
+    logEvent(opts.logFormat, "info",
+             "baseline import",
+             {"backend": $id, "src": srcDir})
+    let imported = backend.importBaseline(srcDir)
+    case opts.logFormat
+    of lfHuman:
+      for s in imported: echo s
+    of lfJson:
+      var arr = newJArray()
+      for s in imported: arr.add(%s)
+      echo($arr)
+    0
+  else:
+    stderr.writeLine("gosti: unknown baseline action '" & action & "'")
+    stderr.writeLine("  actions: export, import")
+    2
+
+proc cmdPrune(opts: CliOpts): int =
+  ## Reclaim ephemeral resources leaked by hard-killed launchers, scoped to a
+  ## project's ``--ephemeral-prefix``. Never touches anything outside that
+  ## scope and never removes an instance whose owner is still alive.
+  if opts.ephemeralPrefix.len == 0:
+    stderr.writeLine(
+      "gosti prune: --ephemeral-prefix is required (project scope)")
+    return 2
+  var backend = opts.backend
+  if backend.len == 0 or backend == "auto":
+    backend = "all"
+  if backend notin ["all", "tart", "qemu-windows-arm"]:
+    stderr.writeLine(
+      "gosti prune: --backend must be all|tart|qemu-windows-arm")
+    return 2
+  let scope = PruneScope(
+    ephemeralPrefix: opts.ephemeralPrefix,
+    stateDir: opts.stateDir,
+    olderThanSec: (if opts.olderThanSet: opts.olderThanSec else: DefaultPruneAgeSec),
+    dryRun: opts.dryRun,
+    backend: backend,
+    sweepTmp: opts.sweepTmp,
+    tartVmsDir: opts.tartVmsDir)
+  let rep = runPrune(scope)
+  let mib = rep.bytesReclaimed.float / (1024.0 * 1024.0)
+  if opts.logFormat == lfJson:
+    echo $(%*{
+      "event": "prune",
+      "dryRun": opts.dryRun,
+      "ephemeralPrefix": opts.ephemeralPrefix,
+      "backend": backend,
+      "olderThanSec": scope.olderThanSec,
+      "removedInstanceDirs": rep.removedInstanceDirs,
+      "liveInstanceDirs": rep.liveInstanceDirs,
+      "freshInstanceDirs": rep.freshInstanceDirs,
+      "removedTartClones": rep.removedTartClones,
+      "liveTartClones": rep.liveTartClones,
+      "removedTartVmDirs": rep.removedTartVmDirs,
+      "tartVmDirsListedByTart": rep.tartVmDirsListedByTart,
+      "tartVmDirsWithDisk": rep.tartVmDirsWithDisk,
+      "tartVmDirsOwnerAlive": rep.tartVmDirsOwnerAlive,
+      "freshTartVmDirs": rep.freshTartVmDirs,
+      "tartVmDirSweepAborted": rep.tartVmDirSweepAborted,
+      "tartVmDirSweepAbortReason": rep.tartVmDirSweepAbortReason,
+      "removedTmpFiles": rep.removedTmpFiles,
+      "bytesReclaimed": rep.bytesReclaimed})
+  else:
+    let verb = if opts.dryRun: "would reclaim" else: "reclaimed"
+    echo &"gosti prune ({backend}, prefix '{opts.ephemeralPrefix}'): " &
+         &"{verb} {rep.removedInstanceDirs.len} instance dir(s), " &
+         &"{rep.removedTartClones.len} tart clone(s), " &
+         &"{rep.removedTartVmDirs.len} unlisted tart VM dir(s), " &
+         &"{rep.removedTmpFiles.len} tmp file(s) " &
+         &"(~{mib:.1f} MiB); kept {rep.liveInstanceDirs.len} live + " &
+         &"{rep.freshInstanceDirs.len} fresh instance dir(s), " &
+         &"{rep.liveTartClones.len} live tart clone(s), " &
+         &"{rep.tartVmDirsListedByTart.len} listed + " &
+         &"{rep.tartVmDirsWithDisk.len} disk-bearing + " &
+         &"{rep.tartVmDirsOwnerAlive.len} owner-alive + " &
+         &"{rep.freshTartVmDirs.len} fresh tart VM dir(s)."
+    if rep.tartVmDirSweepAborted:
+      # Never silent: a sweep that refused to run must say so, or a host
+      # whose `tart list` has been broken for weeks looks like a clean host.
+      stderr.writeLine(
+        "gosti prune: the unlisted-tart-VM-directory sweep was SKIPPED " &
+        "— " & rep.tartVmDirSweepAbortReason)
+  0
+
+proc cmdLayer(opts: CliOpts): int =
+  ## ``gosti layer gc <layer-path>`` and
+  ## ``gosti layer sweep-overlays``.
+  ##
+  ## The in-use guard is a REFUSAL with a non-zero exit and a named referent,
+  ## not a warning: deleting a base image while an overlay is stacked on it
+  ## does not degrade the overlay, it destroys it, so there is no partial
+  ## outcome to warn about. Exit 3 is reserved for that refusal so a caller
+  ## can tell "in use" from a usage error (2) without parsing text.
+  ##
+  ## Live domains are supplied to the planner as DATA. Populating them here,
+  ## from the resolved backend, keeps the decision procedure a pure function
+  ## of its scope -- which is what lets the gate exercise the real decision
+  ## without a hypervisor.
+  if opts.cmd.len < 1:
+    stderr.writeLine("gosti: layer requires <action>")
+    stderr.writeLine("  actions: gc, sweep-overlays")
+    return 2
+  if opts.imagePoolDir.len == 0:
+    stderr.writeLine("gosti layer: --image-pool-dir is required " &
+      "(the directory holding the per-job overlays)")
+    return 2
+
+  var scope = LayerScope(
+    imagePoolDir: opts.imagePoolDir,
+    olderThanSec: (if opts.olderThanSet: opts.olderThanSec
+                   else: DefaultStaleOverlayAgeSec),
+    dryRun: opts.dryRun)
+  when defined(linux):
+    # Read-only: `virsh list --all --name`. A domain that is DEFINED owns its
+    # overlay whether or not it is running.
+    #
+    # Fail CLOSED, and note WHICH failures that has to cover. A missing
+    # `virsh` binary raises out of `startProcess`; a present `virsh` that
+    # cannot reach libvirtd (daemon down, no permission on `qemu:///system`,
+    # wrong URI) exits non-zero instead, and the plain `listAllDomainNames`
+    # turns that into an EMPTY list by documented contract. An empty list is
+    # the reading under which `sweep-overlays` deletes every overlay past the
+    # age guard — including the ones live domains are running on. So the
+    # checked variant is used, and both failure shapes end here.
+    try:
+      # `DefaultLibvirtUri` unless the environment overrides it, exactly as
+      # every other libvirt path in this CLI resolves it.
+      let lb = newLibvirtBackend(imagePoolDir = opts.imagePoolDir)
+      let listed = lb.tryListAllDomainNames()
+      if not listed.ok:
+        stderr.writeLine("gosti layer: cannot enumerate domains (" &
+          listed.message & "); refusing to act without that list")
+        return 3
+      scope.liveDomains = listed.names
+    except CatchableError as err:
+      # Not knowing which domains exist is not the same as knowing there are
+      # none, and only the second reading deletes anything.
+      stderr.writeLine("gosti layer: cannot enumerate domains (" &
+        err.msg & "); refusing to act without that list")
+      return 3
+
+  case opts.cmd[0]
+  of "gc":
+    if opts.cmd.len < 2:
+      stderr.writeLine("gosti: layer gc requires <layer-path>")
+      return 2
+    let res = deleteLayer(scope, opts.cmd[1])
+    case opts.logFormat
+    of lfJson:
+      var referents = newJArray()
+      for r in res.referents:
+        referents.add(%*{"kind": $r.kind, "name": r.name, "path": r.path})
+      echo $(%*{
+        "event": "layer-gc",
+        "outcome": $res.outcome,
+        "layer": res.layerPath,
+        "apparentBytes": res.apparentBytes,
+        "allocatedBytes": res.allocatedBytes,
+        "referents": referents,
+        "message": res.message})
+    of lfHuman:
+      if res.outcome == lgoRefused:
+        stderr.writeLine("gosti layer gc: " & res.message)
+      else:
+        echo "gosti layer gc: " & res.message
+    return layerGcExitCode(res.outcome)
+  of "sweep-overlays":
+    let rep = sweepStaleOverlays(scope)
+    case opts.logFormat
+    of lfJson:
+      echo $(%*{
+        "event": "layer-sweep-overlays",
+        "dryRun": scope.dryRun,
+        "imagePoolDir": scope.imagePoolDir,
+        "olderThanSec": scope.olderThanSec,
+        "scanned": rep.scanned,
+        "removed": rep.removed.mapIt(it.name),
+        "keptLive": rep.keptLive.mapIt(it.name),
+        "keptFresh": rep.keptFresh.mapIt(it.name),
+        # Both axes, always. A CoW overlay is sparse, so one number alone is
+        # wrong by orders of magnitude in whichever direction it is read.
+        "removedApparentBytes": rep.removedApparentBytes,
+        "removedAllocatedBytes": rep.removedAllocatedBytes,
+        "keptApparentBytes": rep.keptApparentBytes,
+        "keptAllocatedBytes": rep.keptAllocatedBytes})
+    of lfHuman:
+      let verb = if scope.dryRun: "would remove" else: "removed"
+      echo &"gosti layer sweep-overlays ({scope.imagePoolDir}): " &
+           &"{verb} {rep.removed.len} of {rep.scanned} overlay(s) " &
+           &"(~{rep.removedAllocatedBytes div (1024*1024)} MiB allocated, " &
+           &"~{rep.removedApparentBytes div (1024*1024)} MiB apparent); " &
+           &"kept {rep.keptLive.len} live + {rep.keptFresh.len} fresh."
+    return 0
+  else:
+    stderr.writeLine("gosti: unknown layer action '" & opts.cmd[0] & "'")
+    stderr.writeLine("  actions: gc, sweep-overlays")
+    return 2
+
+proc resolveAuthToken(authToken, authTokenFile: string): string =
+  ## Precedence: ``--auth-token`` > ``--auth-token-file`` > ``$GOSTI_SERVE_TOKEN``.
+  ## Empty result means "no token configured".
+  if authToken.len > 0:
+    return authToken
+  if authTokenFile.len > 0:
+    if not fileExists(authTokenFile):
+      raise newException(ValueError,
+        "--auth-token-file '" & authTokenFile & "': file not found")
+    return readFile(authTokenFile).strip()
+  getEnv("GOSTI_SERVE_TOKEN").strip()
+
+proc cmdServe(opts: CliOpts): int =
+  ## Run the remoting daemon. Binds an authenticated HTTP/JSON endpoint and
+  ## front-ends the local gosti CLI over it (see serve/server.nim).
+  let token = resolveAuthToken(opts.authToken, opts.authTokenFile)
+  if token.len == 0:
+    stderr.writeLine("gosti serve: no auth token configured " &
+      "(--auth-token-file <f>, --auth-token <t>, or $GOSTI_SERVE_TOKEN)")
+    return 2
+  var host = "127.0.0.1"
+  var port = 8873
+  if opts.listen.len > 0:
+    let idx = opts.listen.rfind(':')
+    if idx < 0:
+      port = try: parseInt(opts.listen)
+             except ValueError:
+               stderr.writeLine("serve: --listen expects host:port")
+               return 2
+    else:
+      if idx > 0: host = opts.listen[0 ..< idx]
+      port = try: parseInt(opts.listen[idx + 1 .. ^1])
+             except ValueError:
+               stderr.writeLine("serve: --listen expects host:port")
+               return 2
+  let cfg = ServeConfig(
+    listenHost: host,
+    listenPort: port,
+    token: token,
+    workerExe: opts.workerExe,
+    workerArgPrefix: @[],
+    portFile: opts.portFile,
+    tlsCertFile: opts.tlsCert,
+    tlsKeyFile: opts.tlsKey,
+    quiet: opts.quiet,
+    enrollSecret: opts.enrollSecret,
+    enrollSecretFile: opts.enrollSecretFile,
+    stateDir: opts.stateDir,
+    identityTtlSec: opts.identityTtlSec,
+    hostId: opts.hostId,
+    serveThreads: opts.serveThreads,
+    execDeadlineSec: opts.execDeadlineSec)
+  try:
+    runServe(cfg)
+  except CatchableError as e:
+    stderr.writeLine("gosti serve: " & e.msg)
+    return 1
+  0
+
+proc crudCreateGuard*(verb: string, opts: CliOpts,
+                      backend: VmBackend): Option[CrudResponse] =
+  ## GOSTI2 BACKEND-AWARE FAIL-CLOSED guard for ``crud create_vm``.
+  ##
+  ## ``--user-data`` and ``--mount`` PARSE (the surface is real and tested), but
+  ## whether the RESOLVED backend actually consumes ``BaselineSpec.userData`` /
+  ## ``.mounts`` varies. Reporting ``{"ok":true}`` for a create_vm that would
+  ## boot with NO cloud-init (or without the requested shares) is exactly the
+  ## silent-wrong the ah-vm binding's fail-closed guard exists to prevent — so
+  ## for a backend that does NOT honour the option we refuse to LIE ABOUT
+  ## SUCCESS, returning a ``backend-unavailable`` (exit 4) envelope BEFORE
+  ## creating anything.
+  ##
+  ## The guard consults the backend's capability signals:
+  ##   * ``--user-data`` is allowed iff ``backend.honorsUserData()`` (libvirt
+  ##     builds + attaches a NoCloud "cidata" seed; the others fail closed).
+  ##   * ``--mount`` is allowed iff ``backend.honorsMounts()`` (no backend does
+  ##     yet, so it stays fail-closed everywhere).
+  ## ``--ssh-user`` is genuinely advisory (a backend may ignore it) and is NOT
+  ## guarded — it reaches the spec as accept-advisory.
+  if verb != "create_vm":
+    return none(CrudResponse)
+  proc refuse(flag, detail: string): Option[CrudResponse] =
+    some(CrudResponse(
+      exitCode: exitCode(cekBackendUnavailable),
+      json: %*{"ok": false, "verb": verb,
+               "error": {"code": exitCode(cekBackendUnavailable),
+                         "kind": $cekBackendUnavailable,
+                         "message": flag & " is not honored by the resolved " &
+                           "gosti backend '" & $backend.id & "' (" & detail &
+                           "); refusing to report success for a VM that would " &
+                           "boot without it"}}))
+  if opts.userDataFile.len > 0 and not backend.honorsUserData():
+    return refuse("--user-data",
+      "this backend builds no NoCloud seed from BaselineSpec.userData")
+  if opts.mounts.len > 0 and not backend.honorsMounts():
+    return refuse("--mount",
+      "this backend attaches no host→guest shares from BaselineSpec.mounts")
+  none(CrudResponse)
+
+proc cmdCrud(opts: CliOpts): int =
+  ## GOSTI2 PR-1: the generic-CRUD façade surface (``crud <verb> …``) that the
+  ## ah-vm Rust binding drives. ALWAYS emits a single stable JSON envelope on
+  ## stdout (independent of ``--log-format``, which governs the human/JSON
+  ## event log only) and returns the documented per-kind exit code:
+  ##
+  ##   0 success · 2 bad-args · 3 not-found · 4 backend-unavailable ·
+  ##   5 backend-error · 1 internal
+  ##
+  ## Positionals (``opts.cmd``) are ``<verb> [<name>] [<a> <b> …]``; the
+  ## exec argv is everything after the name (use ``--`` to pass flags
+  ## through). Verb→VmBackend mapping and the JSON schema are documented in
+  ## ``crud.nim``.
+  ##
+  ## The registry is process-local: a single invocation runs one verb against
+  ## a fresh session, so cross-invocation VM state (create in one process,
+  ## exec in the next) is a persistence follow-up, NOT part of PR-1. The
+  ## contract this surface pins down — envelope shape + exit codes — is
+  ## exercised end-to-end by the in-process gate in ``t_crud_facade``.
+  if opts.cmd.len < 1:
+    echo $(%*{"ok": false, "verb": "",
+              "error": {"code": exitCode(cekBadArgs), "kind": $cekBadArgs,
+                        "message": "crud requires <verb> (one of: " &
+                          CrudVerbs.join(", ") & ")"}})
+    return exitCode(cekBadArgs)
+  let verb = opts.cmd[0]
+  # Resolve the backend up front — BEFORE the fail-closed guard — so the guard
+  # can consult the resolved backend's capability signals (``honorsUserData`` /
+  # ``honorsMounts``). An unregistered/unavailable backend maps to the stable
+  # ``backend-unavailable`` envelope rather than an uncaught exception out of
+  # ``runCli``.
+  var session: CrudSession
+  var backend: VmBackend
+  var backendLock: CrudLock
+  defer: release(backendLock)
+  try:
+    let (_, resolved) = resolveBackend(opts)
+    backend = resolved
+    # Cross-invocation state (docs/contributors/architecture.md §8.6): every CLI crud call runs
+    # against the persisted crud store.
+    let store = newCrudStore(crudStateRoot(opts.stateDir))
+    if backend of MockBackend:
+      # The file-backed mock keeps its whole fleet in one file; hold a
+      # backend-wide lock for this invocation so concurrent calls do not
+      # clobber each other's read-modify-write.
+      try:
+        backendLock = store.lockBackend($backend.id, opts.lockTimeoutSec)
+      except CrudBusyError as e:
+        echo $(%*{"ok": false, "verb": verb,
+                  "error": {"code": exitCode(cekBackendError),
+                            "kind": $cekBackendError, "message": e.msg}})
+        return exitCode(cekBackendError)
+      MockBackend(backend).attachStateFile(store.mockFleetPath())
+    session = newCrudSession(backend, store, opts.lockTimeoutSec)
+  except BackendUnavailableError as e:
+    echo $(%*{"ok": false, "verb": verb,
+              "error": {"code": exitCode(cekBackendUnavailable),
+                        "kind": $cekBackendUnavailable, "message": e.msg}})
+    return exitCode(cekBackendUnavailable)
+  except ValueError as e:
+    echo $(%*{"ok": false, "verb": verb,
+              "error": {"code": exitCode(cekBadArgs), "kind": $cekBadArgs,
+                        "message": e.msg}})
+    return exitCode(cekBadArgs)
+  # BACKEND-AWARE FAIL-CLOSED guard, applied BEFORE anything is created. It
+  # rejects ``--user-data`` / ``--mount`` only when the resolved backend does
+  # NOT honour them. See ``crudCreateGuard`` for why.
+  let guarded = crudCreateGuard(verb, opts, backend)
+  if guarded.isSome:
+    echo $guarded.get().json
+    return guarded.get().exitCode
+  var p = CrudParams(
+    baseline: opts.baseline,
+    sourceImage: opts.sourceImage,
+    cpus: opts.cpus,
+    memoryMB: opts.memoryMB,
+    diskGB: opts.diskGB,
+    guestOs: (if opts.guestSet: opts.guest else: goLinux),
+    guestArch: gaX86_64,
+    env: opts.envPairs,
+    force: opts.force,
+    # create_vm options (VmCreateOptions forwarding). --user-data is a host
+    # file path; read its CONTENT here so BaselineSpec carries the seed payload
+    # self-contained. A missing file is a bad-args envelope below. NOTE: the
+    # backend-aware guard above has already rejected these for a backend that
+    # does not honour them — reaching here means either a non-create verb (which
+    # ignores them) or a backend that DOES honour the option (e.g. libvirt for
+    # --user-data), which forwards it into the create path.
+    mounts: opts.mounts,
+    sshUser: opts.sshUser,
+    # PR-3: exec options (ExecOptions forwarding — realised by argv wrapping).
+    cwd: opts.cwd,
+    runAs: opts.runAs,
+    execTimeoutSec: opts.execTimeout)
+  if opts.userDataFile.len > 0:
+    if not fileExists(opts.userDataFile):
+      echo $(%*{"ok": false, "verb": verb,
+                "error": {"code": exitCode(cekBadArgs), "kind": $cekBadArgs,
+                          "message": "--user-data '" & opts.userDataFile &
+                            "': file not found"}})
+      return exitCode(cekBadArgs)
+    p.userData = readFile(opts.userDataFile)
+  if opts.cmd.len >= 2:
+    p.name = opts.cmd[1]
+  # Verb-specific positional layout. Kept permissive: the façade re-validates
+  # required fields and returns a ``bad-args`` envelope for anything missing.
+  case verb
+  of "exec":
+    if opts.cmd.len >= 3: p.argv = opts.cmd[2 .. ^1]
+  of "copy_to_vm", "copy_from_vm":
+    if opts.cmd.len >= 3: p.srcPath = opts.cmd[2]
+    if opts.cmd.len >= 4: p.destPath = opts.cmd[3]
+  of "snapshot", "restore_snapshot":
+    if opts.cmd.len >= 3: p.snapshot = opts.cmd[2]
+  else: discard
+  let resp = runCrud(session, verb, p)
+  echo $resp.json
+  resp.exitCode
+
+proc cmdManifest(opts: CliOpts): int =
+  ## Print THIS host's UNSIGNED capability manifest (RA6) as JSON. The signed,
+  ## enrolled form is served over ``GET /v1/manifest`` by a running daemon and
+  ## fetched with ``gosti --remote <addr> manifest``. This local form is
+  ## the same payload, for introspection + the RC1 label-derivation source.
+  echo hostCapabilityManifest().pretty()
+  0
+
+proc dispatch*(opts: CliOpts): int =
+  ## Execute a parsed subcommand LOCALLY. Both ``runCli`` (direct use) and
+  ## the ``serve`` daemon's worker (a subprocess re-invoking this same
+  ## binary) reach the backends through here, so the local and remote paths
+  ## are byte-for-byte identical.
+  case opts.subcommand
+  of "help":
+    echo(HelpText)
+    0
+  of "provision": cmdProvision(opts)
+  of "boot":      cmdBoot(opts)
+  of "install":   cmdBoot(opts, installMode = true)
+  of "run":       cmdRun(opts)
+  of "ephemeral-destroy": cmdEphemeralDestroy(opts)
+  of "ephemeral-list": cmdEphemeralList(opts)
+  of "ephemeral-label": cmdEphemeralLabel(opts)
+  of "probe":     cmdProbe(opts)
+  of "backends":  cmdBackends(opts)
+  of "shell":     cmdShell(opts)
+  of "instance":  cmdInstance(opts)
+  of "snapshot":  cmdSnapshot(opts)
+  of "baseline":  cmdBaseline(opts)
+  of "prune":     cmdPrune(opts)
+  of "layer":     cmdLayer(opts)
+  of "serve":     cmdServe(opts)
+  of "crud":      cmdCrud(opts)
+  of "manifest":  cmdManifest(opts)
+  else:
+    stderr.writeLine("gosti: unknown subcommand '" & opts.subcommand & "'")
+    stderr.writeLine(HelpText)
+    2
+
+type RemoteScan = object
+  ## Result of pre-scanning raw argv for the client-only flags. These may
+  ## appear BEFORE the subcommand (``gosti --remote <addr> run …``),
+  ## which ``parseCliOpts`` cannot handle because it treats the first token
+  ## positionally as the subcommand.
+  remote: string
+  authToken: string
+  authTokenFile: string
+  forwarded: seq[string]   ## argv with the client-only flags removed
+
+proc scanRemoteFlags(args: seq[string]): RemoteScan =
+  ## Extract ``--remote`` / ``--auth-token`` / ``--auth-token-file`` from any
+  ## position, leaving ``forwarded`` as the clean local argv the daemon runs.
+  var i = 0
+  while i < args.len:
+    case args[i]
+    of "--remote":
+      inc i
+      if i < args.len: result.remote = args[i]; inc i
+    of "--auth-token":
+      inc i
+      if i < args.len: result.authToken = args[i]; inc i
+    of "--auth-token-file":
+      inc i
+      if i < args.len: result.authTokenFile = args[i]; inc i
+    else:
+      result.forwarded.add(args[i]); inc i
+
+proc runRemote(remote: string, opts: CliOpts, forwarded: seq[string]): int =
+  ## Forward ``forwarded`` (the local argv minus client-only flags) to the
+  ## remote daemon and relay its streamed output. The remote daemon runs the
+  ## identical CLI, so behaviour matches the local path.
+  let token = resolveAuthToken(opts.authToken, opts.authTokenFile)
+  if token.len == 0:
+    stderr.writeLine("gosti --remote: no auth token " &
+      "(--auth-token-file <f>, --auth-token <t>, or $GOSTI_SERVE_TOKEN)")
+    return 2
+  var client: ServeClient
+  try:
+    client = newServeClient(remote, token)
+  except ValueError as e:
+    stderr.writeLine("gosti: " & e.msg)
+    return 2
+  # `manifest` is a control-plane read, not a worker exec: fetch the daemon's
+  # SIGNED identity + capability manifest over GET /v1/manifest (RA6), so the
+  # controller sees the signed envelope it must verify — not a local reprint.
+  if forwarded.len == 1 and forwarded[0] == "manifest":
+    try:
+      echo client.manifest().pretty()
+      return 0
+    except ServeAuthError:
+      stderr.writeLine("gosti --remote: authentication rejected by " &
+        remote & " (check the bearer token)")
+      return 77
+    except CatchableError as e:
+      stderr.writeLine("gosti --remote manifest: " & e.msg)
+      return 1
+  try:
+    return client.execRelay(forwarded, proc(line: string) = echo line)
+  except ServeAuthError:
+    stderr.writeLine("gosti --remote: authentication rejected by " &
+      remote & " (check the bearer token)")
+    return 77
+  except CatchableError as e:
+    stderr.writeLine("gosti --remote: " & e.msg)
+    return 1
+
+proc runCli*(args: seq[string]): int =
+  # ``--remote`` (and its auth flags) may precede the subcommand, so scan the
+  # raw argv first. When present it reroutes any operational subcommand to a
+  # remote daemon; ``serve`` and ``help`` are never remoted.
+  let scan = scanRemoteFlags(args)
+  if scan.remote.len > 0 and scan.forwarded.len > 0 and
+     scan.forwarded[0] != "serve" and
+     scan.forwarded[0] notin ["-h", "--help", "help"]:
+    var tokenOpts: CliOpts
+    tokenOpts.authToken = scan.authToken
+    tokenOpts.authTokenFile = scan.authTokenFile
+    return runRemote(scan.remote, tokenOpts, scan.forwarded)
+
+  var opts: CliOpts
+  try:
+    opts = parseCliOpts(args)
+  except ValueError as e:
+    stderr.writeLine("gosti: " & e.msg)
+    stderr.writeLine(HelpText)
+    return 2
+
+  if opts.subcommand == "help":
+    echo(HelpText)
+    return 0
+  return dispatch(opts)
+
+when isMainModule:
+  try: quit(runCli(commandLineParams()))
+  except ValueError as error:
+    stderr.writeLine("gosti: " & error.msg)
+    quit(2)
+  except CatchableError as error:
+    stderr.writeLine("gosti: " & error.msg)
+    quit(1)

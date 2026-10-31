@@ -9,7 +9,7 @@
 ## propagates the expected errors.
 
 import std/[options, os, strutils, tables, tempfiles, unittest]
-import vm_harness
+import gosti
 
 suite "NoopBackend lifecycle":
   test "provisionBaseline is idempotent and records the baseline":
@@ -25,7 +25,7 @@ suite "NoopBackend lifecycle":
 
   test "revertToBaseline raises when baseline missing":
     let b = newNoopBackend()
-    expect VmHarnessError:
+    expect GostiError:
       discard b.revertToBaseline("never-provisioned")
 
   test "full revert + exec + cleanup roundtrip":
@@ -50,7 +50,7 @@ suite "NoopBackend lifecycle":
     b.provisionBaseline(BaselineSpec(name: "base"))
     let vm = b.revertToBaseline("base")
     defer: b.stopAndCleanup(vm)
-    let host = createTempDir("vmh-noop-", "")
+    let host = createTempDir("gosti-noop-", "")
     defer: removeDir(host)
     writeFile(host / "payload.txt", "hello")
     b.copyToGuest(vm, host / "payload.txt", "/data/payload.txt")
@@ -94,20 +94,20 @@ suite "NoopBackend lifecycle":
 
   test "restoreSnapshot raises for missing snapshot":
     let b = newNoopBackend()
-    expect VmHarnessError:
+    expect GostiError:
       b.restoreSnapshot("myvm", "no-such-snap")
 
   test "snapshot raises for duplicate name":
     let b = newNoopBackend()
     discard b.snapshot("myvm", "clean")
-    expect VmHarnessError:
+    expect GostiError:
       discard b.snapshot("myvm", "clean")
 
   test "listSnapshots returns empty for unknown VM":
     let b = newNoopBackend()
     check b.listSnapshots("never-seen").len == 0
 
-  # M31 candidate surface (cf. docs/per-backend-notes/hyperv-snapshot-benchmarks.md):
+  # M31 candidate surface (cf. docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md):
   # hot snapshots (`snapshotRunning`) and portable export/import (`exportBaseline`
   # / `importBaseline`). The NoopBackend round-trips via a one-line manifest so
   # tests can verify orchestrator dispatch + return-value contract without a
@@ -136,14 +136,14 @@ suite "NoopBackend lifecycle":
   test "snapshotRunning rejects duplicate names like cold snapshot":
     let b = newNoopBackend()
     discard b.snapshotRunning("myvm", "hot")
-    expect VmHarnessError:
+    expect GostiError:
       discard b.snapshotRunning("myvm", "hot")
 
   test "exportBaseline + importBaseline round-trip the snapshot list":
     let b1 = newNoopBackend()
     discard b1.snapshot("myvm", "cold")
     discard b1.snapshotRunning("myvm", "hot")
-    let tmp = getTempDir() / "vm-harness-noop-export-test"
+    let tmp = getTempDir() / "gosti-noop-export-test"
     if dirExists(tmp): removeDir(tmp)
     defer: removeDir(tmp)
     b1.exportBaseline("myvm", tmp)
@@ -156,20 +156,20 @@ suite "NoopBackend lifecycle":
   test "exportBaseline rejects a missing baselineName hint":
     let b = newNoopBackend()
     discard b.snapshot("myvm", "real")
-    let tmp = getTempDir() / "vm-harness-noop-export-missing"
+    let tmp = getTempDir() / "gosti-noop-export-missing"
     if dirExists(tmp): removeDir(tmp)
     defer: removeDir(tmp)
-    expect VmHarnessError:
+    expect GostiError:
       b.exportBaseline("myvm", tmp, "no-such-baseline")
 
   test "importBaseline raises on malformed manifest":
-    let tmp = getTempDir() / "vm-harness-noop-import-malformed"
+    let tmp = getTempDir() / "gosti-noop-import-malformed"
     if dirExists(tmp): removeDir(tmp)
     createDir(tmp)
     defer: removeDir(tmp)
     writeFile(tmp / "noop-baseline.manifest", "garbage\n")
     let b = newNoopBackend()
-    expect VmHarnessError:
+    expect GostiError:
       discard b.importBaseline(tmp)
 
   test "default base methods raise BackendUnavailableError on a bare VmBackend":

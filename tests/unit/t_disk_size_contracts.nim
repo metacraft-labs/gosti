@@ -8,7 +8,7 @@
 ## checks its rendered production PowerShell. Real image and hypervisor
 ## lifecycle fixtures remain in t_disk_size_honoured on POSIX hosts.
 import std/[base64, os, options, strutils, tables, unittest]
-import vm_harness
+import gosti
 
 proc decodePowershell(argv: seq[string]): string =
   let raw = decode(argv[^1])
@@ -91,8 +91,8 @@ suite "Hyper-V":
       name: ephemeralVmNamePrefix() & "disk", goldenVhdx: "C:\\g.vhdx",
       useDifferencing: true, diskGB: 50)
     let ps = b.buildEphemeralCloneCommand(spec, "C:\\c.vhdx")
-    check "$vmhWantBytes = [int64]" & $(50 * GiB) in ps
-    check "Resize-VHD -Path $clone -SizeBytes $vmhWantBytes" in ps
+    check "$gostiWantBytes = [int64]" & $(50 * GiB) in ps
+    check "Resize-VHD -Path $clone -SizeBytes $gostiWantBytes" in ps
     check "-not $false" in ps
     # The sizing runs after the per-job disk exists and before the VM does.
     check ps.find("New-VHD -Path $clone -ParentPath") < ps.find("Resize-VHD")

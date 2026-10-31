@@ -8,10 +8,10 @@ default:
 
 build:
     mkdir -p build/bin test-logs
-    nim c --hints:off -o:build/gosti.out src/vm_harness/cli.nim 2>&1 | tee test-logs/build.log
+    nim c --hints:off -o:build/gosti.out src/gosti/cli.nim 2>&1 | tee test-logs/build.log
     bash scripts/install-binaries.sh build/gosti.out build/bin
     rm -f build/gosti.out
-    nim c --hints:off --path:src -o:build/bin/vm-harness-bench-snapshot-revert tools/bench/snapshot_revert_bench.nim 2>&1 | tee -a test-logs/build.log
+    nim c --hints:off --path:src -o:build/bin/gosti-bench-snapshot-revert tools/bench/snapshot_revert_bench.nim 2>&1 | tee -a test-logs/build.log
 
 test:
     mkdir -p test-logs
@@ -25,7 +25,7 @@ test-host:
 
 lint:
     mkdir -p test-logs
-    nim check --hints:off --path:src src/vm_harness/cli.nim 2>&1 | tee test-logs/lint.log
+    nim check --hints:off --path:src src/gosti/cli.nim 2>&1 | tee test-logs/lint.log
     nixfmt --check flake.nix nix/*.nix 2>&1 | tee -a test-logs/lint.log
     reuse lint 2>&1 | tee -a test-logs/lint.log
 
@@ -36,8 +36,16 @@ format:
 fmt: format
 
 nix-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
     mkdir -p test-logs
     nix build .#default 2>&1 | tee test-logs/nix-build.log
+    # The Linux-only guest fixture is consumed by the declared development
+    # environment. Exercise its reproducibility check in the existing CI gate.
+    if [[ "$(uname -s)" == Linux ]]; then
+        system="$(nix eval --raw --impure --expr builtins.currentSystem)"
+        nix build ".#checks.${system}.guest-linux-tpm-reproducible" 2>&1 | tee -a test-logs/nix-build.log
+    fi
 
 # Entering the dev shell from another git repository must write nothing there.
 # Runs `nix develop`, so it is not part of the in-shell test recipes.

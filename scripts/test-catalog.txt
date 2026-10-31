@@ -27,10 +27,10 @@ test all tests/unit/t_crud_surface_growth.nim
 # each real backend's instancePresence decision ("gone" only on a successful
 # answer). Hermetic (temp dir + pure functions).
 test all tests/unit/t_crud_store.nim
-# GOSTI1b step 3: GOSTI_* read first, VMH_* / VM_HARNESS_* as fallback (new
-# wins), and gosti/ state dirs preferred over an existing vm-harness/ one.
-# Hermetic (process env + temp dirs).
-test all tests/unit/t_gosti_env_names.nim
+# Settings are read only as GOSTI_*, and a state dir under the retired
+# name is moved to gosti/ rather than read in place. Hermetic (process env
+# + temp dirs).
+test all tests/unit/t_gosti_state_dirs.nim
 # ... and end to end: every verb as a SEPARATE CLI process against the
 # file-backed mock — lifecycle, vanished-instance reconciliation, fault
 # injection, lock-busy, store isolation, noop persistence, and the
@@ -47,6 +47,11 @@ test all tests/unit/t_cli_probe.nim
 test all tests/unit/t_cli_boot.nim
 test all tests/unit/t_cli_incus.nim
 test all tests/unit/t_incus_create_tuning.nim
+# Per-run ownership of Incus containers and networks (user.gosti.owner).
+# A fake incus script stands in for the daemon (see the file header).
+# Linux only: IncusBackend exec/stop/delete refuse every call on other
+# hosts, so there the refusal cases would pass without being tested.
+test linux tests/unit/t_incus_owner_token.nim
 # GARM instance-lifecycle gate: `ephemeral-list` makes kept ephemeral
 # instances visible and fails CLOSED (an unenumerable backend is an error,
 # never an empty list), and incus `ephemeral-destroy` retries a transiently
@@ -87,6 +92,10 @@ test posix tests/unit/t_qemu_windows_arm_golden_build.nim
 # scripts/run-host-tests.sh.
 test posix tests/unit/t_qemu_windows_arm_dead_guest_is_named.nim
 test all tests/unit/t_qemu_boot_backend.nim
+# qemu-boot ARM guests (arm64/armv7 on the virt board), read-only boot
+# disks, NoCloud seeds as virtio disks, and SSH exec/copy preconditions.
+# Pure argv + precondition checks; hermetic.
+test all tests/unit/t_qemu_boot_arm_and_ssh_access.nim
 test all tests/unit/t_tpm_device_args.nim
 test all tests/unit/t_windows_golden_recipe_hardening.nim
 # The Linux runner recipe's actions-runner pin: stale-pin warning helpers,
@@ -105,11 +114,11 @@ test all tests/unit/t_disk_size_contracts.nim
 # Remaining lifecycle doubles require executable POSIX shell scripts.
 test posix tests/unit/t_disk_size_honoured.nim
 test posix tests/unit/t_qemu_windows_arm_disk_size.nim
-# Runner-Fleet-M3-ARM-Wave MA0 gate: t_vmharness_image_is_honoured, assertion
+# Runner-Fleet-M3-ARM-Wave MA0 gate: t_gosti_image_is_honoured, assertion
 # (c) — a registry-constructed tart backend with no image configured RAISES
 # rather than substituting a default. Assertions (a) and (b) are provider-side
-# and are run by the nix check of the same name in metacraft-labs/nixos-modules.
-test all tests/unit/t_vmharness_image_is_honoured.nim
+# and are run by the nix check of the same name in metacraft-labs/devops-modules.
+test all tests/unit/t_gosti_image_is_honoured.nim
 test all tests/unit/t_lima_backend.nim
 test all tests/unit/t_prune.nim
 # Runner-Fleet-M3-ARM-Wave MA7 (hygiene half) gate:
@@ -135,16 +144,15 @@ test all tests/unit/t_serve_worker_fd_hygiene.nim
 
 # Backend-independent lifecycle and CLI coverage.
 test all tests/integration/t_noop_lifecycle.nim
-test all tests/e2e/t_vm_harness_smoke.nim
-test all tests/e2e/t_vm_harness_finally_cleanup_on_panic.nim
-test all tests/e2e/t_vm_harness_auto_backend_selection.nim
+test all tests/e2e/t_gosti_smoke.nim
+test all tests/e2e/t_gosti_finally_cleanup_on_panic.nim
+test all tests/e2e/t_gosti_auto_backend_selection.nim
 # RA1 remoting: a remote client drives provision->run->destroy against a
-# `vm-harness serve` daemon over the authenticated endpoint (noop backend).
-test all tests/e2e/t_vmharness_serve_roundtrip.nim
-# vm-harness -> gosti rename (design doc §6.0): the real CLI installed by the
-# shared layout script is `bin/gosti` + a `bin/vm-harness` symlink, both names
-# behave identically, and a daemon started as `vm-harness serve` (how the
-# deployed units start it) still serves execs. Hermetic (noop backend).
+# `gosti serve` daemon over the authenticated endpoint (noop backend).
+test all tests/e2e/t_gosti_serve_roundtrip.nim
+# Command names (architecture §6.0): the real CLI installed by the shared
+# layout script is `bin/gosti` alone, its help names `gosti`, and a daemon
+# started as `gosti serve` serves execs. Hermetic (noop backend).
 test all tests/e2e/t_gosti_command_names.nim
 # GOSTI2 PR-1 follow-up: the generic-CRUD `--json` envelope and exit code are
 # byte-identical over the local CLI (child process, stdout only) and over
@@ -156,37 +164,37 @@ test all tests/e2e/t_crud_serve_parity.nim
 # worker is a trivial self-exec sleep/quick role — no backend).
 # Fixed socket-handle storage, bounded dispatch, and producer lifetime.
 test all tests/unit/t_serve_dispatch_queue.nim
-test all tests/e2e/t_vmharness_serve_concurrency.nim
+test all tests/e2e/t_gosti_serve_concurrency.nim
 # A teardown whose client vanishes (GARM SIGKILLs/cancels its provider) must
 # still run to completion on the daemon host. Hermetic (self-exec worker).
-test all tests/e2e/t_vmharness_serve_teardown_survives_disconnect.nim
+test all tests/e2e/t_gosti_serve_teardown_survives_disconnect.nim
 # ... and must cost the daemon nothing while it does: no CPU spin on the dead
 # socket, the worker keeps being drained (it outputs more than a pipe holds),
 # and every worker is reaped — zero zombie/leftover children after a mix of
 # abandoned and completed execs. Falsifiable: routing writes back through
 # std/net's send(Socket, string) fails all three. Hermetic (self-exec worker).
-test all tests/e2e/t_vmharness_serve_client_disconnect_no_spin.nim
+test all tests/e2e/t_gosti_serve_client_disconnect_no_spin.nim
 # Runner-Fleet-M3-ARM-Wave MA12 gate:
-# t_vmharness_serve_survives_a_hung_request — the daemon must survive a HUNG
+# t_gosti_serve_survives_a_hung_request — the daemon must survive a HUNG
 # request, not merely a slow one. Three layers: one hung /v1/exec does not
 # stop a concurrent request (the thread pool); a FULLY SATURATED pool answers
 # 503 immediately instead of letting connections rot in the listen backlog
 # (the production wedge — `Recv-Q 4097` on a LISTEN socket, twice, once for 19
 # hours); and the daemon recovers once the hangs drain. Falsifiable in both
-# directions: VMH_HUNG_TEST_THREADS=1 makes layer 1 fail (serial-equivalent),
+# directions: GOSTI_HUNG_TEST_THREADS=1 makes layer 1 fail (serial-equivalent),
 # and the pre-MA12 thread-pool-only daemon passes layer 1 but fails layer 2.
 # Hermetic — the worker is a trivial self-exec hang/quick role, no backend.
-test all tests/e2e/t_vmharness_serve_survives_a_hung_request.nim
+test all tests/e2e/t_gosti_serve_survives_a_hung_request.nim
 # gosti#69 gate: back-to-back CRUD requests never hit the previous request's
 # teardown. Deterministic half: with a pause injected at the start of worker
 # cleanup, a client that stops at `exit` must not see it before the pause
 # ends (exit is written only after cleanup). Plus a 200-request sequential
 # hammer on a 3-thread daemon. Hermetic (mock CRUD backend).
-test all tests/e2e/t_vmharness_serve_sequential_crud.nim
+test all tests/e2e/t_gosti_serve_sequential_crud.nim
 # RA6 enrollment gate: a remote client reads the daemon's SIGNED identity +
 # capability manifest over /v1/manifest and verifies it against a trust store;
 # unenrolled/expired/revoked/tampered identities are rejected. Hermetic (noop).
-test all tests/e2e/t_vmharness_serve_enrollment.nim
+test all tests/e2e/t_gosti_serve_enrollment.nim
 
 # Backend contracts that do not require a live hypervisor.
 test all tests/integration/t_libvirt_backend.nim
@@ -204,7 +212,7 @@ test all tests/integration/t_boot_smoke_harness_tears_down_on_failure.nim
 # Live vTPM gate. Boots a real Linux guest (stock nixpkgs kernel + busybox
 # initramfs, `nix/guest-linux-tpm.nix`) with and without a swtpm-backed TPM
 # and asserts what the guest itself reports about /dev/tpm0. Needs
-# $VMH_TPM_GUEST_DIR, which the dev shell exports; on Linux it never skips.
+# $GOSTI_TPM_GUEST_DIR, which the dev shell exports; on Linux it never skips.
 test all tests/integration/t_guest_sees_tpm_device.nim
 # These gates require a real host hypervisor or daemon. They are intentionally
 # separate from the ephemeral Nix CI matrix: a Tart macOS guest is not itself
@@ -214,30 +222,30 @@ test all tests/integration/t_guest_sees_tpm_device.nim
 # Windows host: Hyper-V and WSL.
 host all tests/integration/t_hyperv_lifecycle.nim
 host all tests/integration/t_wsl_lifecycle.nim
-host all tests/e2e/t_vm_harness_hyperv_m69_feature_capability_passes.nim
-host all tests/e2e/t_vm_harness_wsl_m69_passwd_user_passes.nim
-host all tests/e2e/t_vm_harness_wsl_systemd_boot.nim
-host all tests/e2e/t_vm_harness_hyperv_systemd_boot.nim
+host all tests/e2e/t_gosti_hyperv_m69_feature_capability_passes.nim
+host all tests/e2e/t_gosti_wsl_m69_passwd_user_passes.nim
+host all tests/e2e/t_gosti_wsl_systemd_boot.nim
+host all tests/e2e/t_gosti_hyperv_systemd_boot.nim
 # RA4 remoting on a SECOND Windows host: a remote client drives a per-job
 # ephemeral Hyper-V VM (New-VHD/New-VM-from-golden -> boot -> JIT-probe ->
-# Remove-VM, no residue) through `vm-harness serve`. Needs a golden VHDX in
-# $VMH_HYPERV_GOLDEN; self-skips off-Windows / without Hyper-V / without it.
-host all tests/e2e/t_vmharness_serve_win_hyperv.nim
+# Remove-VM, no residue) through `gosti serve`. Needs a golden VHDX in
+# $GOSTI_HYPERV_GOLDEN; self-skips off-Windows / without Hyper-V / without it.
+host all tests/e2e/t_gosti_serve_win_hyperv.nim
 
 # macOS host: Tart, UTM, and Lima.
 host all tests/integration/t_tart_lifecycle.nim
-host all tests/e2e/t_vm_harness_tart_linux_arm_smoke.nim
-host all tests/e2e/t_vm_harness_tart_macos_smoke.nim
-host all tests/e2e/t_vm_harness_tart_cleanup_on_failure.nim
+host all tests/e2e/t_gosti_tart_linux_arm_smoke.nim
+host all tests/e2e/t_gosti_tart_macos_smoke.nim
+host all tests/e2e/t_gosti_tart_cleanup_on_failure.nim
 # RA5 remoting on the macOS/tart host (m3): a remote client drives a per-job
 # ephemeral tart guest (clone-from-golden -> boot -> in-guest probe -> destroy,
-# no residue) through `vm-harness serve`. Defaults to the cheap Linux-ARM
-# golden; set VMH_TART_SERVE_MACOS=1 for the macOS golden. Self-skips off-macOS
+# no residue) through `gosti serve`. Defaults to the cheap Linux-ARM
+# golden; set GOSTI_TART_SERVE_MACOS=1 for the macOS golden. Self-skips off-macOS
 # / without tart+sshpass.
-host all tests/e2e/t_vmharness_serve_macos_tart.nim
+host all tests/e2e/t_gosti_serve_macos_tart.nim
 
 # Runner-Fleet-M3-ARM-Wave MA3 gate: t_qemu_windows_arm_golden_build, HOST
-# TIER. Opt-in behind VMH_WINDOWS_ARM_GOLDEN_HOST_TEST=1 plus the two ISO
+# TIER. Opt-in behind GOSTI_WINDOWS_ARM_GOLDEN_HOST_TEST=1 plus the two ISO
 # paths, because one run is a real ~60 minute Windows install. With any
 # precondition missing it SKIPS and names each one; it never passes quietly.
 host all tests/e2e/t_qemu_windows_arm_golden_build_host.nim
@@ -257,38 +265,43 @@ host all tests/e2e/t_qemu_windows_arm_per_job_boot_host.nim
 # golden.
 host all tests/e2e/t_qemu_windows_arm_dead_guest_is_named_host.nim
 # Runner-Fleet-M3-ARM-Wave MA12 gate:
-# t_vmharness_serve_survives_a_hung_request, HOST TIER. READ-ONLY, and safe
+# t_gosti_serve_survives_a_hung_request, HOST TIER. READ-ONLY, and safe
 # against a daemon serving live CI: it starts nothing and sends no /v1/exec.
 # It asserts the two things that were true on both wedged production hosts and
 # that no hermetic test can see — the DEPLOYED listener answers an
 # unauthenticated probe within the same budget the watchdog gives it, and its
 # accept backlog is not saturated (`Recv-Q` below `Send-Q` on the LISTEN
 # socket; the incident showed 4097 against 4096). Probes
-# $VMH_SERVE_HOST_ADDR, default 127.0.0.1:8873. Skips loudly, naming the
+# $GOSTI_SERVE_HOST_ADDR, default 127.0.0.1:8873. Skips loudly, naming the
 # address it looked at, when no daemon is deployed there; the backlog layer
 # additionally skips off-Linux, where the accept queue is not observable.
-host all tests/e2e/t_vmharness_serve_survives_a_hung_request_host.nim
+host all tests/e2e/t_gosti_serve_survives_a_hung_request_host.nim
 host all tests/integration/t_utm_lifecycle.nim
-host all tests/e2e/t_vm_harness_utm_windows_arm_smoke.nim
-host all tests/e2e/t_vm_harness_utm_windows_dism_works_under_prism.nim
+host all tests/e2e/t_gosti_utm_windows_arm_smoke.nim
+host all tests/e2e/t_gosti_utm_windows_dism_works_under_prism.nim
 host all tests/integration/t_lima_lifecycle.nim
-host all tests/e2e/t_vm_harness_lima_linux_smoke.nim
-host all tests/e2e/t_vm_harness_lima_revert_under_30s.nim
+host all tests/e2e/t_gosti_lima_linux_smoke.nim
+host all tests/e2e/t_gosti_lima_revert_under_30s.nim
 
 # Linux host: libvirt and Incus.
-host all tests/e2e/t_vmharness_libvirt_ephemeral_run.nim
+host all tests/e2e/t_gosti_libvirt_ephemeral_run.nim
+# Campaign M4: Ubuntu cloud golden + NoCloud seed + loopback SSH forward on
+# qemu:///session. Skips without GOSTI_LINUX_CLOUD_GOLDEN (see
+# guest-recipes/linux-x64-cloud/fetch-image.sh).
+host all tests/e2e/t_gosti_libvirt_linux_smoke.nim
+host all tests/e2e/t_gosti_libvirt_cli_linux_ephemeral.nim
 # Campaign WR0: the libvirt snapshot surface. Both self-skip loudly when
 # their prerequisites are absent -- the conformance gate needs
-# VMH_LIBVIRT_SCRATCH=1 on a /session URI (it DEFINES a throwaway domain),
+# GOSTI_LIBVIRT_SCRATCH=1 on a /session URI (it DEFINES a throwaway domain),
 # and the live gate needs an operator-provided running guest in
-# VMH_LIBVIRT_WARM_DOMAIN. See each file's header.
+# GOSTI_LIBVIRT_WARM_DOMAIN. See each file's header.
 host all tests/e2e/t_libvirt_snapshot_surface_conformance.nim
 host all tests/e2e/t_libvirt_live_snapshot_restore.nim
 host all tests/e2e/t_windows_golden_jit_boot.nim
-host all tests/e2e/t_vmharness_incus_ephemeral_run.nim
+host all tests/e2e/t_gosti_incus_ephemeral_run.nim
 # RA1 remoting against a real backend: remote client drives an ephemeral
-# incus container through `vm-harness serve` (launch -> probe -> destroy).
-host all tests/e2e/t_vmharness_serve_roundtrip_incus.nim
+# incus container through `gosti serve` (launch -> probe -> destroy).
+host all tests/e2e/t_gosti_serve_roundtrip_incus.nim
 # §7.4 layered base images: snapshot -> publish -> export -> import -> launch.
 host all tests/e2e/t_incus_layered_base_image.nim
 
@@ -306,19 +319,19 @@ test all tests/unit/t_test_catalog.nim
 # The Incus JIT gate also documents a superseded cloud-init premise; its
 # Linux retargeting is a separate follow-up, never deterministic coverage.
 specialized all tests/e2e/t_incus_linux_jit_boot.nim
-specialized all tests/e2e/t_rp5c1_vm_harness_provider_via_protocol.nim
+specialized all tests/e2e/t_rp5c1_gosti_provider_via_protocol.nim
 specialized all tests/e2e/t_s2_network_and_attachment.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_drm_present.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_gen_switch.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_gnome.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_hyprland.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_kernel_boot.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_macos_via_darling.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_multi_de.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_multi_de_sddm.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_multi_distro.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_mvp_foreign.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_plasma.nim
-specialized all tests/e2e/t_vm_harness_hyperv_reproos_windows_via_wine.nim
-specialized all tests/e2e/t_vm_harness_hyperv_windows_installer_smoke.nim
-specialized all tests/e2e/t_vm_harness_resources.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_drm_present.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_gen_switch.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_gnome.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_hyprland.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_kernel_boot.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_macos_via_darling.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_multi_de.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_multi_de_sddm.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_multi_distro.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_mvp_foreign.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_plasma.nim
+specialized all tests/e2e/t_gosti_hyperv_reproos_windows_via_wine.nim
+specialized all tests/e2e/t_gosti_hyperv_windows_installer_smoke.nim
+specialized all tests/e2e/t_gosti_resources.nim

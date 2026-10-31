@@ -3,8 +3,8 @@
 
 $ErrorActionPreference = 'Stop'
 
-$log = 'C:\Windows\Temp\vmh-openssh-provision.log'
-$fail = 'C:\Windows\Temp\vmh-openssh-provision-failed'
+$log = 'C:\Windows\Temp\gosti-openssh-provision.log'
+$fail = 'C:\Windows\Temp\gosti-openssh-provision-failed'
 $done = 'C:\Windows\Temp\repro-install-done'
 $portableZip = 'C:\Windows\Temp\OpenSSH-ARM64.zip'
 $netKvmDir = 'C:\Windows\Temp\virtio\NetKVM\w11\ARM64'
@@ -13,7 +13,7 @@ $expandedDir = 'C:\Program Files\OpenSSH-ARM64'
 $script:provisionFailed = $false
 # Our own inbound allow rule for sshd, owned by this recipe rather than by
 # whatever Add-WindowsCapability happens to install. See ConfigureOpenSsh.
-$script:SshdFirewallRuleName = 'vmh-sshd-in-tcp22'
+$script:SshdFirewallRuleName = 'gosti-sshd-in-tcp22'
 
 Remove-Item -LiteralPath $fail, $done -Force -ErrorAction SilentlyContinue
 
@@ -214,7 +214,7 @@ function ConfigureOpenSsh {
     Remove-NetFirewallRule -ErrorAction SilentlyContinue
   New-NetFirewallRule `
     -Name $script:SshdFirewallRuleName `
-    -DisplayName 'vm-harness OpenSSH Server (sshd) any-profile' `
+    -DisplayName 'gosti OpenSSH Server (sshd) any-profile' `
     -Enabled True `
     -Direction Inbound `
     -Protocol TCP `

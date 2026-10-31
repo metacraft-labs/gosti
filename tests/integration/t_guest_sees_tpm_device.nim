@@ -18,10 +18,10 @@
 ## what it sees of ``/dev/tpm0``, and powers off — about 1.5 s under KVM
 ## with a TPM, about 3.5 s without one (the extra time is the initramfs's
 ## bounded wait for a device that never appears). The store path is
-## exported as ``$VMH_TPM_GUEST_DIR`` by the flake's devShell, which is
+## exported as ``$GOSTI_TPM_GUEST_DIR`` by the flake's devShell, which is
 ## what lets this gate run with no network and no build step of its own.
 ##
-## The load-bearing marker is ``VMH-TPM2-GETCAP-FAMILY``. It is not a
+## The load-bearing marker is ``GOSTI-TPM2-GETCAP-FAMILY``. It is not a
 ## sysfs readout: the guest writes a real 22-byte
 ## TPM2_GetCapability(TPM_PT_FAMILY_INDICATOR) command to ``/dev/tpm0``
 ## and hex-dumps the response, which for a TPM 2.0 ends in the ASCII
@@ -43,7 +43,7 @@ when not defined(linux):
 else:
   import std/[os, posix, strutils, tables, tempfiles, unittest]
 
-  import vm_harness
+  import gosti
 
   const
     TestNamePrefix = "repro-test-tpm-guest-"
@@ -52,21 +52,21 @@ else:
       ## running boot-smoke gate — and so that nothing it sweeps could ever
       ## belong to this host's production CI.
 
-    MarkerStart = "VMH-TPM-PROBE-START"
-    MarkerPresent = "VMH-TPM-DEVICE=present"
-    MarkerAbsent = "VMH-TPM-DEVICE=absent"
-    MarkerDone = "VMH-TPM-PROBE-DONE"
-    MarkerSysfsMajor2 = r"VMH-TPM-SYSFS-VERSION-MAJOR=2"
+    MarkerStart = "GOSTI-TPM-PROBE-START"
+    MarkerPresent = "GOSTI-TPM-DEVICE=present"
+    MarkerAbsent = "GOSTI-TPM-DEVICE=absent"
+    MarkerDone = "GOSTI-TPM-PROBE-DONE"
+    MarkerSysfsMajor2 = r"GOSTI-TPM-SYSFS-VERSION-MAJOR=2"
     # 8001 <size> 00000000 (success) … 00000100 (TPM_PT_FAMILY_INDICATOR)
     # 322e3000 ("2.0\0"). Anchored on both the property id and the value so
     # a response that merely contained the bytes somewhere cannot match.
-    MarkerGetCapFamily = r"VMH-TPM2-GETCAP-FAMILY=8001[0-9a-f]+00000100322e3000"
+    MarkerGetCapFamily = r"GOSTI-TPM2-GETCAP-FAMILY=8001[0-9a-f]+00000100322e3000"
 
   proc guestDir(): string =
     ## The pinned guest bundle. Absent is a hard failure naming the remedy,
     ## never a skip: a vTPM gate that quietly does not run is the exact
     ## failure mode this gate exists to rule out.
-    let fromEnv = getEnv("VMH_TPM_GUEST_DIR")
+    let fromEnv = getEnv("GOSTI_TPM_GUEST_DIR")
     if fromEnv.len > 0:
       return fromEnv
     ""
@@ -74,13 +74,13 @@ else:
   proc requireGuest(): string =
     let d = guestDir()
     doAssert d.len > 0,
-      "VMH_TPM_GUEST_DIR is unset. It is exported by the vm-harness dev " &
+      "GOSTI_TPM_GUEST_DIR is unset. It is exported by the gosti dev " &
       "shell; run this gate under `direnv exec . …` / `nix develop`, or " &
       "set it by hand to the output of `nix build .#guest-linux-tpm`."
     doAssert fileExists(d / "kernel"),
-      "VMH_TPM_GUEST_DIR has no kernel: " & d
+      "GOSTI_TPM_GUEST_DIR has no kernel: " & d
     doAssert fileExists(d / "initramfs.gz"),
-      "VMH_TPM_GUEST_DIR has no initramfs.gz: " & d
+      "GOSTI_TPM_GUEST_DIR has no initramfs.gz: " & d
     d
 
   proc artifactDir(): string =
@@ -164,7 +164,7 @@ else:
       let log = readFile(r.serialLogPath)
       check MarkerAbsent in log
       check MarkerPresent notin log
-      check "VMH-TPM2-GETCAP-FAMILY" notin log
+      check "GOSTI-TPM2-GETCAP-FAMILY" notin log
       check "322e3000" notin log
 
     test "the TPM-less guest FAILS an assertion that demands a TPM":
@@ -186,7 +186,7 @@ else:
     test "deep TMPDIR keeps real TPM state isolated and removes both sockets":
       let oldTemp = getEnv("TMPDIR")
       let hadTemp = existsEnv("TMPDIR")
-      let root = createTempDir("vmh-deep-tpm-", "")
+      let root = createTempDir("gosti-deep-tpm-", "")
       defer:
         if hadTemp: putEnv("TMPDIR", oldTemp)
         else: delEnv("TMPDIR")
@@ -349,7 +349,7 @@ else:
       # The path that matters most: an assertion failure, not a clean pass.
       let spec = tpmGuestSpec("teardown-on-failure", tpm = true, steps = @[
         step(MarkerStart, "the guest reached its init"),
-        step("VMH-TPM-A-LINE-THIS-GUEST-NEVER-PRINTS",
+        step("GOSTI-TPM-A-LINE-THIS-GUEST-NEVER-PRINTS",
              "a line the guest never prints", timeoutSec = 10),
       ])
       let r = runBootSmoke(spec)

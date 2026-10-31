@@ -5,7 +5,7 @@
 # (`tests/integration/t_guest_sees_tpm_device.nim`).
 #
 # *Why a real Linux guest.* The synthetic 512-byte BIOS boot sector in
-# `src/vm_harness/boot_smoke.nim` is enough to prove the serial-expect
+# `src/gosti/boot_smoke.nim` is enough to prove the serial-expect
 # engine works, but it runs in 16-bit real mode and cannot reach the TPM
 # TIS MMIO window at 0xFED40000, let alone open `/dev/tpm0`. A vTPM that
 # has never been observed from inside a guest is not evidence that the
@@ -38,11 +38,11 @@
 #
 # Markers, in the order `/init` emits them:
 #
-#   VMH-TPM-PROBE-START
-#   VMH-TPM-DEVICE=present | VMH-TPM-DEVICE=absent
-#   VMH-TPM-SYSFS-VERSION-MAJOR=<n>            (only when present)
-#   VMH-TPM2-GETCAP-FAMILY=<hex response>      (only when present)
-#   VMH-TPM-PROBE-DONE
+#   GOSTI-TPM-PROBE-START
+#   GOSTI-TPM-DEVICE=present | GOSTI-TPM-DEVICE=absent
+#   GOSTI-TPM-SYSFS-VERSION-MAJOR=<n>            (only when present)
+#   GOSTI-TPM2-GETCAP-FAMILY=<hex response>      (only when present)
+#   GOSTI-TPM-PROBE-DONE
 #
 # The `GETCAP` line is the load-bearing one. It is not a sysfs readout:
 # `/init` opens `/dev/tpm0` read-write on one file descriptor, writes a
@@ -98,7 +98,7 @@ let
     /bin/busybox mount -t proc proc /proc
     /bin/busybox mount -t sysfs sys /sys
     /bin/busybox mount -t devtmpfs dev /dev 2>/dev/null
-    echo "VMH-TPM-PROBE-START" > /dev/console
+    echo "GOSTI-TPM-PROBE-START" > /dev/console
 
     # The TPM chardev is registered during driver probe, which has
     # already happened by the time /init runs on this kernel; the wait
@@ -111,9 +111,9 @@ let
     done
 
     if [ -c /dev/tpm0 ]; then
-      echo "VMH-TPM-DEVICE=present" > /dev/console
+      echo "GOSTI-TPM-DEVICE=present" > /dev/console
       major=$(/bin/busybox cat /sys/class/tpm/tpm0/tpm_version_major 2>/dev/null)
-      echo "VMH-TPM-SYSFS-VERSION-MAJOR=$major" > /dev/console
+      echo "GOSTI-TPM-SYSFS-VERSION-MAJOR=$major" > /dev/console
       # One file description for the whole command/response exchange.
       exec 3<> /dev/tpm0
       /bin/busybox printf '${getCapFamilyOctal}' >&3
@@ -131,12 +131,12 @@ let
         n=$((n + 1))
       done
       exec 3>&-
-      echo "VMH-TPM2-GETCAP-FAMILY=$resp" > /dev/console
+      echo "GOSTI-TPM2-GETCAP-FAMILY=$resp" > /dev/console
     else
-      echo "VMH-TPM-DEVICE=absent" > /dev/console
+      echo "GOSTI-TPM-DEVICE=absent" > /dev/console
     fi
 
-    echo "VMH-TPM-PROBE-DONE" > /dev/console
+    echo "GOSTI-TPM-PROBE-DONE" > /dev/console
     /bin/busybox poweroff -f
   '';
 
@@ -181,17 +181,22 @@ pkgs.runCommand "guest-linux-tpm"
     cp ${initScript} $root/init
     chmod +x $root/init
 
-    ( cd $root && find . -print0 | \
-        cpio --null -o -H newc --quiet | gzip -9 ) > $out/initramfs.gz
+    # Preserve the guest payload and modes, while removing temporary filesystem
+    # allocation and build time from the archive identity. Normalize symlinks
+    # themselves too; cpio's reproducible mode renumbers inode/device fields.
+    find "$root" -exec touch -h -d @1 {} +
+    ( cd "$root" && LC_ALL=C find . -print0 | LC_ALL=C sort -z | \
+        cpio --null -o -H newc --quiet --reproducible --owner=0:0 | \
+        gzip -n -9 ) > $out/initramfs.gz
 
     # Record what the consumer asserts on, so the markers are not
     # hard-coded independently on both sides.
     cat > $out/manifest.env <<EOF
     GUEST_KERNEL_CMDLINE=${kernelCmdline}
     GUEST_KERNEL_VERSION=${kernelVersion}
-    GUEST_MARKER_START=VMH-TPM-PROBE-START
-    GUEST_MARKER_PRESENT=VMH-TPM-DEVICE=present
-    GUEST_MARKER_ABSENT=VMH-TPM-DEVICE=absent
-    GUEST_MARKER_DONE=VMH-TPM-PROBE-DONE
+    GUEST_MARKER_START=GOSTI-TPM-PROBE-START
+    GUEST_MARKER_PRESENT=GOSTI-TPM-DEVICE=present
+    GUEST_MARKER_ABSENT=GOSTI-TPM-DEVICE=absent
+    GUEST_MARKER_DONE=GOSTI-TPM-PROBE-DONE
     EOF
   ''

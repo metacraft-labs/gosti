@@ -65,55 +65,55 @@
 #
 # Usage:
 #   ./build-sysprep-golden.sh                       # full run (needs KVM+root)
-#   VMH_SYSPREP_DRY_RUN=1 ./build-sysprep-golden.sh # print the plan, do nothing
-#   VMH_SRC_GOLDEN=/storage/iso/golden-win11-cloudbase.qcow2 \
-#   VMH_OUT_GOLDEN=/storage/iso/golden-win11-cloudbase-sysprepped.qcow2 \
+#   GOSTI_SYSPREP_DRY_RUN=1 ./build-sysprep-golden.sh # print the plan, do nothing
+#   GOSTI_SRC_GOLDEN=/storage/iso/golden-win11-cloudbase.qcow2 \
+#   GOSTI_OUT_GOLDEN=/storage/iso/golden-win11-cloudbase-sysprepped.qcow2 \
 #     ./build-sysprep-golden.sh
 #
 # Env:
-#   VMH_SRC_GOLDEN     source cloudbase-init golden (NEVER mutated)
+#   GOSTI_SRC_GOLDEN     source cloudbase-init golden (NEVER mutated)
 #                        (default /storage/iso/golden-win11-cloudbase.qcow2)
-#   VMH_OUT_GOLDEN     output sysprepped golden (SIDE artifact)
+#   GOSTI_OUT_GOLDEN     output sysprepped golden (SIDE artifact)
 #                        (default /storage/iso/golden-win11-cloudbase-sysprepped.qcow2)
-#   VMH_WORK_QCOW2     throwaway full copy worked on
+#   GOSTI_WORK_QCOW2     throwaway full copy worked on
 #                        (default /storage/scratch/fu5-sysprep-work.qcow2)
-#   VMH_WORK_DOMAIN    throwaway libvirt domain name (default fu5-sysprep-work)
-#   VMH_GUEST_PASSWORD guest admin password (default repro-windows-x64)
-#   VMH_OVMF_CODE      OVMF code fd (default /run/libvirt/nix-ovmf/edk2-x86_64-code.fd)
-#   VMH_OVMF_VARS      OVMF vars template fd (default …/edk2-i386-vars.fd)
-#   VMH_VCPUS          work-VM vcpus (default 4 — keep modest on a busy host)
-#   VMH_MEMORY_MB      work-VM RAM MiB (default 6144)
+#   GOSTI_WORK_DOMAIN    throwaway libvirt domain name (default fu5-sysprep-work)
+#   GOSTI_GUEST_PASSWORD guest admin password (default repro-windows-x64)
+#   GOSTI_OVMF_CODE      OVMF code fd (default /run/libvirt/nix-ovmf/edk2-x86_64-code.fd)
+#   GOSTI_OVMF_VARS      OVMF vars template fd (default …/edk2-i386-vars.fd)
+#   GOSTI_VCPUS          work-VM vcpus (default 4 — keep modest on a busy host)
+#   GOSTI_MEMORY_MB      work-VM RAM MiB (default 6144)
 #   LIBVIRT_DEFAULT_URI  libvirt URI (default qemu:///system)
-#   VMH_DISM_TIMEOUT   seconds to allow the DISM /ResetBase (default 2700)
-#   VMH_SYSPREP_TIMEOUT seconds to allow sysprep + shutdown (default 1800)
-#   VMH_VIRSH / VMH_QEMU_IMG  command overrides (default `virsh` / `qemu-img`;
-#                        on the host pass e.g. VMH_VIRSH="sudo -n virsh")
+#   GOSTI_DISM_TIMEOUT   seconds to allow the DISM /ResetBase (default 2700)
+#   GOSTI_SYSPREP_TIMEOUT seconds to allow sysprep + shutdown (default 1800)
+#   GOSTI_VIRSH / GOSTI_QEMU_IMG  command overrides (default `virsh` / `qemu-img`;
+#                        on the host pass e.g. GOSTI_VIRSH="sudo -n virsh")
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
-SRC_GOLDEN="${VMH_SRC_GOLDEN:-/storage/iso/golden-win11-cloudbase.qcow2}"
-OUT_GOLDEN="${VMH_OUT_GOLDEN:-/storage/iso/golden-win11-cloudbase-sysprepped.qcow2}"
-WORK="${VMH_WORK_QCOW2:-/storage/scratch/fu5-sysprep-work.qcow2}"
-WORK_DOMAIN="${VMH_WORK_DOMAIN:-fu5-sysprep-work}"
-GUEST_PASSWORD="${VMH_GUEST_PASSWORD:-repro-windows-x64}"
-OVMF_CODE="${VMH_OVMF_CODE:-/run/libvirt/nix-ovmf/edk2-x86_64-code.fd}"
-OVMF_VARS="${VMH_OVMF_VARS:-/run/libvirt/nix-ovmf/edk2-i386-vars.fd}"
-VCPUS="${VMH_VCPUS:-4}"
-MEMORY_MB="${VMH_MEMORY_MB:-6144}"
+SRC_GOLDEN="${GOSTI_SRC_GOLDEN:-/storage/iso/golden-win11-cloudbase.qcow2}"
+OUT_GOLDEN="${GOSTI_OUT_GOLDEN:-/storage/iso/golden-win11-cloudbase-sysprepped.qcow2}"
+WORK="${GOSTI_WORK_QCOW2:-/storage/scratch/fu5-sysprep-work.qcow2}"
+WORK_DOMAIN="${GOSTI_WORK_DOMAIN:-fu5-sysprep-work}"
+GUEST_PASSWORD="${GOSTI_GUEST_PASSWORD:-repro-windows-x64}"
+OVMF_CODE="${GOSTI_OVMF_CODE:-/run/libvirt/nix-ovmf/edk2-x86_64-code.fd}"
+OVMF_VARS="${GOSTI_OVMF_VARS:-/run/libvirt/nix-ovmf/edk2-i386-vars.fd}"
+VCPUS="${GOSTI_VCPUS:-4}"
+MEMORY_MB="${GOSTI_MEMORY_MB:-6144}"
 URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
-DISM_TIMEOUT="${VMH_DISM_TIMEOUT:-2700}"
-SYSPREP_TIMEOUT="${VMH_SYSPREP_TIMEOUT:-1800}"
-REARM_UNATTEND="${VMH_REARM_UNATTEND:-$SCRIPT_DIR/rearm-unattend.xml}"
-GIT_GATE_PS1="${VMH_GIT_GATE_PS1:-$SCRIPT_DIR/../lib/assert-git-provisioned.ps1}"
-PWSH_GATE_PS1="${VMH_PWSH_GATE_PS1:-$SCRIPT_DIR/../lib/assert-pwsh-provisioned.ps1}"
-DEFENDER_GATE_PS1="${VMH_DEFENDER_GATE_PS1:-$SCRIPT_DIR/../lib/assert-defender-exclusions-sane.ps1}"
-DRY_RUN="${VMH_SYSPREP_DRY_RUN:-}"
+DISM_TIMEOUT="${GOSTI_DISM_TIMEOUT:-2700}"
+SYSPREP_TIMEOUT="${GOSTI_SYSPREP_TIMEOUT:-1800}"
+REARM_UNATTEND="${GOSTI_REARM_UNATTEND:-$SCRIPT_DIR/rearm-unattend.xml}"
+GIT_GATE_PS1="${GOSTI_GIT_GATE_PS1:-$SCRIPT_DIR/../lib/assert-git-provisioned.ps1}"
+PWSH_GATE_PS1="${GOSTI_PWSH_GATE_PS1:-$SCRIPT_DIR/../lib/assert-pwsh-provisioned.ps1}"
+DEFENDER_GATE_PS1="${GOSTI_DEFENDER_GATE_PS1:-$SCRIPT_DIR/../lib/assert-defender-exclusions-sane.ps1}"
+DRY_RUN="${GOSTI_SYSPREP_DRY_RUN:-}"
 
 # shellcheck disable=SC2206
-VIRSH=(${VMH_VIRSH:-virsh} -c "$URI")
+VIRSH=(${GOSTI_VIRSH:-virsh} -c "$URI")
 # shellcheck disable=SC2206
-QEMU_IMG=(${VMH_QEMU_IMG:-qemu-img})
+QEMU_IMG=(${GOSTI_QEMU_IMG:-qemu-img})
 
 WORK_NVRAM="${WORK%.qcow2}_VARS.fd"
 WORK_XML="$(mktemp /tmp/fu5-sysprep-XXXXXX.xml)"
@@ -159,10 +159,10 @@ if [[ -n "$DRY_RUN" ]]; then
   log "  2) boot $WORK_DOMAIN (UEFI/OVMF, virtio, virbr0)"
   log "  2b) GATE: assert-git-provisioned.ps1 in the guest — abort unless Git for"
   log "      Windows is on the MACHINE PATH and the MSYS toolchain resolves"
-  log "      through bin\\bash.exe (VMH_SKIP_GIT_GATE=1 to override, loudly)"
+  log "      through bin\\bash.exe (GOSTI_SKIP_GIT_GATE=1 to override, loudly)"
   log "  2c) GATE: assert-pwsh-provisioned.ps1 in the guest — abort unless"
   log "      PowerShell 7 is on the MACHINE PATH and the interpreter runs"
-  log "      (VMH_SKIP_PWSH_GATE=1 to override, loudly)"
+  log "      (GOSTI_SKIP_PWSH_GATE=1 to override, loudly)"
   log "  3) guest: DISM /Online /Cleanup-Image /StartComponentCleanup /ResetBase; reboot"
   log "     guest: clear ReserveManager scenario + Set-ReservedStorageState Disabled"
   log "     guest: sysprep /generalize /oobe /shutdown /quiet /unattend:<rearm>"
@@ -270,10 +270,10 @@ log "work guest SSH reachable; base hostname: $(ssh_guest "$IP" 'hostname' 2>/de
 # which Git is not -- so asserting here is equivalent to asserting immediately
 # before sysprep.
 #
-# Set VMH_SKIP_GIT_GATE=1 only to build a deliberately Git-less image (e.g.
+# Set GOSTI_SKIP_GIT_GATE=1 only to build a deliberately Git-less image (e.g.
 # bisecting an unrelated sysprep failure). It is loud on purpose.
-if [[ -n "${VMH_SKIP_GIT_GATE:-}" ]]; then
-  log "WARNING: VMH_SKIP_GIT_GATE set — NOT verifying Git for Windows."
+if [[ -n "${GOSTI_SKIP_GIT_GATE:-}" ]]; then
+  log "WARNING: GOSTI_SKIP_GIT_GATE set — NOT verifying Git for Windows."
   log "WARNING: clones of the resulting golden may have no bash.exe and will"
   log "WARNING: fail every GitHub Actions 'shell: bash' step. Do not ship this."
 else
@@ -309,10 +309,10 @@ fi
 # component-store payloads, which this is not -- so asserting here is
 # equivalent to asserting immediately before sysprep.
 #
-# Set VMH_SKIP_PWSH_GATE=1 only to build a deliberately pwsh-less image. It is
+# Set GOSTI_SKIP_PWSH_GATE=1 only to build a deliberately pwsh-less image. It is
 # loud on purpose.
-if [[ -n "${VMH_SKIP_PWSH_GATE:-}" ]]; then
-  log "WARNING: VMH_SKIP_PWSH_GATE set — NOT verifying PowerShell 7."
+if [[ -n "${GOSTI_SKIP_PWSH_GATE:-}" ]]; then
+  log "WARNING: GOSTI_SKIP_PWSH_GATE set — NOT verifying PowerShell 7."
   log "WARNING: clones of the resulting golden may have no pwsh.exe and will"
   log "WARNING: fail every GitHub Actions 'shell: pwsh' step. Do not ship this."
 else
@@ -336,7 +336,7 @@ fi
 # staging directory as a PERMANENT Defender exclusion and never removed it, so
 # the promoted golden shipped
 #
-#   Get-MpPreference -> ExclusionPath: C:\Windows\Temp\vmh-pwsh-extract-6752
+#   Get-MpPreference -> ExclusionPath: C:\Windows\Temp\gosti-pwsh-extract-6752
 #
 # naming a directory that stopped existing during the very run that added it.
 # Windows reuses PIDs, so any later process drawing 6752 recreates that path
@@ -360,10 +360,10 @@ fi
 # and does not touch Defender preferences, so asserting here is equivalent to
 # asserting immediately before sysprep.
 #
-# Set VMH_SKIP_DEFENDER_GATE=1 only to build an image deliberately carrying a
+# Set GOSTI_SKIP_DEFENDER_GATE=1 only to build an image deliberately carrying a
 # stale exclusion. It is loud on purpose.
-if [[ -n "${VMH_SKIP_DEFENDER_GATE:-}" ]]; then
-  log "WARNING: VMH_SKIP_DEFENDER_GATE set — NOT verifying Defender exclusions."
+if [[ -n "${GOSTI_SKIP_DEFENDER_GATE:-}" ]]; then
+  log "WARNING: GOSTI_SKIP_DEFENDER_GATE set — NOT verifying Defender exclusions."
   log "WARNING: clones of the resulting golden may carry an exclusion naming a"
   log "WARNING: directory that does not exist, which any process reusing that"
   log "WARNING: PID silently inherits as an unscanned path. Do not ship this."
@@ -451,7 +451,7 @@ rm -f "$WORK" "$WORK_NVRAM"
 log "verifying the live golden is untouched: $(stat -c '%n size=%s mtime=%y' "$SRC_GOLDEN")"
 log "DONE. Sysprepped golden: $OUT_GOLDEN"
 log "NEXT: prove distinct SIDs — run the identity gate against \$OUT_GOLDEN, e.g.:"
-log "  VMH_WIN_GOLDEN=$OUT_GOLDEN \\"
-log "  VMH_OVMF_CODE=$OVMF_CODE VMH_OVMF_VARS=$OVMF_VARS \\"
-log "  VMH_GUEST_PASSWORD=$GUEST_PASSWORD \\"
+log "  GOSTI_WIN_GOLDEN=$OUT_GOLDEN \\"
+log "  GOSTI_OVMF_CODE=$OVMF_CODE GOSTI_OVMF_VARS=$OVMF_VARS \\"
+log "  GOSTI_GUEST_PASSWORD=$GUEST_PASSWORD \\"
 log "  bash $SCRIPT_DIR/../../tests/e2e/windows-sysprep/run-sysprep-identity-gate.sh"

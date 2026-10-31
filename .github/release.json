@@ -1,10 +1,9 @@
 {
   "product": "gosti",
-  "versionFile": "vm_harness.nimble",
+  "versionFile": "gosti.nimble",
   "packageName": "metacraft-gosti",
   "commands": [
-    "gosti",
-    "vm-harness"
+    "gosti"
   ],
   "license": "Apache-2.0",
   "summary": "Cross-platform VM lifecycle orchestration",
@@ -84,8 +83,8 @@
   },
   "versionChecks": [
     {
-      "file": "src/vm_harness/backends/qemu_windows_arm.nim",
-      "pattern": "QwaVmHarnessVersion\\*\\s*=\\s*\"([^\"]+)\""
+      "file": "src/gosti/backends/qemu_windows_arm.nim",
+      "pattern": "QwaGostiVersion\\*\\s*=\\s*\"([^\"]+)\""
     }
   ],
   "unsignedReleaseVersion": "0.1.2"

@@ -38,8 +38,8 @@ import std/[json, os, osproc, sequtils, strformat, strutils, tempfiles, times,
             unittest]
 
 import ../native_command_fixture
-import vm_harness/layer_gc
-import vm_harness/backends/libvirt
+import gosti/layer_gc
+import gosti/backends/libvirt
 
 when defined(windows):
   import std/winlean
@@ -111,7 +111,7 @@ type Fixture = object
   golden: string
 
 proc makeFixture(tag: string): Fixture =
-  let root = createTempDir("vmh-layer-gc-" & tag & "-", "")
+  let root = createTempDir("gosti-layer-gc-" & tag & "-", "")
   let pool = root / "pool"
   createDir(pool)
   let golden = root / "golden-base.qcow2"
@@ -420,7 +420,7 @@ suite "layer GC — the stale-overlay sweep":
 suite "layer GC — domain enumeration must fail closed":
   ## The sweep's PRIMARY liveness condition is "is this overlay's instance a
   ## defined domain?". Everything else in this file supplies that set as data,
-  ## which is the module's designed seam — but `vm-harness layer` has to get it
+  ## which is the module's designed seam — but `gosti layer` has to get it
   ## from the host, and how it behaves when it CANNOT is a safety property of
   ## the same weight as the guard itself.
   ##
@@ -438,7 +438,7 @@ suite "layer GC — domain enumeration must fail closed":
     ## including the ones live domains are running on. A caller that deletes
     ## must be able to tell "I could not get the list" from "the list is
     ## empty"; these two assertions are that difference.
-    let dir = createTempDir("vmh-virsh-fail-", "")
+    let dir = createTempDir("gosti-virsh-fail-", "")
     defer: removeDir(dir)
     let virsh = commandFixture(dir / "virsh", %*{
       "errorOutput": "error: failed to connect to the hypervisor\n", "exitCode": 1})
@@ -459,7 +459,7 @@ suite "layer GC — domain enumeration must fail closed":
     ## non-zero. Both have to end in the same place or the guard is closed
     ## against one of them and open against the other.
     let b = newLibvirtBackend(
-      virshCmd = "vm-harness-no-such-virsh-binary-ever")
+      virshCmd = "gosti-no-such-virsh-binary-ever")
     let checked = b.tryListAllDomainNames()
     check not checked.ok
     check checked.names.len == 0
@@ -469,7 +469,7 @@ suite "layer GC — domain enumeration must fail closed":
     ## The positive control. Without it, an implementation that refused
     ## unconditionally would pass both cases above and never enumerate
     ## anything — the `deleteLayer` "arm 2" mistake, one layer up.
-    let dir = createTempDir("vmh-virsh-ok-", "")
+    let dir = createTempDir("gosti-virsh-ok-", "")
     defer: removeDir(dir)
     let virsh = commandFixture(dir / "virsh", %*{
       "output": "win-job-7\n\nlive-job-00\n"})

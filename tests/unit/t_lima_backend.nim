@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## unit_vm_harness_lima_backend — LimaBackend command-construction tests.
+## unit_gosti_lima_backend — LimaBackend command-construction tests.
 ##
-## Mock policy (per design.md §9.1): NO backend mock. These are the
+## Mock policy (per docs/contributors/architecture.md §9.1): NO backend mock. These are the
 ## sanctioned "shell shim" style — a real ``limactl`` stand-in binary on
 ## disk that records its argv and exits 0 — driven through the real
-## ``osproc`` code path. We assert the *commands vm-harness constructs*,
+## ``osproc`` code path. We assert the *commands gosti constructs*,
 ## not any faked behavior:
 ##
 ##  1. ``revertToBaseline`` threads a pinned ``--source-image`` /
@@ -20,8 +20,8 @@
 ## suite is a no-op (the deterministic catalog runs on Nix Linux/macOS).
 
 import std/[os, strutils, tempfiles, unittest]
-import vm_harness/backends/lima
-import vm_harness/types
+import gosti/backends/lima
+import gosti/types
 
 proc writeShim(path, logPath: string) =
   ## A fake ``limactl`` that appends its whole argv (one line per
@@ -40,7 +40,7 @@ when defined(posix):
   suite "LimaBackend command construction":
 
     test "revert threads a pinned source-image into limactl create":
-      let tmp = createTempDir("vmh-lima-unit-", "")
+      let tmp = createTempDir("gosti-lima-unit-", "")
       defer: removeDir(tmp)
       let log = tmp / "limactl.log"
       let shim = tmp / "limactl"
@@ -58,7 +58,7 @@ when defined(posix):
       check ".yaml" notin create
 
     test "revert falls back to the embedded template when unpinned":
-      let tmp = createTempDir("vmh-lima-unit-", "")
+      let tmp = createTempDir("gosti-lima-unit-", "")
       defer: removeDir(tmp)
       let log = tmp / "limactl.log"
       let shim = tmp / "limactl"
@@ -75,7 +75,7 @@ when defined(posix):
       check "template:" notin create
 
     test "copyToGuest of a directory builds a tar-stream, not copy -r":
-      let tmp = createTempDir("vmh-lima-unit-", "")
+      let tmp = createTempDir("gosti-lima-unit-", "")
       defer: removeDir(tmp)
       let log = tmp / "limactl.log"
       let shim = tmp / "limactl"
@@ -97,7 +97,7 @@ when defined(posix):
       check "copy" notin logText
 
     test "copyToGuest of a single file still uses limactl copy":
-      let tmp = createTempDir("vmh-lima-unit-", "")
+      let tmp = createTempDir("gosti-lima-unit-", "")
       defer: removeDir(tmp)
       let log = tmp / "limactl.log"
       let shim = tmp / "limactl"
@@ -122,7 +122,7 @@ when defined(posix):
       # produces a REAL tar from a staged tree so the host-side
       # ``tar -xf`` reconstructs the directory. We assert both the
       # constructed commands AND the reconstructed tree on disk.
-      let tmp = createTempDir("vmh-lima-unit-", "")
+      let tmp = createTempDir("gosti-lima-unit-", "")
       defer: removeDir(tmp)
       let log = tmp / "limactl.log"
       let shim = tmp / "limactl"
@@ -156,7 +156,7 @@ when defined(posix):
       check "'test' '-d'" in logText
       # In-guest archive to a temp .tar FILE (not streamed over stdout).
       check "'tar' '-cf'" in logText
-      check "/tmp/vm-harness-pull" in logText
+      check "/tmp/gosti-pull" in logText
       # The archive is pulled out with a single-file limactl copy — NOT
       # ``limactl copy --recursive`` (the old scp -r path we replaced).
       check "copy --backend=scp" in logText
@@ -166,7 +166,7 @@ when defined(posix):
       check readFile(dest / "file.txt") == "hello"
 
     test "copyFromGuest of a single file still uses limactl copy (no tar)":
-      let tmp = createTempDir("vmh-lima-unit-", "")
+      let tmp = createTempDir("gosti-lima-unit-", "")
       defer: removeDir(tmp)
       let log = tmp / "limactl.log"
       let shim = tmp / "limactl"
@@ -200,7 +200,7 @@ when defined(posix):
       # writeTemplateFile is internal; observe its output via the temp
       # .yaml path handed to ``limactl create`` — the shim copies that
       # file aside so we can read the generated YAML.
-      let tmp = createTempDir("vmh-lima-unit-", "")
+      let tmp = createTempDir("gosti-lima-unit-", "")
       defer: removeDir(tmp)
       let log = tmp / "limactl.log"
       let shim = tmp / "limactl"
@@ -228,7 +228,7 @@ when defined(posix):
       check "    apt-get install -y ripgrep" in yaml
 
     test "no provisionScripts leaves the template byte-identical to the default":
-      let tmp = createTempDir("vmh-lima-unit-", "")
+      let tmp = createTempDir("gosti-lima-unit-", "")
       defer: removeDir(tmp)
       let log = tmp / "limactl.log"
       let shim = tmp / "limactl"

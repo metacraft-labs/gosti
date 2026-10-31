@@ -4,7 +4,7 @@
 ## to drive the real backend against a process that behaves like QEMU.
 ##
 ## THIS FILE IS ``include``d, NOT IMPORTED, and that is deliberate. The fake
-## QEMU is THIS TEST BINARY re-executed with ``$VMH_GOLDEN_FAKE_QEMU=1``
+## QEMU is THIS TEST BINARY re-executed with ``$GOSTI_GOLDEN_FAKE_QEMU=1``
 ## (``getAppFilename()`` is handed to the backend as ``qemuCmd``), following
 ## the existing ``PortListenerHelperEnv`` pattern in
 ## ``t_qemu_windows_arm_backend.nim``. A textual include is what makes the
@@ -34,27 +34,27 @@
 
 import std/[json, net, os, osproc, posix, strutils, tables,
             tempfiles, times, unittest]
-import vm_harness
+import gosti
 import qwa_fixture_paths
 
 const
-  FakeQemuEnv = "VMH_GOLDEN_FAKE_QEMU"
-  FakeSshLogEnv = "VMH_GOLDEN_FAKE_SSH_LOG"
-  FakeSshDirEnv = "VMH_GOLDEN_FAKE_SSH_DIR"
+  FakeQemuEnv = "GOSTI_GOLDEN_FAKE_QEMU"
+  FakeSshLogEnv = "GOSTI_GOLDEN_FAKE_SSH_LOG"
+  FakeSshDirEnv = "GOSTI_GOLDEN_FAKE_SSH_DIR"
   PowerOffFlagName = ".fake-poweroff"
   MonitorLogName = ".fake-monitor-commands"
-  FakeFreezeEnv = "VMH_GOLDEN_FAKE_QEMU_FREEZE_FIRST_BOOT"
+  FakeFreezeEnv = "GOSTI_GOLDEN_FAKE_QEMU_FREEZE_FIRST_BOOT"
   FakeBootCountName = ".fake-boots"
-  FakeSwtpmLogEnv = "VMH_GOLDEN_FAKE_SWTPM_LOG"
+  FakeSwtpmLogEnv = "GOSTI_GOLDEN_FAKE_SWTPM_LOG"
   # The per-job boot's reboot lifecycle (MA4).
-  FakeFirstBootRebootEnv = "VMH_GOLDEN_FAKE_QEMU_FIRST_BOOT_REBOOT"
+  FakeFirstBootRebootEnv = "GOSTI_GOLDEN_FAKE_QEMU_FIRST_BOOT_REBOOT"
     ## Model a generalized golden: reboot ONCE before sshd exists.
-  FakeBootLoopEnv = "VMH_GOLDEN_FAKE_QEMU_BOOT_LOOP"
+  FakeBootLoopEnv = "GOSTI_GOLDEN_FAKE_QEMU_BOOT_LOOP"
     ## Model a guest that restarts forever and never reaches sshd.
-  FakeQmpRefuseEnv = "VMH_GOLDEN_FAKE_QMP_REFUSE"
+  FakeQmpRefuseEnv = "GOSTI_GOLDEN_FAKE_QMP_REFUSE"
     ## Model a QEMU that will not take ``set-action``.
   # The per-job boot's liveness check (MA8).
-  FakeDieAfterSecEnv = "VMH_GOLDEN_FAKE_QEMU_DIE_AFTER_SEC"
+  FakeDieAfterSecEnv = "GOSTI_GOLDEN_FAKE_QEMU_DIE_AFTER_SEC"
     ## Model a QEMU that EXITS partway through the first boot, before sshd
     ## has ever existed. Deliberately NOT tied to ``-no-reboot``: that flag is
     ## only the cause that was caught in the act on 2026-09-15, and the
@@ -62,11 +62,11 @@ const
     ## it. The value is seconds, and must outlast the port-claim handshake
     ## (``QemuPortClaimTimeoutMs``) or the failure under test is replaced by
     ## "QEMU failed to claim an allocated SSH port".
-  FakeDieExitCodeEnv = "VMH_GOLDEN_FAKE_QEMU_DIE_EXIT_CODE"
+  FakeDieExitCodeEnv = "GOSTI_GOLDEN_FAKE_QEMU_DIE_EXIT_CODE"
     ## The status it exits with. Defaults to 0, because rc=0 is what the real
     ## defect produced and a NON-zero status would make the check easy in a
     ## way the real failure is not.
-  FakeDieBySignalEnv = "VMH_GOLDEN_FAKE_QEMU_DIE_BY_SIGNAL"
+  FakeDieBySignalEnv = "GOSTI_GOLDEN_FAKE_QEMU_DIE_BY_SIGNAL"
     ## Exit by raising a signal on itself instead, so the "killed by signal
     ## N" half of the exit-status decoding is exercised against a real
     ## ``waitpid`` status rather than a hand-built one.
@@ -433,7 +433,7 @@ proc socketExists(path: string): bool =
 proc writeFakeSwtpm(path: string) =
   ## Creates the control socket ``startSwtpmInBackground`` waits for, then
   ## stays alive as the real one does. Records every start in
-  ## ``$VMH_GOLDEN_FAKE_SWTPM_LOG`` when that is set, because a power cycle
+  ## ``$GOSTI_GOLDEN_FAKE_SWTPM_LOG`` when that is set, because a power cycle
   ## has to bring swtpm back as well as QEMU and "it was started twice" is
   ## the only way to see that from outside.
   writeExecutable(path, """#!/bin/sh
@@ -442,8 +442,8 @@ for a in "$@"; do
     type=unixio,path=*) : > "${a#type=unixio,path=}" ;;
   esac
 done
-if [ -n "${VMH_GOLDEN_FAKE_SWTPM_LOG:-}" ]; then
-  printf 'started %s\n' "$*" >> "$VMH_GOLDEN_FAKE_SWTPM_LOG"
+if [ -n "${GOSTI_GOLDEN_FAKE_SWTPM_LOG:-}" ]; then
+  printf 'started %s\n' "$*" >> "$GOSTI_GOLDEN_FAKE_SWTPM_LOG"
 fi
 sleep 120
 """)
@@ -454,8 +454,8 @@ proc writeFakeSshpass(path: string) =
   writeExecutable(path, """#!/bin/sh
 last=""
 for a in "$@"; do last="$a"; done
-if [ -n "${VMH_GOLDEN_FAKE_SSH_LOG:-}" ]; then
-  printf '%s\n' "$last" >> "$VMH_GOLDEN_FAKE_SSH_LOG"
+if [ -n "${GOSTI_GOLDEN_FAKE_SSH_LOG:-}" ]; then
+  printf '%s\n' "$last" >> "$GOSTI_GOLDEN_FAKE_SSH_LOG"
 fi
 case "$last" in
   *"echo ready"*)
@@ -463,34 +463,34 @@ case "$last" in
     # AFTER its simulated reboot, because that is when the real guest's
     # FirstLogonCommands start sshd -- a probe that answered before the
     # reboot would make the whole reboot question invisible.
-    if [ -f "$VMH_GOLDEN_FAKE_SSH_DIR/ssh-ready" ]; then
+    if [ -f "$GOSTI_GOLDEN_FAKE_SSH_DIR/ssh-ready" ]; then
       echo "ready"
       exit 0
     fi
     exit 1
     ;;
-  *VMH-SYSPREP-RUNNING*)
+  *GOSTI-SYSPREP-RUNNING*)
     # The "is sysprep still alive?" probe. Gated on a file so a test can say
     # which answer it wants -- the whole point of the check is that a launch
     # reporting success and a sysprep actually running are different facts.
-    if [ -f "$VMH_GOLDEN_FAKE_SSH_DIR/sysprep-running" ]; then
-      echo "VMH-SYSPREP-RUNNING"
+    if [ -f "$GOSTI_GOLDEN_FAKE_SSH_DIR/sysprep-running" ]; then
+      echo "GOSTI-SYSPREP-RUNNING"
       exit 0
     fi
     exit 1
     ;;
   *repro-install-done*)
-    if [ -f "$VMH_GOLDEN_FAKE_SSH_DIR/sentinel" ]; then
-      echo "VMH-INSTALL-DONE"
+    if [ -f "$GOSTI_GOLDEN_FAKE_SSH_DIR/sentinel" ]; then
+      echo "GOSTI-INSTALL-DONE"
       exit 0
     fi
     exit 1
     ;;
   *sysprep.exe*)
-    : > "$VMH_GOLDEN_FAKE_SSH_DIR/sysprep-launched"
-    printf '%s\n' "$last" > "$VMH_GOLDEN_FAKE_SSH_DIR/sysprep-command"
-    if [ -n "${VMH_GOLDEN_FAKE_SSH_VMDIR:-}" ]; then
-      : > "$VMH_GOLDEN_FAKE_SSH_VMDIR/.fake-poweroff"
+    : > "$GOSTI_GOLDEN_FAKE_SSH_DIR/sysprep-launched"
+    printf '%s\n' "$last" > "$GOSTI_GOLDEN_FAKE_SSH_DIR/sysprep-command"
+    if [ -n "${GOSTI_GOLDEN_FAKE_SSH_VMDIR:-}" ]; then
+      : > "$GOSTI_GOLDEN_FAKE_SSH_VMDIR/.fake-poweroff"
     fi
     exit 0
     ;;

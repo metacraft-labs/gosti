@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## integration_vm_harness_utm_lifecycle (M3 verification).
+## integration_gosti_utm_lifecycle (M3 verification).
 ##
 ## Exercises every ``UtmBackend`` method against a real UTM-managed
 ## Windows-on-ARM guest cloned from the ``repro-windows-arm-base.utm``
@@ -12,7 +12,7 @@
 ## - Not a macOS host (UTM is Apple-Silicon-only).
 ## - ``utmctl`` or ``sshpass`` aren't on PATH.
 ## - The golden bundle ``repro-windows-arm-base`` (or the override
-##   ``VMH_UTM_GOLDEN``) is not registered with UTM. The recipe under
+##   ``GOSTI_UTM_GOLDEN``) is not registered with UTM. The recipe under
 ##   ``guest-recipes/windows-arm-base/README.md`` documents the one-time
 ##   build path that produces the bundle.
 ##
@@ -29,21 +29,21 @@
 ##   reports it.
 
 import std/[options, os, strutils, tables, tempfiles, unittest]
-import vm_harness
+import gosti
 
 when not defined(macosx):
   echo "[skip] t_utm_lifecycle: integration test requires a macOS host"
   quit(0)
 
-# Tunables — VMH_UTM_GOLDEN overrides the default bundle name; helpful
+# Tunables — GOSTI_UTM_GOLDEN overrides the default bundle name; helpful
 # for CI matrices that build AH-branded variants alongside the generic
 # windows-arm-base.
 let
-  goldenOverride = getEnv("VMH_UTM_GOLDEN", "")
-  envBootTimeout = getEnv("VMH_UTM_BOOT_TIMEOUT", "240")
-  envSshTimeout = getEnv("VMH_UTM_SSH_TIMEOUT", "240")
-  envSshUser = getEnv("VMH_UTM_SSH_USER", "admin")
-  envSshPassword = getEnv("VMH_UTM_SSH_PASSWORD", "repro-windows-arm")
+  goldenOverride = getEnv("GOSTI_UTM_GOLDEN", "")
+  envBootTimeout = getEnv("GOSTI_UTM_BOOT_TIMEOUT", "240")
+  envSshTimeout = getEnv("GOSTI_UTM_SSH_TIMEOUT", "240")
+  envSshUser = getEnv("GOSTI_UTM_SSH_USER", "admin")
+  envSshPassword = getEnv("GOSTI_UTM_SSH_PASSWORD", "repro-windows-arm")
 
 proc makeBackend(): UtmBackend =
   result = newUtmBackend(
@@ -83,7 +83,7 @@ suite "UtmBackend lifecycle (Windows ARM guest)":
     elif not goldenExists(b):
       echo "[skip] golden UTM bundle '" & b.goldenBundleName &
            "' is not registered with UTM. Build it once via " &
-           "vm-harness/guest-recipes/windows-arm-base/ and import the " &
+           "gosti/guest-recipes/windows-arm-base/ and import the " &
            "resulting .utm bundle into UTM."
       skip()
     else:
@@ -101,23 +101,23 @@ suite "UtmBackend lifecycle (Windows ARM guest)":
 
       # 1. execInGuest carries env into the guest's cmd.exe shell.
       let r = b.execInGuest(vm,
-        env = {"VMH_TEST_KEY": "vmh-test-value"}.toTable,
-        cmd = @["cmd", "/c", "echo %VMH_TEST_KEY% & hostname"],
+        env = {"GOSTI_TEST_KEY": "gosti-test-value"}.toTable,
+        cmd = @["cmd", "/c", "echo %GOSTI_TEST_KEY% & hostname"],
         timeoutSec = 60)
       check r.exitCode == 0
-      check "vmh-test-value" in r.stdout
+      check "gosti-test-value" in r.stdout
       # Hostname must be non-empty.
       check r.stdout.strip().len > 0
 
       # 2. copyToGuest + copyFromGuest round-trip a file via
       # ``C:\Users\<user>\AppData\Local\Temp`` which always exists.
-      let tmpDir = createTempDir("vmh-utm-copy-", "")
+      let tmpDir = createTempDir("gosti-utm-copy-", "")
       defer: removeDir(tmpDir)
       let srcPath = tmpDir / "payload.txt"
       let dstPath = tmpDir / "harvested.txt"
-      let payload = "vm-harness-utm-roundtrip-" & $getCurrentProcessId()
+      let payload = "gosti-utm-roundtrip-" & $getCurrentProcessId()
       writeFile(srcPath, payload)
-      let guestPath = "C:\\Users\\" & envSshUser & "\\vmh-payload.txt"
+      let guestPath = "C:\\Users\\" & envSshUser & "\\gosti-payload.txt"
       b.copyToGuest(vm, srcPath, guestPath)
       b.copyFromGuest(vm, guestPath, dstPath)
       check fileExists(dstPath)

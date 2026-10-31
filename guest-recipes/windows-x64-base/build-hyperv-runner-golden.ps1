@@ -51,7 +51,7 @@ param(
   [string] $SwitchName = 'Default Switch',
   # Distinct from build-golden-hyperv.ps1's default so a hand-kept authoring VM
   # of that name is never removed by a pipeline run.
-  [string] $VmName = 'vmh-runner-golden-build',
+  [string] $VmName = 'gosti-runner-golden-build',
   [string] $Bash = 'C:\PortableGit\bin\bash.exe',
   [int] $TimeoutMinutes = 120,
   [switch] $DisableDefender,
@@ -150,7 +150,7 @@ $firstBoot = Join-Path $WorkDir 'first-boot.ps1'
   Set-Content -LiteralPath $firstBoot -Encoding UTF8
 
 function Bash([string]$script, [string[]]$argv) {
-  $env:VMH_BUILD_DIR = $buildDir -replace '\\', '/'
+  $env:GOSTI_BUILD_DIR = $buildDir -replace '\\', '/'
   & $Bash $script @argv
   if ($LASTEXITCODE -ne 0) { throw "$script failed ($LASTEXITCODE)" }
 }
@@ -180,30 +180,60 @@ Log "verifying the captured disk offline"
 $problems = @()
 Mount-VHD -Path $tmp -ReadOnly
 try {
+  # FIND THE WINDOWS VOLUME, AND WAIT FOR IT. Mount-VHD returns as soon as the
+  # disk is attached; its volumes surface, and get their drive letters, a
+  # moment later. Right after the offline Defender pass has dismounted this
+  # same disk that moment is long enough to lose. On win-ci-bare-001
+  # (2026-10-27 20:54:31Z) the build refused one second after mounting, with
+  # ALL SIX required files "missing" -- pwsh included, which the same build
+  # had just logged as "PowerShell 7 present" in the guest -- and no failure
+  # marker or registration state reported. The one reading that fits is that
+  # no lettered volume was found and the fallback read the partition back
+  # before its letter existed, so `$r` was a bare ':' and every path below was
+  # ':\...'. The next tick published the identical build. So: poll for
+  # a lettered volume carrying ntoskrnl.exe, assign a letter once if none
+  # turns up, and refuse with a DIFFERENT message if no root is ever found --
+  # "could not read the disk" must never be reported as "the disk is empty".
   $disk = Get-VHD -Path $tmp | Get-Disk
-  $win = Get-Partition -DiskNumber $disk.Number | Get-Volume |
-    Where-Object { $_.DriveLetter -and (Test-Path "$($_.DriveLetter):\Windows\System32\ntoskrnl.exe") } |
-    Select-Object -First 1
-  if (-not $win) {
-    # Read-only mounts may not auto-assign letters; give the largest partition one.
-    $part = Get-Partition -DiskNumber $disk.Number | Sort-Object Size -Descending | Select-Object -First 1
-    $part | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction SilentlyContinue
-    $win = $part | Get-Volume
+  $findWindowsRoot = {
+    $v = Get-Partition -DiskNumber $disk.Number | Get-Volume -ErrorAction SilentlyContinue |
+      Where-Object { $_.DriveLetter -and (Test-Path "$($_.DriveLetter):\Windows\System32\ntoskrnl.exe") } |
+      Select-Object -First 1
+    if ($v) { "$($v.DriveLetter):" } else { $null }
   }
-  $r = "$($win.DriveLetter):"
+  $r = $null
+  $assigned = $false
+  $assignAt = (Get-Date).AddSeconds(10)
+  $deadline = (Get-Date).AddSeconds(120)
+  while (-not $r) {
+    $r = & $findWindowsRoot
+    if ($r) { break }
+    if ((Get-Date) -gt $deadline) { break }
+    if (-not $assigned -and (Get-Date) -gt $assignAt) {
+      # Read-only mounts may not auto-assign letters; give the largest partition one.
+      $part = Get-Partition -DiskNumber $disk.Number | Sort-Object Size -Descending | Select-Object -First 1
+      $part | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction SilentlyContinue
+      $assigned = $true
+    }
+    Start-Sleep -Seconds 2
+  }
+  if (-not $r) {
+    throw "offline verification could not locate the Windows volume on $tmp (disk $($disk.Number)) within 120 s; nothing was checked ($tmp kept for inspection)"
+  }
+  Log "offline verification reading $r"
   foreach ($must in 'actions-runner\config.cmd', 'actions-runner\run.cmd',
-                    'actions-runner\bin\Runner.Listener.exe', 'actions-runner\.vmh-staged',
+                    'actions-runner\bin\Runner.Listener.exe', 'actions-runner\.gosti-staged',
                     'PortableGit\bin\bash.exe', 'pwsh\pwsh.exe') {
     if (-not (Test-Path -LiteralPath "$r\$must")) { $problems += "missing $must" }
   }
   foreach ($mustNot in 'actions-runner\.runner', 'actions-runner\.credentials') {
     if (Test-Path -LiteralPath "$r\$mustNot") { $problems += "golden carries registration state: $mustNot" }
   }
-  foreach ($failed in 'vmh-runner-stage-failed', 'vmh-git-provision-failed', 'vmh-pwsh-provision-failed') {
+  foreach ($failed in 'gosti-runner-stage-failed', 'gosti-git-provision-failed', 'gosti-pwsh-provision-failed') {
     $f = "$r\Windows\Temp\$failed"
     if (Test-Path -LiteralPath $f) { $problems += "${failed}: $((Get-Content -LiteralPath $f -Raw).Trim())" }
   }
-  $staged = if (Test-Path "$r\actions-runner\.vmh-staged") { (Get-Content "$r\actions-runner\.vmh-staged" -Raw).Trim() } else { '' }
+  $staged = if (Test-Path "$r\actions-runner\.gosti-staged") { (Get-Content "$r\actions-runner\.gosti-staged" -Raw).Trim() } else { '' }
   if ($staged -and $staged -ne $RunnerVersion) { $problems += "staged runner $staged != pinned $RunnerVersion" }
 } finally {
   Dismount-VHD -Path $tmp

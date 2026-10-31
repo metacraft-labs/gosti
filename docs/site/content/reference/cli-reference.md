@@ -9,7 +9,7 @@ slug: cli-reference
 The `gosti` binary is built by `just build` to `build/bin/gosti` and
 installed by the Nix package to `$out/bin/gosti`. Run `gosti --help`
 for the built-in usage text. This page documents every subcommand and flag as
-verified against `src/vm_harness/cli.nim`.
+verified against `src/gosti/cli.nim`.
 
 ```
 gosti <subcommand> [flags] [-- <command args>]
@@ -28,10 +28,14 @@ ERROR / usage error, `130` INCOMPLETE (interrupted).
 | `run` | One-shot revert + exec + harvest + cleanup (the gate runner). |
 | `run --ephemeral` | libvirt/incus: launch one per-job clone, probe, destroy (no residue). |
 | `ephemeral-destroy` | libvirt/incus: reclaim an instance left by `run --ephemeral --keep`. |
+| `ephemeral-list` | List the per-job instances `run --ephemeral --keep` left on `--backend`, as one JSON line. |
+| `ephemeral-label` | Record `--label k=v` attribution for a kept instance; removed by `ephemeral-destroy`. |
 | `instance start\|ssh\|exec\|status\|logs\|stop\|destroy\|screenshot NAME --state-dir ROOT` | [Durable installed Linux/libvirt VM lifecycle](/guides/durable-media). |
+| `instance wait\|exec\|copy-to\|copy-from\|start\|stop --backend incus NAME` | Operate on an existing Incus system container through typed backend methods. |
 | `probe` | Print available backends as JSON (capability detection). |
+| `manifest` | Print this host's capability manifest as JSON; with `--remote <addr>`, fetch a remote daemon's signed identity and manifest. |
 | `backends` | Tabular listing of every known backend (`*` = registered here). |
-| `shell` | (Placeholder in M0) open an interactive shell into a baseline. |
+| `shell` | (Placeholder) open an interactive shell into a baseline. |
 | `snapshot create\|restore\|list` | Snapshot lifecycle for the resolved backend. |
 | `baseline export\|import` | Export/import a baseline (and its snapshot tree). |
 | `prune` | Reclaim ephemeral instances leaked by hard-killed launchers. |
@@ -45,6 +49,29 @@ gosti provision --backend <id|auto> --guest <linux|windows|macos> \
 ```
 
 Builds the baseline if absent; no-op if present. `--baseline` is required.
+
+### `boot`
+
+```sh
+gosti boot --backend auto --source-image <media> \
+  [--acceleration <auto|kvm|tcg>] [--graphics <none|vnc|spice>] \
+  [--ssh-ready-timeout-sec <seconds>] \
+  (--keep | --expect <serial-regex>)
+```
+
+Libvirt defaults to hardware acceleration when it is available. Select `tcg`
+for QEMU software emulation on hosts where KVM is unavailable or nested KVM is
+unreliable; TCG uses libvirt's portable `qemu64` CPU model rather than
+`host-model`.
+
+For libvirt media boots, a command after `--` runs through the loopback SSH
+forward. Select key-only authentication with `--ssh-forward-port auto`,
+`--ssh-user <user>`, and `--ssh-private-key <path>`. Persist and verify the
+guest host identity with `--ssh-known-hosts <path>` and a stable
+`--ssh-host-key-alias <name>` when automatic forwarding may select a different
+port on each boot. Password-based guests can instead use
+`--ssh-password-env <name>`; the two authentication options are mutually
+exclusive.
 
 ### `install`
 
@@ -81,19 +108,40 @@ command after `--` are required.
 libvirt (CoW-clone VM) or incus (fresh container). Launch a fresh clone, probe
 it, destroy it leaving no residue.
 
-- incus: `run --ephemeral --backend incus --baseline <container> [--base-image <alias>] [--user-data <file>] [--incus-security-nesting] [--incus-nested-kvm] -- <probe cmd>`. Default base image `vmh-base`; `--user-data` injects cloud-init (the JIT seam); the probe defaults to `true`. The capability flags are trusted-controller options configured before first start; nested KVM implies nesting.
+- incus: `run --ephemeral --backend incus --baseline <container> [--base-image <alias>] [--user-data <file>] [--incus-security-nesting] [--incus-nested-kvm] -- <probe cmd>`. Default base image `gosti-base`; `--user-data` injects cloud-init (the JIT seam); the probe defaults to `true`. The capability flags are trusted-controller options configured before first start; nested KVM implies nesting.
 - libvirt: `run --ephemeral --baseline <vm> --golden-image <qcow2> [--user-data <file>] [--kernel/-initrd/-kernel-cmdline ...] [--uefi-loader/-uefi-nvram-template ...] -- [expected-serial-marker]`. A positional arg after `--` is an expected serial boot-marker substring.
 - `--keep`: clone + boot (UEFI) and leave the domain running (no probe/teardown); reclaim it later with `ephemeral-destroy`. Used to drive an out-of-band in-guest probe (e.g. the Windows JIT bootstrap over SSH).
 
 ### `ephemeral-destroy`
 
 ```
-gosti ephemeral-destroy --baseline <vm>
+gosti ephemeral-destroy --backend <libvirt|incus> --baseline <instance>
 ```
 
-libvirt-only. Reclaims a clone left running by `run --ephemeral --keep`:
-`virsh destroy` + `virsh undefine --nvram` + remove the overlay, config-drive
-ISO, and per-job OVMF nvram. The golden and OVMF template are never touched.
+For libvirt, reclaims a clone left running by `run --ephemeral --keep` with
+`virsh destroy`, `virsh undefine --nvram`, and removal of its overlay,
+config-drive ISO, and per-job OVMF nvram. For Incus, force-deletes only the
+named container, retrying a busy delete, and exits non-zero if the container
+still exists afterwards. The golden/base image is never touched.
+
+### `instance` (Incus)
+
+For retained installed Linux VMs, see [Durable media instances](/guides/durable-media).
+These commands operate on an existing Incus container:
+
+```console
+gosti instance wait --backend incus <name>
+gosti instance exec --backend incus <name> -- <command...>
+gosti instance copy-to --backend incus <name> <host-path> <guest-path>
+gosti instance copy-from --backend incus <name> <guest-path> <host-path>
+gosti instance start --backend incus <name>
+gosti instance stop --backend incus <name>
+```
+
+They never delete the container implicitly. `wait`, `exec`, and both transfer
+commands require the container to be running and exec-ready. `start` is
+idempotent for a running container; `stop` is idempotent for a stopped
+container. Missing containers are hard errors.
 
 ### `probe` / `backends`
 
@@ -111,8 +159,9 @@ gosti snapshot list <vm>
 ```
 
 `--running` captures RAM + CPU + device state so restore resumes from memory
-instead of a fresh boot (Hyper-V Standard Checkpoint; Tart `tart suspend`
-planned). Backends without snapshot support raise `BackendUnavailableError`.
+instead of a fresh boot (Hyper-V Standard Checkpoint; libvirt live external
+snapshot). Incus takes a filesystem snapshot either way. Tart does not support
+`--running`. Backends without snapshot support raise `BackendUnavailableError`.
 
 ### `baseline`
 
@@ -149,7 +198,7 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--guest <linux\|windows\|macos>` | Required when `--backend auto`. |
 | `--allow-noop-fallback` | Use `NoopBackend` if the real backend isn't installed (selection tests on hypervisor-less hosts). |
 | `--baseline <name>` | Logical baseline tag (== libvirt domain name). |
-| `--name <vm>` | Alias for `--baseline` (canonical libvirt-M4 command shape); if both are given they must match. |
+| `--name <vm>` | Alias for `--baseline` (the libvirt command shape); if both are given they must match. |
 
 ### Baseline sizing
 
@@ -160,6 +209,7 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--memory-gb <int>` | — | Alias for `--memory-mb`, in GiB (converted at parse time). |
 | `--disk-gb <int>` | 50 | Per-job guest disk in GiB (Tart: decimal GB). A clone smaller than this is grown before boot: libvirt overlay / qcow2 import and Windows-ARM QEMU overlay via `qemu-img`, UTM clone via `qemu-img resize`, Hyper-V clone and qcow2 conversion via `Resize-VHD`, Tart Linux via `tart set --disk-size`. Once the guest is reachable its system volume is grown (Linux growpart + resize2fs, Windows `Resize-Partition`) and verified, failing with `GuestDiskNotGrownError` otherwise. Disks never shrink: an explicit value below the image's size is refused (`DiskSizeTooSmallError`); the omitted default keeps a larger image. Tart macOS clones keep the image's size. |
 | `--source-image <ref>` | — | Backend-specific base image reference. |
+| `--acceleration <auto\|kvm\|tcg>` | `auto` | Libvirt media-boot execution mode. `tcg` uses QEMU software emulation. |
 
 ### Recipe / Windows provisioning
 
@@ -178,7 +228,7 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--ephemeral` | Run one per-job CoW-clone VM / fresh container, then destroy it. |
 | `--keep` | libvirt: with `--ephemeral`, leave the domain running for an out-of-band probe; reclaim with `ephemeral-destroy`. |
 | `--golden-image <path>` | libvirt: golden qcow2 the overlay is cloned from. Requires `--ephemeral`. |
-| `--base-image <alias>` | incus: base image alias the container launches from (default `vmh-base`). |
+| `--base-image <alias>` | incus: base image alias the container launches from (default `gosti-base`). |
 | `--incus-security-nesting` | Incus ephemeral runs only: before first start, enable `security.nesting` and the fixed mknod/setxattr intercepts needed by unprivileged nested containers. Default off. |
 | `--incus-nested-kvm` | Incus ephemeral runs only: before first start, imply nesting and attach the fixed host `/dev/kvm` → guest `/dev/kvm` unix-char device at mode `0666`; verify that exact guest mode and a real read/write open before returning. Default off. |
 | `--kernel` / `--initrd` / `--kernel-cmdline` | libvirt: optional direct-kernel-boot for the tiny-Linux golden. |
@@ -210,13 +260,36 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--sweep-tmp` | Also age-sweep transient `/tmp` scratch. |
 | `--dry-run` | Report what would be reclaimed. |
 
+### Path-pair arguments
+
+`--copy-to`, `--copy-from` and `--mount` take two non-empty filesystem paths
+separated by `:`. An absolute Windows source such as
+`C:\source:/guest` keeps its drive colon; the following colon separates the
+paths. The destination is preserved verbatim, including its own drive colon.
+`--install-shim` instead takes a binary name and a log path, so
+`C:/host/log` still names the binary `C` and the log `/host/log`.
+
+A single-colon pair such as `a:/guest` retains its existing POSIX meaning.
+The spelling `a:/guest:part` is ambiguous: it is treated as the Windows source
+`a:/guest` and destination `part`. Spell a single-letter relative POSIX source
+as `./a:/guest:part` to select source `./a` and destination `/guest:part`.
+There is no new escaping syntax. Drive-relative and extended-length Windows
+source paths are outside this syntax; only a drive-letter absolute source
+gets special treatment.
+
 ## Environment variables
 
-Beyond flags, several backends and recipes read `VMH_*` environment variables
+Beyond flags, several backends and recipes read `GOSTI_*` environment variables
 (tool paths, credentials, timeouts, golden/ISO locations) and the recipes take
-`VMH_RUNNER_*` build seams. These are catalogued in the
+`GOSTI_RUNNER_*` build seams. These are catalogued in the
 [Parameters catalog](/reference/parameters). The most commonly used from the CLI:
 
-- `VMH_INCUS_CMD` — override the incus invocation, e.g. `"sudo -n incus"`.
-- `VMH_RECIPES_DIR` — override where `--recipe <id>` is resolved from.
-- `VMH_TART_CMD` — override the `tart` binary path (also honored by `prune`).
+- `GOSTI_INCUS_CMD` — override the incus invocation, e.g. `"sudo -n incus"`.
+- `GOSTI_RECIPES_DIR` — override where `--recipe <id>` is resolved from.
+- `GOSTI_TART_CMD` — override the `tart` binary path (also honored by `prune`).
+
+The two Incus capability flags are accepted only with
+`run --ephemeral --backend incus`. They are host privileges selected by a local
+Incus administrator or by the authenticated `gosti serve` fleet controller.
+They must never be derived from workflow or guest user-data. Their device
+path, type, and mode are intentionally not parameterized.

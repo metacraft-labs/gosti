@@ -4,7 +4,7 @@
 ## a module. Copied into the reprobuild tree at build time by build-rp5c1.sh so
 ## that reprobuild's config.nims supplies the compiler's own --path set; the
 ## printed command is exactly the RP1 provider-compile edge's invocation, from
-## which build-rp5c1.sh derives the vm-harness provider/test compile.
+## which build-rp5c1.sh derives the gosti provider/test compile.
 import repro_interface_artifacts
 import os
 let modulePath = paramStr(1)

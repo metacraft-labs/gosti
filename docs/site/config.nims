@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-# vm-harness docs site -- Nim path/define switching for the isonim-docs SSG.
+# gosti docs site -- Nim path/define switching for the isonim-docs SSG.
 #
-# This consumer builds the vm-harness documentation site on top of the
+# This consumer builds the gosti documentation site on top of the
 # isonim-docs static-site framework. The framework, isonim, and the shared Nim
 # libraries it needs (nim-everywhere, nim-faststreams, nim-stew, and isonim's
 # vendored chronicles/serialization/json_serialization) live OUTSIDE this repo
-# -- vm-harness is a standalone repo, so it declares them as flake INPUTS
+# -- gosti is a standalone repo, so it declares them as flake INPUTS
 # (see ./flake.nix) rather than relying on sibling checkouts.
 #
 # `nim c`'s config lookup walks up from the *project* (entry) file's own
@@ -16,15 +16,15 @@
 # config.nims sets up therefore has to be set up here too.
 #
 # SELF-CONTAINED MECHANISM: the paths are read from environment variables the
-# flake's devShell exports (VMH_DOCS_*), each pointing at the corresponding
+# flake's devShell exports (GOSTI_DOCS_*), each pointing at the corresponding
 # input's Nix store source. When those env vars are unset (e.g. someone runs
 # `nim c` outside the dev shell in a legacy sibling-checkout layout) we fall
 # back to a sibling path, so both modes work. The design-system root is passed
-# on to `theme_tokens.nim` as a compile-time define (`vmhDocsDesignSystem`)
+# on to `theme_tokens.nim` as a compile-time define (`gostiDocsDesignSystem`)
 # because it is `staticRead` there and so must be known at compile time.
 import std/os
 
-let here = currentSourcePath().parentDir()      ## .../vm-harness/docs/site
+let here = currentSourcePath().parentDir()      ## .../gosti/docs/site
 let siblingRoot = here / "../../.."              ## sibling-checkout fallback root
 
 proc pathFor(envName, fallback: string): string =
@@ -32,13 +32,13 @@ proc pathFor(envName, fallback: string): string =
   if existsEnv(envName) and getEnv(envName).len > 0: getEnv(envName)
   else: fallback
 
-let isonimSrc      = pathFor("VMH_DOCS_ISONIM_SRC",        siblingRoot / "isonim/src")
-let isonimDocsSrc  = pathFor("VMH_DOCS_ISONIM_DOCS_SRC",   siblingRoot / "isonim-docs/src")
-let nimEverywhere  = pathFor("VMH_DOCS_NIM_EVERYWHERE_SRC", siblingRoot / "nim-everywhere/src")
-let nimFaststreams = pathFor("VMH_DOCS_NIM_FASTSTREAMS",   siblingRoot / "nim-faststreams")
-let nimStew        = pathFor("VMH_DOCS_NIM_STEW",          siblingRoot / "nim-stew")
-let isonimVendor   = pathFor("VMH_DOCS_ISONIM_VENDOR",     siblingRoot / "isonim/vendor")
-let designSystem   = pathFor("VMH_DOCS_DESIGN_SYSTEM",     siblingRoot / "codetracer-design-system")
+let isonimSrc      = pathFor("GOSTI_DOCS_ISONIM_SRC",        siblingRoot / "isonim/src")
+let isonimDocsSrc  = pathFor("GOSTI_DOCS_ISONIM_DOCS_SRC",   siblingRoot / "isonim-docs/src")
+let nimEverywhere  = pathFor("GOSTI_DOCS_NIM_EVERYWHERE_SRC", siblingRoot / "nim-everywhere/src")
+let nimFaststreams = pathFor("GOSTI_DOCS_NIM_FASTSTREAMS",   siblingRoot / "nim-faststreams")
+let nimStew        = pathFor("GOSTI_DOCS_NIM_STEW",          siblingRoot / "nim-stew")
+let isonimVendor   = pathFor("GOSTI_DOCS_ISONIM_VENDOR",     siblingRoot / "isonim/vendor")
+let designSystem   = pathFor("GOSTI_DOCS_DESIGN_SYSTEM",     siblingRoot / "codetracer-design-system")
 
 switch("path", isonimSrc)
 switch("path", isonimDocsSrc) ## the framework (isonim-docs), a PATH dependency
@@ -53,7 +53,7 @@ switch("define", "chronicles_sinks=textlines[stderr]")
 switch("define", "chronicles_runtime_filtering=on")
 switch("define", "chronicles_log_level=TRACE")
 # Hand the design-system root to theme_tokens.nim's compile-time `staticRead`.
-switch("define", "vmhDocsDesignSystem:" & designSystem)
+switch("define", "gostiDocsDesignSystem:" & designSystem)
 
 # Self-contained SSR: the framework's own top-level module is named `ssr`, and
 # so is THIS package's thin SSR entry (src/ssr.nim) -- a bare `import ssr` there

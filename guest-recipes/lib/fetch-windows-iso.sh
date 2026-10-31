@@ -35,7 +35,7 @@
 # moving target, and owning it is precisely what has left Mido broken for
 # over a year. Fido is maintained by the person who reverse-engineered it.
 #
-# LICENSING. Fido is GPL-3.0 and vm-harness is MIT. This script INVOKES it as
+# LICENSING. Fido is GPL-3.0 and gosti is MIT. This script INVOKES it as
 # an external tool — the same relationship as calling `gcc` — and never
 # vendors, commits, or redistributes its source. Do not check Fido.ps1 into
 # this repository.
@@ -61,12 +61,12 @@
 #   ./fetch-windows-iso.sh --arch arm64 --edition Pro --output ...
 #
 # Environment:
-#   VMH_WINDOWS_ISO_SHA256   expected sha256; verified and enforced when set.
+#   GOSTI_WINDOWS_ISO_SHA256   expected sha256; verified and enforced when set.
 #                            When unset the computed digest is written to
 #                            <output>.sha256 so the next build can pin it.
-#   VMH_FIDO_COMMIT          override the pinned Fido commit (see below).
-#   VMH_FIDO_SHA256          override the expected Fido.ps1 digest.
-#   VMH_ISO_URL_TTL_HOURS    cached-link lifetime (default 20; Microsoft's
+#   GOSTI_FIDO_COMMIT          override the pinned Fido commit (see below).
+#   GOSTI_FIDO_SHA256          override the expected Fido.ps1 digest.
+#   GOSTI_ISO_URL_TTL_HOURS    cached-link lifetime (default 20; Microsoft's
 #                            own validity is ~24h, so we expire earlier).
 
 set -euo pipefail
@@ -74,8 +74,8 @@ set -euo pipefail
 # Fido is pinned by COMMIT, not by branch: `master` is a moving ref, and a
 # script that fetches and then executes a moving ref is an unpinned remote
 # code dependency. The digest is checked before it is ever run.
-FIDO_COMMIT="${VMH_FIDO_COMMIT:-3d47260b8915385c58e20c73e24b36e9a9536f3f}"
-FIDO_SHA256="${VMH_FIDO_SHA256:-24c86067fa399d2fd75ef0693a2ec79ca8db162827f808caac03541cbf640c13}"
+FIDO_COMMIT="${GOSTI_FIDO_COMMIT:-3d47260b8915385c58e20c73e24b36e9a9536f3f}"
+FIDO_SHA256="${GOSTI_FIDO_SHA256:-24c86067fa399d2fd75ef0693a2ec79ca8db162827f808caac03541cbf640c13}"
 FIDO_URL="https://raw.githubusercontent.com/pbatard/Fido/${FIDO_COMMIT}/Fido.ps1"
 
 WIN_VER="11"
@@ -84,7 +84,7 @@ EDITION="Pro"
 LANG_NAME="English"
 RELEASE="Latest"
 OUTPUT=""
-URL_TTL_HOURS="${VMH_ISO_URL_TTL_HOURS:-20}"
+URL_TTL_HOURS="${GOSTI_ISO_URL_TTL_HOURS:-20}"
 MAX_ATTEMPTS=5
 
 while [[ $# -gt 0 ]]; do
@@ -128,12 +128,12 @@ verify_digest() {
 # 0. Already have it?
 # ---------------------------------------------------------------------------
 if [[ -f "${OUTPUT}" ]]; then
-  if [[ -n "${VMH_WINDOWS_ISO_SHA256:-}" ]]; then
-    if verify_digest "${OUTPUT}" "${VMH_WINDOWS_ISO_SHA256}" >/dev/null; then
+  if [[ -n "${GOSTI_WINDOWS_ISO_SHA256:-}" ]]; then
+    if verify_digest "${OUTPUT}" "${GOSTI_WINDOWS_ISO_SHA256}" >/dev/null; then
       log "ISO already present and matches the pinned digest: ${OUTPUT}"
       exit 0
     fi
-    log "WARNING: ${OUTPUT} exists but does NOT match VMH_WINDOWS_ISO_SHA256."
+    log "WARNING: ${OUTPUT} exists but does NOT match GOSTI_WINDOWS_ISO_SHA256."
     log "         Refusing to overwrite. Move it aside or clear the pin."
     exit 1
   fi
@@ -194,7 +194,7 @@ fetch-windows-iso: Fido.ps1 digest mismatch — REFUSING TO RUN IT.
 This script downloads and executes Fido, so the digest is the only thing
 standing between a compromised or substituted upstream and code execution
 on this host. A mismatch means the pinned commit no longer serves the
-bytes we expect. Do not "fix" this by updating VMH_FIDO_SHA256 without
+bytes we expect. Do not "fix" this by updating GOSTI_FIDO_SHA256 without
 first establishing why it changed.
 EOF
     exit 1
@@ -263,8 +263,8 @@ mv -f "${PART}" "${OUTPUT}"
 # ---------------------------------------------------------------------------
 # 4. Digest: enforce a pin when given, otherwise record one.
 # ---------------------------------------------------------------------------
-if [[ -n "${VMH_WINDOWS_ISO_SHA256:-}" ]]; then
-  if ! digest="$(verify_digest "${OUTPUT}" "${VMH_WINDOWS_ISO_SHA256}")"; then
+if [[ -n "${GOSTI_WINDOWS_ISO_SHA256:-}" ]]; then
+  if ! digest="$(verify_digest "${OUTPUT}" "${GOSTI_WINDOWS_ISO_SHA256}")"; then
     echo "fetch-windows-iso: digest mismatch — the download is NOT what was pinned." >&2
     exit 1
   fi
@@ -273,7 +273,7 @@ else
   digest="$(verify_digest "${OUTPUT}" "")"
   printf '%s  %s\n' "${digest}" "$(basename -- "${OUTPUT}")" > "${OUTPUT}.sha256"
   log "digest recorded at ${OUTPUT}.sha256: ${digest}"
-  log "PIN IT: export VMH_WINDOWS_ISO_SHA256=${digest}"
+  log "PIN IT: export GOSTI_WINDOWS_ISO_SHA256=${digest}"
   log "        Microsoft serves a rolling 'latest', so an unpinned fetch is"
   log "        not reproducible — two hosts built weeks apart get different media."
 fi

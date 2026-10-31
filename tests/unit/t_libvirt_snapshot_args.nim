@@ -12,13 +12,13 @@
 ## The argv shapes asserted here were verified against real
 ## `virsh 11.7.0` on high-mem-server before being frozen into the assertions
 ## (an offline scratch domain, `virsh ... --print-xml` for the live form) —
-## see `docs/per-backend-notes/libvirt-snapshot-benchmarks.md`. Pinning them
+## see `docs/contributors/per-backend-notes/libvirt-snapshot-benchmarks.md`. Pinning them
 ## matters because the difference between a snapshot that carries RAM and
 ## one that does not is a single flag, and getting it wrong produces a
 ## snapshot that looks fine and then BOOTS on restore instead of resuming.
 
 import std/[os, strutils, unittest]
-import vm_harness
+import gosti
 
 const DomblklistSample = """
  Type   Device   Target   Source

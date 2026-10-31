@@ -5,11 +5,11 @@
 ##
 ## WHAT IS UNDER TEST
 ##
-##   `pruneTartVmDirs` (src/vm_harness/prune.nim) — the ONLY code path that
+##   `pruneTartVmDirs` (src/gosti/prune.nim) — the ONLY code path that
 ##   can reclaim a Tart VM directory carrying no `disk.img`.
 ##
 ##   The leak it closes, measured on m3 2026-09-15: 600 `repro-vm-tart-*`
-##   directories under /private/var/lib/vm-harness/tart/vms holding only
+##   directories under /private/var/lib/gosti/tart/vms holding only
 ##   `config.json` + `nvram.bin`, 14.6 GiB in total, growing ~40/day. Tart
 ##   computes `tart list`'s Disk/SizeOnDisk columns from `disk.img` and omits
 ##   a VM that has none, so `tart list` named 4 of those 604 directories and
@@ -27,7 +27,7 @@
 ##
 ##   One guard deserves its own note. The creator PID embedded in the
 ##   directory name is a WEAK liveness signal rather than a wrong one. On m3
-##   it is the supervising `vm-harness run` process, which stays up for the
+##   it is the supervising `gosti run` process, which stays up for the
 ##   whole job and is the parent of the `tart run` hosting the guest, so for a
 ##   running ephemeral it is normally ALIVE and spares the directory
 ##   correctly — measured 2026-09-15, all three running Linux VMs had LIVE
@@ -55,9 +55,9 @@
 ##   and the real `removeDir`. The code under test is never replaced.
 
 import std/[json, options, os, strutils, tempfiles, times, unittest]
-import vm_harness/cli
-import vm_harness/prune
-import vm_harness/backends/tart
+import gosti/cli
+import gosti/prune
+import gosti/backends/tart
 
 when defined(windows):
   proc captureFileno(f: File): cint {.importc: "_fileno", header: "<stdio.h>".}
@@ -140,18 +140,18 @@ template withCapturedStdout(path: string, body: untyped): untyped =
 
 template withFakeTart(root, stateFile: string, body: untyped) =
   let fakeTart = writeFakeTart(root, stateFile)
-  putEnv("VMH_TART_CMD", fakeTart)
+  putEnv("GOSTI_TART_CMD", fakeTart)
   putEnv("FAKE_TART_STATE", stateFile)
   try:
     body
   finally:
-    delEnv("VMH_TART_CMD")
+    delEnv("GOSTI_TART_CMD")
     delEnv("FAKE_TART_STATE")
 
 suite "t_m3_tart_orphan_dirs_reclaimed: the four guards each spare a live VM":
 
   test "a genuine orphan is reclaimed while each guard's VM survives":
-    let root = createTempDir("vmh-ma7-guards-", "")
+    let root = createTempDir("gosti-ma7-guards-", "")
     defer: removeDir(root)
     let vmsDir = root / "vms"
     createDir(vmsDir)
@@ -166,7 +166,7 @@ suite "t_m3_tart_orphan_dirs_reclaimed: the four guards each spare a live VM":
     # so guards 2, 3 and 4 all fail and only guard 1 can be what spares it.
     # On m3 a running ephemeral is spared by guards 1, 2 AND 3 at once (it is
     # listed, it has a disk.img, and its creator PID — the supervising
-    # `vm-harness run` — is alive), which is precisely why the hermetic
+    # `gosti run` — is alive), which is precisely why the hermetic
     # fixture has to strip the other three away: otherwise a regression that
     # dropped guard 1 entirely would still pass.
     let listedByTart = mkVmDir(vmsDir, orphanName("listed"))
@@ -227,7 +227,7 @@ suite "t_m3_tart_orphan_dirs_reclaimed: the four guards each spare a live VM":
     # The `:risk2:` case in its purest form: the directory looks ancient by
     # name (a recycled stem, a clock skew, a re-used id) but something wrote
     # into it a moment ago. The age floor must read the YOUNGEST evidence.
-    let root = createTempDir("vmh-ma7-creating-", "")
+    let root = createTempDir("gosti-ma7-creating-", "")
     defer: removeDir(root)
     let vmsDir = root / "vms"
     createDir(vmsDir)
@@ -253,7 +253,7 @@ suite "t_m3_tart_orphan_dirs_reclaimed: an unreadable listing aborts the sweep":
     # An unreadable listing reads as 'nothing is referenced', which is exactly
     # the state in which every live VM looks like garbage. The fake exits 1
     # when its state file is absent.
-    let root = createTempDir("vmh-ma7-abort-", "")
+    let root = createTempDir("gosti-ma7-abort-", "")
     defer: removeDir(root)
     let vmsDir = root / "vms"
     createDir(vmsDir)
@@ -275,7 +275,7 @@ suite "t_m3_tart_orphan_dirs_reclaimed: an unreadable listing aborts the sweep":
   test "`tart list` succeeding with no local VMs is NOT an abort":
     # The converse of the above, so the abort cannot pass vacuously: an EMPTY
     # listing is a real answer and the sweep must proceed on it.
-    let root = createTempDir("vmh-ma7-empty-", "")
+    let root = createTempDir("gosti-ma7-empty-", "")
     defer: removeDir(root)
     let vmsDir = root / "vms"
     createDir(vmsDir)
@@ -294,7 +294,7 @@ suite "t_m3_tart_orphan_dirs_reclaimed: an unreadable listing aborts the sweep":
       check not dirExists(orphan)
 
   test "an unscoped prune refuses to sweep any VM directory":
-    let root = createTempDir("vmh-ma7-unscoped-", "")
+    let root = createTempDir("gosti-ma7-unscoped-", "")
     defer: removeDir(root)
     let vmsDir = root / "vms"
     createDir(vmsDir)
@@ -313,7 +313,7 @@ suite "t_m3_tart_orphan_dirs_reclaimed: an unreadable listing aborts the sweep":
 suite "t_m3_tart_orphan_dirs_reclaimed: dry-run, accounting, and reporting":
 
   test "dry-run names the reclaimable bytes and deletes nothing":
-    let root = createTempDir("vmh-ma7-dry-", "")
+    let root = createTempDir("gosti-ma7-dry-", "")
     defer: removeDir(root)
     let vmsDir = root / "vms"
     createDir(vmsDir)
@@ -340,7 +340,7 @@ suite "t_m3_tart_orphan_dirs_reclaimed: dry-run, accounting, and reporting":
       check rep.bytesReclaimed >= int64(2 * MacosNvramBytes)
 
   test "the age floor is honoured and 0 disables it":
-    let root = createTempDir("vmh-ma7-age-", "")
+    let root = createTempDir("gosti-ma7-age-", "")
     defer: removeDir(root)
     let vmsDir = root / "vms"
     createDir(vmsDir)
@@ -364,12 +364,12 @@ suite "t_m3_tart_orphan_dirs_reclaimed: dry-run, accounting, and reporting":
 suite "t_m3_tart_orphan_dirs_reclaimed: run state is the trustworthy signal":
 
   test "`tart list` run state is parsed off the last column, per local row":
-    let root = createTempDir("vmh-ma7-state-", "")
+    let root = createTempDir("gosti-ma7-state-", "")
     defer: removeDir(root)
     let stateFile = root / "tart-vms.txt"
     writeFile(stateFile, "vm-running running\nvm-stopped stopped\n")
     withFakeTart(root, stateFile):
-      let tb = newTartBackend(tartCmd = getEnv("VMH_TART_CMD"))
+      let tb = newTartBackend(tartCmd = getEnv("GOSTI_TART_CMD"))
       let rows = tb.tryListTartVmsDetailed()
       check rows.isSome
       check rows.get().len == 2
@@ -396,9 +396,9 @@ suite "t_m3_tart_orphan_dirs_reclaimed: the CLI surface a scheduled sweeper uses
 
   test "--tart-vms-dir + --dry-run --log-format json reports the new fields":
     # A host sweeper is declared in nix and never watched, so its output has
-    # to be machine-readable. This asserts the exact contract that gate
-    # `t_m3_host_hygiene_is_declared` (metacraft-labs/infra) probes for.
-    let root = createTempDir("vmh-ma7-cli-", "")
+    # to be machine-readable. This asserts the exact contract that the CI
+    # fleet's host-hygiene gate probes for.
+    let root = createTempDir("gosti-ma7-cli-", "")
     defer: removeDir(root)
     let vmsDir = root / "vms"
     createDir(vmsDir)
@@ -434,23 +434,23 @@ suite "t_m3_tart_orphan_dirs_reclaimed: the CLI surface a scheduled sweeper uses
     # Still there: --dry-run.
     check dirExists(orphan)
 
-  test "tartVmsDir resolves from TART_HOME, then VM_HARNESS_TART_STATE_DIR":
+  test "tartVmsDir resolves from TART_HOME, then GOSTI_TART_STATE_DIR":
     # The precedence a scheduled sweeper falls back on when it is not given
     # --tart-vms-dir. Asserted because m3's launchd daemons set BOTH.
     let savedTartHome = getEnv("TART_HOME")
-    let savedVmhState = getEnv("VM_HARNESS_TART_STATE_DIR")
+    let savedGostiState = getEnv("GOSTI_TART_STATE_DIR")
     defer:
       if savedTartHome.len > 0: putEnv("TART_HOME", savedTartHome)
       else: delEnv("TART_HOME")
-      if savedVmhState.len > 0: putEnv("VM_HARNESS_TART_STATE_DIR", savedVmhState)
-      else: delEnv("VM_HARNESS_TART_STATE_DIR")
+      if savedGostiState.len > 0: putEnv("GOSTI_TART_STATE_DIR", savedGostiState)
+      else: delEnv("GOSTI_TART_STATE_DIR")
 
     putEnv("TART_HOME", "/tmp/ma7-tart-home")
-    putEnv("VM_HARNESS_TART_STATE_DIR", "/tmp/ma7-vmh-state")
+    putEnv("GOSTI_TART_STATE_DIR", "/tmp/ma7-gosti-state")
     check tartVmsDir() == "/tmp/ma7-tart-home" / "vms"
 
     delEnv("TART_HOME")
-    check tartVmsDir() == "/tmp/ma7-vmh-state" / "vms"
+    check tartVmsDir() == "/tmp/ma7-gosti-state" / "vms"
 
-    delEnv("VM_HARNESS_TART_STATE_DIR")
+    delEnv("GOSTI_TART_STATE_DIR")
     check tartVmsDir() == getHomeDir() / ".tart" / "vms"

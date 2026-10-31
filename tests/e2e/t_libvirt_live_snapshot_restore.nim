@@ -25,10 +25,10 @@
 ##       ratio, and the ratio is the claim.
 ##
 ## THRESHOLDS, and where they come from. `p50(restore) <= 10 s` is the
-## pre-existing libvirt per-revert budget in `docs/design.md` §3.4. The
+## pre-existing libvirt per-revert budget in `docs/contributors/architecture.md` §3.4. The
 ## `>= 4x faster than cold boot` ratio is DERIVED from Hyper-V's measured
 ## 36 s boot / 7.2 s restore+resume on the same Windows 11 golden
-## (`docs/per-backend-notes/hyperv-snapshot-benchmarks.md`), discounted
+## (`docs/contributors/per-backend-notes/hyperv-snapshot-benchmarks.md`), discounted
 ## from 5.0x to 4x to absorb qcow2-vs-VHDX and host differences. Hyper-V is
 ## the ANALOGY that motivates this milestone, not a measurement of libvirt;
 ## this test is what turns it into one.
@@ -37,18 +37,24 @@
 ## missing. It needs a guest, and it deliberately does not create one:
 ## making a suitable throwaway is an operator act on a shared host.
 ##
-##   VMH_LIBVIRT_WARM_DOMAIN   name of a THROWAWAY libvirt domain, already
+##   GOSTI_LIBVIRT_WARM_DOMAIN   name of a THROWAWAY libvirt domain, already
 ##                             defined, whose guest has SSH reachable on the
 ##                             libvirt network. Its state is destroyed by
 ##                             this test.
-##   VMH_LIBVIRT_WARM_GUEST_OS      `linux` (default) or `windows`
-##   VMH_LIBVIRT_WARM_SSH_USER      guest login (default: root)
-##   VMH_LIBVIRT_WARM_SSH_KEY       private key path, or
-##   VMH_LIBVIRT_WARM_SSH_PASSWORD  password (needs sshpass)
-##   VMH_LIBVIRT_WARM_REPS          timing reps per arm (default 3; the
+##   GOSTI_LIBVIRT_WARM_GUEST_OS      `linux` (default) or `windows`
+##   GOSTI_LIBVIRT_WARM_SSH_USER      guest login (default: root)
+##   GOSTI_LIBVIRT_WARM_SSH_KEY       private key path, or
+##   GOSTI_LIBVIRT_WARM_SSH_PASSWORD  password (needs sshpass)
+##   GOSTI_LIBVIRT_WARM_REPS          timing reps per arm (default 3; the
 ##                                  campaign's gate wants 10)
-##   VMH_LIBVIRT_WARM_STATE_DIR     snapshot artifact dir (default: the
+##   GOSTI_LIBVIRT_WARM_STATE_DIR     snapshot artifact dir (default: the
 ##                                  image pool)
+##   GOSTI_LIBVIRT_WARM_SSH_FORWARD_PORT  reach the guest at 127.0.0.1:<port>
+##                                  through a user-mode NIC forward instead
+##                                  of a libvirt-network lease. Needed on
+##                                  qemu:///session, which has no NAT
+##                                  network; the forward is re-installed
+##                                  after every restore.
 ##   LIBVIRT_DEFAULT_URI            e.g. qemu:///session
 ##
 ## GUEST OS. The resume-not-boot witness is a value that a kernel/OS can
@@ -57,7 +63,7 @@
 ##   * Linux   — `/proc/sys/kernel/random/boot_id`, regenerated per boot.
 ##   * Windows — `(Get-CimInstance Win32_OperatingSystem).LastBootUpTime`,
 ##     the substitution named in
-##     `docs/per-backend-notes/libvirt-snapshot-benchmarks.md`, since the
+##     `docs/contributors/per-backend-notes/libvirt-snapshot-benchmarks.md`, since the
 ##     WR0 headline has to be taken on the real Windows golden and Windows
 ##     has no boot id.
 ##
@@ -73,25 +79,26 @@
 ##
 ## Run:
 ##   export LIBVIRT_DEFAULT_URI=qemu:///session
-##   export VMH_LIBVIRT_WARM_DOMAIN=vmh-wr0-warm-scratch
-##   export VMH_LIBVIRT_WARM_SSH_USER=root VMH_LIBVIRT_WARM_SSH_KEY=~/.ssh/id_ed25519
+##   export GOSTI_LIBVIRT_WARM_DOMAIN=gosti-wr0-warm-scratch
+##   export GOSTI_LIBVIRT_WARM_SSH_USER=root GOSTI_LIBVIRT_WARM_SSH_KEY=~/.ssh/id_ed25519
 ##   nim r --hints:off tests/e2e/t_libvirt_live_snapshot_restore.nim
 
-import std/[algorithm, os, strutils, tables, times, unittest]
-import vm_harness
+import std/[algorithm, options, os, strutils, tables, times, unittest]
+import gosti
+import gosti/backends/libvirt
 
 when not defined(linux):
   echo "[skip] t_libvirt_live_snapshot_restore: Linux host required"
   quit(0)
 
-let domName = getEnv("VMH_LIBVIRT_WARM_DOMAIN")
+let domName = getEnv("GOSTI_LIBVIRT_WARM_DOMAIN")
 if domName.len == 0:
-  echo "[skip] t_libvirt_live_snapshot_restore: VMH_LIBVIRT_WARM_DOMAIN not " &
+  echo "[skip] t_libvirt_live_snapshot_restore: GOSTI_LIBVIRT_WARM_DOMAIN not " &
        "set. This gate needs a RUNNING, SSH-reachable Linux throwaway " &
        "domain; it does not create one, because provisioning a guest on a " &
        "shared runner host is an operator act. See the header for the full " &
        "variable list and " &
-       "docs/per-backend-notes/libvirt-snapshot-benchmarks.md for the " &
+       "docs/contributors/per-backend-notes/libvirt-snapshot-benchmarks.md for the " &
        "maintenance-window procedure."
   quit(0)
 
@@ -101,34 +108,38 @@ for p in ProductionPrefixes:
     echo "[FAIL] t_libvirt_live_snapshot_restore: refusing to run against '" &
          domName & "'. That prefix belongs to the production runner fleet, " &
          "and this gate destroys guest state and restarts the domain. Point " &
-         "VMH_LIBVIRT_WARM_DOMAIN at a throwaway."
+         "GOSTI_LIBVIRT_WARM_DOMAIN at a throwaway."
     quit(1)
 
-let sshUser = (let u = getEnv("VMH_LIBVIRT_WARM_SSH_USER"); if u.len > 0: u else: "root")
-let sshKey = getEnv("VMH_LIBVIRT_WARM_SSH_KEY")
-let sshPassword = getEnv("VMH_LIBVIRT_WARM_SSH_PASSWORD")
+let sshUser = (let u = getEnv("GOSTI_LIBVIRT_WARM_SSH_USER"); if u.len > 0: u else: "root")
+let sshKey = getEnv("GOSTI_LIBVIRT_WARM_SSH_KEY")
+let sshPassword = getEnv("GOSTI_LIBVIRT_WARM_SSH_PASSWORD")
 if sshKey.len == 0 and sshPassword.len == 0:
   echo "[skip] t_libvirt_live_snapshot_restore: neither " &
-       "VMH_LIBVIRT_WARM_SSH_KEY nor VMH_LIBVIRT_WARM_SSH_PASSWORD is set; " &
+       "GOSTI_LIBVIRT_WARM_SSH_KEY nor GOSTI_LIBVIRT_WARM_SSH_PASSWORD is set; " &
        "the gate has no way into the guest."
   quit(0)
 
-let reps = (let r = getEnv("VMH_LIBVIRT_WARM_REPS"); if r.len > 0: parseInt(r) else: 3)
+let reps = (let r = getEnv("GOSTI_LIBVIRT_WARM_REPS"); if r.len > 0: parseInt(r) else: 3)
 
-let guestOsName = (let g = getEnv("VMH_LIBVIRT_WARM_GUEST_OS");
+let guestOsName = (let g = getEnv("GOSTI_LIBVIRT_WARM_GUEST_OS");
                    if g.len > 0: g.toLowerAscii() else: "linux")
 if guestOsName notin ["linux", "windows"]:
-  echo "[FAIL] t_libvirt_live_snapshot_restore: VMH_LIBVIRT_WARM_GUEST_OS " &
+  echo "[FAIL] t_libvirt_live_snapshot_restore: GOSTI_LIBVIRT_WARM_GUEST_OS " &
        "must be 'linux' or 'windows'; got '" & guestOsName & "'."
   quit(1)
 let isWindows = guestOsName == "windows"
-let stateDir = getEnv("VMH_LIBVIRT_WARM_STATE_DIR")
+let stateDir = getEnv("GOSTI_LIBVIRT_WARM_STATE_DIR")
+let forwardPort = (let p = getEnv("GOSTI_LIBVIRT_WARM_SSH_FORWARD_PORT");
+                   if p.len > 0: parseInt(p) else: 0)
 
 let b = newLibvirtBackend(snapshotStateDir = stateDir,
                           sshUser = sshUser,
                           sshPassword = sshPassword,
                           sshKeyPath = sshKey,
                           sshGuestOs = (if isWindows: goWindows else: goLinux))
+if forwardPort > 0:
+  b.sshPort = forwardPort
 
 if not b.probeAvailability():
   echo "[skip] t_libvirt_live_snapshot_restore: libvirt not reachable at " &
@@ -252,8 +263,25 @@ proc sentinelRunning(pid: string): string =
   else:
     sh("grep -qs sleep /proc/" & pid & "/comm && echo yes || echo no")
 
+proc reForward() =
+  ## A user-mode NIC loses its monitor-added forward whenever the QEMU
+  ## process is replaced, so re-assert it after every restore. Idempotent.
+  if forwardPort > 0:
+    b.ensureSshForward(domName, forwardPort)
+
+proc restore(snap: string) =
+  b.restoreSnapshot(domName, snap)
+  reForward()
+
 proc bringUp(timeoutSec: int = 300) =
-  vm = b.revertToBaseline(domName)
+  if forwardPort > 0:
+    b.startDomain(domName)
+    reForward()
+    vm = VmHandle(backend: b, name: domName, baseline: domName,
+                  ipAddress: some("127.0.0.1"), sshPort: forwardPort,
+                  sshUser: sshUser)
+  else:
+    vm = b.revertToBaseline(domName)
   b.startAndAwaitReady(vm, timeoutSec = timeoutSec)
 
 proc msSince(t: float): int = int((epochTime() - t) * 1000.0)
@@ -296,7 +324,7 @@ suite "t_libvirt_live_snapshot_restore":
     check markerPresent() == "no"
     check sentinelRunning(sentinelPid) == "yes"
 
-    b.restoreSnapshot(domName, WarmSnap)
+    restore(WarmSnap)
     b.startAndAwaitReady(vm, timeoutSec = 300)
 
     # Disk state came back with the snapshot.
@@ -316,7 +344,7 @@ suite "t_libvirt_live_snapshot_restore":
     # proving nothing.
     let idBefore = bootWitness()
     check b.snapshot(domName, ColdSnap) == ColdSnap
-    b.restoreSnapshot(domName, ColdSnap)
+    restore(ColdSnap)
     b.startAndAwaitReady(vm, timeoutSec = 300)
     let idAfter = bootWitness()
     echo "  boot witness before/after cold restore: ", idBefore, " / ", idAfter
@@ -328,12 +356,12 @@ suite "t_libvirt_live_snapshot_restore":
     var coldMs: seq[int] = @[]
     for i in 1 .. reps:
       let w = epochTime()
-      b.restoreSnapshot(domName, WarmSnap)
+      restore(WarmSnap)
       b.startAndAwaitReady(vm, timeoutSec = 300)
       warmMs.add(msSince(w))
 
       let c = epochTime()
-      b.restoreSnapshot(domName, ColdSnap)
+      restore(ColdSnap)
       b.startAndAwaitReady(vm, timeoutSec = 300)
       coldMs.add(msSince(c))
 
@@ -341,7 +369,7 @@ suite "t_libvirt_live_snapshot_restore":
     echo "  cold restore+boot ms:  ", coldMs, "  p50=", p50(coldMs)
     echo "  ratio (cold/warm): ",
          (if p50(warmMs) > 0: p50(coldMs).float / p50(warmMs).float else: 0.0)
-    # Budget: docs/design.md §3.4, "libvirt virsh snapshot-revert <= 10s".
+    # Budget: docs/contributors/architecture.md §3.4, "libvirt virsh snapshot-revert <= 10s".
     check p50(warmMs) <= 10_000
     # Ratio: derived from Hyper-V's 36 s / 7.2 s = 5.0x, discounted to 4x.
     check p50(coldMs) >= 4 * p50(warmMs)

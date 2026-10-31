@@ -25,7 +25,7 @@
 ## definition", which is exactly the GOSTI2 deliverable.
 
 import std/[strutils, os, tempfiles, unittest]
-import vm_harness
+import gosti
 
 const SampleUserData =
   "#cloud-config\n" &
@@ -49,7 +49,7 @@ suite "libvirt NoCloud seed — build + round-trip":
     check "meta-data" in blob
 
   test "writeNoCloudIso writes a non-empty seed file with the same payload":
-    let dir = createTempDir("vmh-seed-", "")
+    let dir = createTempDir("gosti-seed-", "")
     defer: removeDir(dir)
     let path = dir / "seed.iso"
     writeNoCloudIso(path, SampleUserData, "instance-id: ci-2\n")
@@ -91,6 +91,25 @@ suite "libvirt NoCloud seed — attached to the domain XML":
     check "cidata" notin xml
     check "dev='sdb'" notin xml
 
+  test "an SSH forward port selects a user-mode NIC instead of the NAT network":
+    # qemu:///session has no 'default' network; the forward is installed
+    # through the monitor after start, so the XML carries only the NIC.
+    let fwd = EphemeralCloneSpec(
+      name: "fwd",
+      goldenImage: "/storage/libvirt/base.qcow2",
+      sshForwardPort: 40022)
+    let xml = b.buildEphemeralDomainXml(fwd, "/storage/libvirt/fwd.overlay.qcow2",
+                                        "/tmp/fwd.serial.log")
+    check "<interface type='user'>" in xml
+    check "network='default'" notin xml
+    let nat = EphemeralCloneSpec(
+      name: "nat",
+      goldenImage: "/storage/libvirt/base.qcow2")
+    let natXml = b.buildEphemeralDomainXml(nat, "/storage/libvirt/nat.overlay.qcow2",
+                                           "/tmp/nat.serial.log")
+    check "<source network='default'/>" in natXml
+    check "type='user'" notin natXml
+
   test "the per-instance seed path is named after the domain":
     check b.noCloudSeedIsoPathFor("ci-abc123").endsWith("ci-abc123.cidata.iso")
 
@@ -122,3 +141,15 @@ suite "libvirt NoCloud seed — capability signal":
     # No backend attaches mounts yet, so --mount stays fail-closed everywhere.
     check not lv.honorsMounts()
     check not mk.honorsMounts()
+
+suite "libvirt stale-domain sweep — owner pid parsing":
+  test "a harness gate name yields its creator's pid":
+    check staleSweepOwnerPid("repro-vm-libvirt-linux-smoke-4242") == 4242
+
+  test "names that prove no owner are never swept":
+    check staleSweepOwnerPid("garm-runner-17") == 0
+    check staleSweepOwnerPid("repro-vm-") == 0
+    check staleSweepOwnerPid("repro-vm-libvirt-smoke") == 0
+    check staleSweepOwnerPid("repro-vm-libvirt-smoke-") == 0
+    check staleSweepOwnerPid("repro-vm-libvirt-smoke-12ab") == 0
+    check staleSweepOwnerPid("windows-runner-001") == 0

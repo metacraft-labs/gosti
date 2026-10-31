@@ -3,14 +3,14 @@
 This recipe produces a libvirt-managed domain (default name
 **`windows-runner-001`**) that the M4 slice of `LibvirtBackend` boots
 on a Linux host with KVM + libvirtd. The Nim backend
-(`src/vm_harness/backends/libvirt.nim`) consumes already-defined
+(`src/gosti/backends/libvirt.nim`) consumes already-defined
 domains via `revertToBaseline`; this directory is the documentation +
 scripts that produce one.
 
 The recipe is the x86_64-on-Linux sibling of `windows-arm-base/`
 (which targets UTM on macOS). It exists so the windows-runner-001
 prototype on `high-mem-server` can be brought up by a single
-`vm-harness provision --backend libvirt` invocation.
+`gosti provision --backend libvirt` invocation.
 
 ## What you get
 
@@ -150,11 +150,11 @@ of the `.ps1` rather than duplicating it.
 
 - **First time on a new Linux host** — once you've installed
   `libvirt`, `qemu`, `virt-install` (already provided by the
-  vm-harness flake's dev shell on Linux), follow the build steps
+  gosti flake's dev shell on Linux), follow the build steps
   below to produce the baseline domain.
 - **Microsoft rotates the Win11 24H2 ISO** — drop the new ISO at
   `/storage/iso/Win11_24H2_EnglishInternational_x64.iso` (or set
-  `VMH_WIN11_X64_ISO`) and re-run.
+  `GOSTI_WIN11_X64_ISO`) and re-run.
 - **The virtio-win driver disk rotates** — Red Hat publishes a new
   `virtio-win.iso` to fedorapeople every quarter or so; re-running
   `fetch-iso.sh` picks the latest stable.
@@ -166,7 +166,7 @@ The build is fully scripted; no GUI step is needed (unlike
 single hands-off invocation is:
 
 ```bash
-vm-harness provision \
+gosti provision \
     --backend libvirt \
     --recipe windows-x64-base \
     --name windows-runner-001 \
@@ -176,24 +176,24 @@ vm-harness provision \
 ```
 
 This is what the windows-runner-001 README on the infra repo
-documents as the canonical operator command. If `vm-harness` isn't
+documents as the canonical operator command. If `gosti` isn't
 on PATH yet, fall back to the manual sequence below.
 
 > **Fail-fast on a BIOS-only ISO.** Before launching `virt-install`,
-> `vm-harness provision` validates that the Windows ISO carries a UEFI
+> `gosti provision` validates that the Windows ISO carries a UEFI
 > (EFI) El Torito boot record (via `xorriso`). A BIOS-only ISO can't
 > boot the UEFI q35 domain — OVMF drops to the UEFI shell and
 > `virt-install --wait` would otherwise stall ~90 minutes with no clear
 > cause. The CLI rejects it up front with a message telling you to
 > supply a UEFI-bootable Win11 ISO (a stock Microsoft ISO works) via
-> `--source-image` / `VMH_WIN11_X64_ISO`. The optional `fetch-iso.sh`
+> `--source-image` / `GOSTI_WIN11_X64_ISO`. The optional `fetch-iso.sh`
 > prep performs the identical check, so both paths are protected. When
 > `xorriso` is absent the check is skipped with a warning (never a hard
 > failure on missing tooling).
 
 ### 1. Prerequisites
 
-Inside the vm-harness dev shell (`nix develop`):
+Inside the gosti dev shell (`nix develop`):
 
 ```bash
 # libvirt + virt-install (Linux only).
@@ -201,9 +201,8 @@ Inside the vm-harness dev shell (`nix develop`):
 which virsh virt-install qemu-img genisoimage curl
 ```
 
-If you're on `high-mem-server`, libvirtd is already enabled (see
-`infra/machines/server/high-mem-server/configuration.nix`); on any
-other Linux host:
+If you're on `high-mem-server`, libvirtd is already enabled; on any other
+Linux host:
 
 ```bash
 sudo systemctl enable --now libvirtd
@@ -216,7 +215,7 @@ sudo usermod -aG libvirt "$USER"
 ```bash
 ./fetch-iso.sh
 # Downloads: ./build/virtio-win.iso
-# Verifies:  ${VMH_WIN11_X64_ISO:-/storage/iso/Win11_24H2_EnglishInternational_x64.iso}
+# Verifies:  ${GOSTI_WIN11_X64_ISO:-/storage/iso/Win11_24H2_EnglishInternational_x64.iso}
 
 ../lib/fetch-portable-git.sh --arch x64 --output ./build
 # Downloads + SHA-256-verifies: ./build/PortableGit-<pinned>-64-bit.7z.exe
@@ -267,13 +266,13 @@ Both recipes share FirstLogonCommands that stage and run
 `provision-git.ps1` (x64 steps #11/#12) and `provision-pwsh.ps1`
 (x64 steps #13/#14), and the credential/power hardening in steps #1/#2.
 
-### 4. Run virt-install (or `vm-harness provision`)
+### 4. Run virt-install (or `gosti provision`)
 
 The harness invocation at the top of this README does everything in
 this step automatically. The equivalent manual virt-install is:
 
 ```bash
-# See src/vm_harness/backends/libvirt.nim → buildVirtInstallArgs for
+# See src/gosti/backends/libvirt.nim → buildVirtInstallArgs for
 # the canonical argv.
 virt-install --connect qemu:///system \
     --name windows-runner-001 \
@@ -317,7 +316,7 @@ Git-less image aborts the golden build instead of shipping.
 
 The gate asserts, and exits non-zero on any of:
 
-- `C:\Windows\Temp\vmh-git-provision-failed` exists (dumps the log tail);
+- `C:\Windows\Temp\gosti-git-provision-failed` exists (dumps the log tail);
 - the **raw** machine `PATH` registry value does not contain
   `C:\PortableGit\bin` — the value that survives capture and that
   `services.exe` hands to the runner service on every clone;
@@ -336,7 +335,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 # exit 0 = fit to capture; exit 1 = do not capture
 ```
 
-`VMH_SKIP_GIT_GATE=1` bypasses the gate in `build-sysprep-golden.sh`. It
+`GOSTI_SKIP_GIT_GATE=1` bypasses the gate in `build-sysprep-golden.sh`. It
 logs three `WARNING` lines and exists only for bisecting an unrelated
 SysPrep failure — never for producing a golden that will be shipped.
 
@@ -346,7 +345,7 @@ enforcement:
 runs as a second **hard gate before SysPrep**, immediately after the Git one.
 It exits non-zero on any of:
 
-- `C:\Windows\Temp\vmh-pwsh-provision-failed` exists (dumps the log tail);
+- `C:\Windows\Temp\gosti-pwsh-provision-failed` exists (dumps the log tail);
 - `C:\pwsh\pwsh.exe` is missing;
 - the **raw** machine `PATH` registry value does not contain `C:\pwsh`;
 - that value is no longer `REG_EXPAND_SZ`;
@@ -361,7 +360,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 # exit 0 = fit to capture; exit 1 = do not capture
 ```
 
-`VMH_SKIP_PWSH_GATE=1` bypasses it, on the same terms as the Git one.
+`GOSTI_SKIP_PWSH_GATE=1` bypasses it, on the same terms as the Git one.
 
 What neither gate can prove is the property the fleet ultimately depends on:
 that `pwsh` resolves for `NT AUTHORITY\SYSTEM` in **session 0**, because that
@@ -396,7 +395,7 @@ This:
 ### 6. Smoke test
 
 ```bash
-# From the vm-harness repo root.
+# From the gosti repo root.
 nimble test
 ```
 
@@ -587,7 +586,7 @@ so the promoted golden was captured carrying
 ```
 Get-MpPreference -> ExclusionPath:
   C:\pwsh
-  C:\Windows\Temp\vmh-pwsh-extract-6752
+  C:\Windows\Temp\gosti-pwsh-extract-6752
 ```
 
 The second names a directory that stopped existing during the very run that
@@ -636,7 +635,7 @@ missing — otherwise a typo in the property name looks like a clean image.
 **Status (2026-08-23):** applied on `high-mem-server`.
 `/storage/iso/golden-win11-cloudbase.qcow2` now reports exactly one path
 exclusion, `C:\pwsh`, with the stale
-`C:\Windows\Temp\vmh-pwsh-extract-6752` rule gone from both `Get-MpPreference`
+`C:\Windows\Temp\gosti-pwsh-extract-6752` rule gone from both `Get-MpPreference`
 and `HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths`. Proved on a
 CoW clone of the promoted image under **PowerShell 5.1** (and again under
 `pwsh` 7.4.6). Defender's posture is otherwise unchanged — real-time,
@@ -718,7 +717,7 @@ All scripts are POSIX `bash` and self-contained; they accept
   `virsh snapshot-create-as` and `virsh snapshot-revert --running`
   into `LibvirtBackend.snapshot` / `restoreSnapshot`. Today the
   recipe produces a long-lived "runner" domain that survives across
-  vm-harness invocations.
+  gosti invocations.
 - **SR-IOV NIC passthrough / GPU passthrough** — tracked as M4
   Phase C; needs host-side IOMMU group manipulation that lives
   outside the per-baseline recipe.

@@ -5,7 +5,7 @@
 #
 # Proves the syspreped ("/generalize") cloudbase-init golden yields a FRESH
 # machine identity per clone, by booting TWO independent ephemeral CoW clones
-# of the golden through the REAL `vm-harness run --ephemeral --keep` CLI (each
+# of the golden through the REAL `gosti run --ephemeral --keep` CLI (each
 # with its own injected config-drive) and asserting:
 #
 #   (a) both clones complete Win11 mini-setup (OOBE) unattended and become
@@ -28,29 +28,29 @@
 #       first-boot state is reset by /generalize and may need a follow-up, so
 #       this is reported, not gated.
 #
-# Then both clones are torn down via `vm-harness ephemeral-destroy` and the
+# Then both clones are torn down via `gosti ephemeral-destroy` and the
 # gate asserts NO residual domain / overlay / config-drive ISO / nvram, and
 # that the golden is untouched. The production windows-runner-001 domain is
 # NEVER touched (distinct names, CoW overlays off a COPY of the golden).
 #
 # Env (required):
-#   VMH_WIN_GOLDEN      sysprepped cloudbase-init golden qcow2
-#   VMH_OVMF_CODE       OVMF code firmware (edk2-x86_64-code.fd)
-#   VMH_OVMF_VARS       OVMF vars template (edk2-i386-vars.fd)
-#   VMH_GUEST_PASSWORD  guest admin password
+#   GOSTI_WIN_GOLDEN      sysprepped cloudbase-init golden qcow2
+#   GOSTI_OVMF_CODE       OVMF code firmware (edk2-x86_64-code.fd)
+#   GOSTI_OVMF_VARS       OVMF vars template (edk2-i386-vars.fd)
+#   GOSTI_GUEST_PASSWORD  guest admin password
 # Env (optional):
-#   VMH_HARNESS         path to the vm-harness binary (else built via nix/nim)
-#   VMH_CLONE_A         clone A domain name   (default sysprep2-cloneA)
-#   VMH_CLONE_B         clone B domain name   (default sysprep2-cloneB)
+#   GOSTI_HARNESS         path to the gosti binary (else built via nix/nim)
+#   GOSTI_CLONE_A         clone A domain name   (default sysprep2-cloneA)
+#   GOSTI_CLONE_B         clone B domain name   (default sysprep2-cloneB)
 #   LIBVIRT_DEFAULT_URI libvirt URI           (default qemu:///system)
-#   VMH_CLOUDBASE_WAIT  seconds to wait for the cloudbase marker (default 600)
+#   GOSTI_CLOUDBASE_WAIT  seconds to wait for the cloudbase marker (default 600)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
-CLONE_A="${VMH_CLONE_A:-sysprep2-cloneA}"
-CLONE_B="${VMH_CLONE_B:-sysprep2-cloneB}"
-CBWAIT="${VMH_CLOUDBASE_WAIT:-600}"
+CLONE_A="${GOSTI_CLONE_A:-sysprep2-cloneA}"
+CLONE_B="${GOSTI_CLONE_B:-sysprep2-cloneB}"
+CBWAIT="${GOSTI_CLOUDBASE_WAIT:-600}"
 WORK="$(mktemp -d /tmp/sysprep-identity.XXXXXX)"
 RESULT=0
 declare -A STARTED
@@ -81,10 +81,10 @@ cleanup() {
 trap cleanup EXIT
 
 # --- prerequisites / self-skip -------------------------------------------
-for v in VMH_WIN_GOLDEN VMH_OVMF_CODE VMH_OVMF_VARS VMH_GUEST_PASSWORD; do
+for v in GOSTI_WIN_GOLDEN GOSTI_OVMF_CODE GOSTI_OVMF_VARS GOSTI_GUEST_PASSWORD; do
   if [[ -z "${!v:-}" ]]; then echo "[id-gate][skip] $v not set"; echo SKIP; exit 3; fi
 done
-for f in "$VMH_WIN_GOLDEN" "$VMH_OVMF_CODE" "$VMH_OVMF_VARS"; do
+for f in "$GOSTI_WIN_GOLDEN" "$GOSTI_OVMF_CODE" "$GOSTI_OVMF_VARS"; do
   [[ -f "$f" ]] || { echo "[id-gate][skip] missing file: $f"; echo SKIP; exit 3; }
 done
 [[ -c /dev/kvm ]] || { echo "[id-gate][skip] /dev/kvm absent"; echo SKIP; exit 3; }
@@ -95,30 +95,30 @@ command -v genisoimage >/dev/null || command -v xorriso >/dev/null || \
   { echo "[id-gate][skip] no genisoimage/xorriso"; echo SKIP; exit 3; }
 
 # --- resolve the harness binary ------------------------------------------
-HARNESS="${VMH_HARNESS:-}"
+HARNESS="${GOSTI_HARNESS:-}"
 if [[ -z "$HARNESS" ]]; then
-  if [[ -x "$SCRIPT_DIR/../../../result/bin/vm-harness" ]]; then
-    HARNESS="$SCRIPT_DIR/../../../result/bin/vm-harness"
-  elif command -v vm-harness >/dev/null; then
-    HARNESS="$(command -v vm-harness)"
+  if [[ -x "$SCRIPT_DIR/../../../result/bin/gosti" ]]; then
+    HARNESS="$SCRIPT_DIR/../../../result/bin/gosti"
+  elif command -v gosti >/dev/null; then
+    HARNESS="$(command -v gosti)"
   else
-    HARNESS="$WORK/vm-harness"
+    HARNESS="$WORK/gosti"
     ( cd "$SCRIPT_DIR/../../.." && \
       nim c --hints:off --opt:speed --path:src -o:"$HARNESS" \
-        src/vm_harness/cli.nim ) >/dev/null 2>&1 \
-      || { fail "could not build vm-harness"; echo "SYSPREP_IDENTITY_GATE_FAIL"; exit 1; }
+        src/gosti/cli.nim ) >/dev/null 2>&1 \
+      || { fail "could not build gosti"; echo "SYSPREP_IDENTITY_GATE_FAIL"; exit 1; }
   fi
 fi
-[[ -x "$HARNESS" ]] || { fail "vm-harness not executable: $HARNESS"; echo "SYSPREP_IDENTITY_GATE_FAIL"; exit 1; }
-log "using vm-harness: $HARNESS"
+[[ -x "$HARNESS" ]] || { fail "gosti not executable: $HARNESS"; echo "SYSPREP_IDENTITY_GATE_FAIL"; exit 1; }
+log "using gosti: $HARNESS"
 
 ssh_guest() { # ip, remote-cmd
-  sshpass -p "$VMH_GUEST_PASSWORD" ssh -o StrictHostKeyChecking=no \
+  sshpass -p "$GOSTI_GUEST_PASSWORD" ssh -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o LogLevel=ERROR \
     -o PreferredAuthentications=password "admin@$1" "$2"
 }
 scp_guest() { # local, ip, remote
-  sshpass -p "$VMH_GUEST_PASSWORD" scp -o StrictHostKeyChecking=no \
+  sshpass -p "$GOSTI_GUEST_PASSWORD" scp -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -o PreferredAuthentications=password "$1" "admin@$2:$3"
 }
@@ -137,18 +137,18 @@ boot_and_probe() {
   local metadata="$WORK/$name.meta_data.json"
   printf '{"uuid":"%s","hostname":"%s","name":"%s"}' "$name" "$name" "$name" > "$metadata"
 
-  log "[$name] booting fresh ephemeral clone via real vm-harness CLI (UEFI + config-drive)"
+  log "[$name] booting fresh ephemeral clone via real gosti CLI (UEFI + config-drive)"
   STARTED["$name"]=1
   if ! LIBVIRT_DEFAULT_URI="$URI" "$HARNESS" run --ephemeral --keep \
         --baseline "$name" \
-        --golden-image "$VMH_WIN_GOLDEN" \
+        --golden-image "$GOSTI_WIN_GOLDEN" \
         --user-data "$udata" \
         --meta-data "$metadata" \
-        --uefi-loader "$VMH_OVMF_CODE" \
-        --uefi-nvram-template "$VMH_OVMF_VARS" \
+        --uefi-loader "$GOSTI_OVMF_CODE" \
+        --uefi-nvram-template "$GOSTI_OVMF_VARS" \
         --cpus 4 --memory-mb 4096 \
         >"$WORK/$name.up.out" 2>"$WORK/$name.up.err"; then
-    fail "[$name] vm-harness run --ephemeral --keep failed"
+    fail "[$name] gosti run --ephemeral --keep failed"
     cat "$WORK/$name.up.err" >&2
     return 1
   fi
@@ -263,7 +263,7 @@ for n in "$CLONE_A" "$CLONE_B"; do
     [[ -e "$f" ]] && fail "residual artifact remains: $f"
   done
 done
-[[ -f "$VMH_WIN_GOLDEN" ]] || fail "golden vanished (must be untouched!)"
+[[ -f "$GOSTI_WIN_GOLDEN" ]] || fail "golden vanished (must be untouched!)"
 [[ "$RESULT" == "0" ]] && log "PASS (d): no residue; golden intact"
 
 if [[ "$RESULT" == "0" ]]; then echo "SYSPREP_IDENTITY_GATE_PASS"; else echo "SYSPREP_IDENTITY_GATE_FAIL"; fi

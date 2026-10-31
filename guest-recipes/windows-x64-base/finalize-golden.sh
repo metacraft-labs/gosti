@@ -6,7 +6,7 @@
 # boot startups don't re-mount the autounattend / Windows ISOs.
 #
 # Run this AFTER:
-#   1. `vm-harness provision --backend libvirt --recipe windows-x64-base
+#   1. `gosti provision --backend libvirt --recipe windows-x64-base
 #      --name <name> --first-boot-script ./bootstrap.ps1` finished
 #      successfully (or the operator ran virt-install directly).
 #   2. The Win11 autounattend installation completed (the marker file
@@ -31,9 +31,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-DOMAIN="${VMH_LIBVIRT_DOMAIN:-windows-runner-001}"
-LIBVIRT_URI="${VMH_LIBVIRT_URI:-qemu:///system}"
-IMAGE_POOL_DIR="${VMH_LIBVIRT_POOL_DIR:-/var/lib/libvirt/images}"
+DOMAIN="${GOSTI_LIBVIRT_DOMAIN:-windows-runner-001}"
+LIBVIRT_URI="${GOSTI_LIBVIRT_URI:-qemu:///system}"
+IMAGE_POOL_DIR="${GOSTI_LIBVIRT_POOL_DIR:-/var/lib/libvirt/images}"
 KEEP_ISOS=0
 SET_AUTOSTART=1
 
@@ -72,7 +72,7 @@ fi
 DISK_PATH="${IMAGE_POOL_DIR}/${DOMAIN}.qcow2"
 if [[ ! -f "${DISK_PATH}" ]]; then
   echo "finalize-golden: qcow2 not found at ${DISK_PATH}" >&2
-  echo "  Override the search path with VMH_LIBVIRT_POOL_DIR=..." >&2
+  echo "  Override the search path with GOSTI_LIBVIRT_POOL_DIR=..." >&2
   exit 1
 fi
 echo "finalize-golden: disk found at ${DISK_PATH}"
@@ -114,4 +114,4 @@ fi
 
 echo
 echo "Done. The harness can now manage this domain via:"
-echo "  vm-harness run --backend libvirt --baseline ${DOMAIN} -- powershell -Command hostname"
+echo "  gosti run --backend libvirt --baseline ${DOMAIN} -- powershell -Command hostname"

@@ -12,10 +12,9 @@ name: Docs — GitHub Pages
 
 on:
   push:
-    branches: [dev, stable, agents]
+    branches: [dev, stable]
     paths:
       - "docs/site/**"
-      - "docs/user-guide/**"
       - ".github/workflows/docs-pages.yml"
   workflow_dispatch:
 
@@ -56,7 +55,7 @@ jobs:
       # Build through the site's self-contained flake — the framework source
       # comes from the flake inputs (isonim-docs, isonim, …), NOT from any
       # sibling checkout. build.nim emits the static site into docs/site/public
-      # with the /vm-harness basePath baked in (see docs/site/src/docs_config.nim).
+      # with the /gosti basePath baked in (see docs/site/src/docs_config.nim).
       - name: Build static site
         run: |
           nix develop ./docs/site --command bash -c '

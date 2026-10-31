@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
 ## unit_serve_protocol — pure wire-contract checks for the RA1 remoting
-## protocol (``src/vm_harness/serve/protocol.nim`` + ``client.parseAddr``).
+## protocol (``src/gosti/serve/protocol.nim`` + ``client.parseAddr``).
 ##
 ## No sockets, no processes — this is the deterministic, host-independent
 ## layer that both the daemon and the client depend on. Runs in the
 ## universal test layer (design doc §9.3).
 
 import std/[json, os, strutils, unittest]
-import vm_harness
+import gosti
 
 suite "unit_serve_protocol":
   test "constantTimeEq matches identical strings, rejects differences":
@@ -102,7 +102,7 @@ suite "unit_serve_protocol":
       check parseHexInt(chunkSizeHex(n)) == n
 
   test "applyUserData materializes a 0600 seed file and appends --user-data":
-    let dir = getTempDir() / "vmh-serve-userdata-test"
+    let dir = getTempDir() / "gosti-serve-userdata-test"
     let secret = "#!/bin/bash\n./config.sh --jitconfig TOKEN\n"
     let baseArgv = @["run", "--ephemeral", "--backend", "incus",
                      "--baseline", "job-1"]

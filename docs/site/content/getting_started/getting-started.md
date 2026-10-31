@@ -23,7 +23,7 @@ nix develop          # or: direnv allow   (an .envrc is checked in)
 ```
 
 Inside the shell you will see the Nim and Nimble versions printed, and
-`VM_HARNESS_ROOT` is exported to the repo root.
+`GOSTI_ROOT` is exported to the repo root.
 
 ## 2. Build the CLI
 
@@ -31,7 +31,7 @@ Inside the shell you will see the Nim and Nimble versions printed, and
 just build
 ```
 
-This compiles `src/vm_harness/cli.nim` to `build/bin/gosti` (plus the
+This compiles `src/gosti/cli.nim` to `build/bin/gosti` (plus the
 snapshot-revert benchmark). Put that on your `PATH` or call it by path:
 
 ```sh
@@ -41,7 +41,7 @@ gosti --help
 
 The Nix package path (`nix build .#default`, or the flake output `default`)
 installs the same binary to `$out/bin/gosti` and ships the guest scripts
-and recipes under `$out/share/vm-harness/`.
+and recipes under `$out/share/gosti/`.
 
 ## 3. See what backends this host can drive
 
@@ -96,7 +96,7 @@ residue:
 ```sh
 # Incus system container, launched fresh, probed, then deleted:
 gosti run --ephemeral --backend incus \
-  --baseline demo-job --base-image vmh-base \
+  --baseline demo-job --base-image gosti-base \
   -- true
 ```
 
@@ -110,7 +110,7 @@ If you are writing a harness rather than shelling out to the CLI, import the
 library and call the primitives directly:
 
 ```nim
-import vm_harness
+import gosti
 
 let b = newLimaBackend(cpus = 2, memoryGiB = 2, diskGiB = 10)
 b.provisionBaseline(BaselineSpec(name: "demo", guestOs: goLinux))

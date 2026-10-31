@@ -12,7 +12,12 @@ switch("path", "src")
 # until an unrelated worker exits. Keep the standard API and selected library;
 # only the private pipe constructor changes. Other platforms retain osproc.
 when defined(linux) and not (defined(reproInterfaceMode) or defined(reproProviderMode)):
-  patchFile("stdlib", "osproc", "src/vm_harness/compat/osproc")
+  patchFile("stdlib", "osproc", "src/gosti/compat/osproc")
+  # Nim 2.2.10 switched Linux startProcess from fork to posix_spawn, which the
+  # repair and its regression test do not cover. Keep the fork launcher on
+  # every compiler the lock may select (2.2.4 in the dev shell, 2.2.10 under
+  # repro).
+  switch("define", "useFork")
 
 # Graph metadata declares tools before any build tool can be selected.
 # These modes do not compile the CLI or its PCRE-dependent serial matcher.
@@ -21,7 +26,7 @@ when defined(linux) and not (defined(reproInterfaceMode) or defined(reproProvide
   let pcreConfig = findExe("pcre-config")
   if pcreConfig.len == 0:
     raise newException(ValueError,
-      "vm-harness Linux builds require pcre-config on the compile action PATH")
+      "gosti Linux builds require pcre-config on the compile action PATH")
   # Check-only mode does not execute gorgeEx or link an executable.
   if getCommand() != "check":
     # Resolve only the declared PCRE dependency, never the caller's entire

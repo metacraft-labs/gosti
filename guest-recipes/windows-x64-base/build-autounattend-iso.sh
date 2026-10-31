@@ -47,28 +47,28 @@
 # verifies the same pinned checksum.
 #
 # Requires: genisoimage OR mkisofs OR xorriso. All three are in the
-# vm-harness flake's Linux dev shell via `pkgs.cdrkit` /
+# gosti flake's Linux dev shell via `pkgs.cdrkit` /
 # `pkgs.xorriso`.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 LIB_DIR="$(cd -- "${SCRIPT_DIR}/../lib" &>/dev/null && pwd)"
-# VMH_BUILD_DIR lets the caller redirect outputs to a writable
+# GOSTI_BUILD_DIR lets the caller redirect outputs to a writable
 # directory when the recipe lives in /nix/store (e.g. when shipped
-# inside a Nix-built vm-harness package). When unset we keep the
+# inside a Nix-built gosti package). When unset we keep the
 # historical "<SCRIPT_DIR>/build" shape so in-tree developer
 # workflows stay byte-identical.
-BUILD_DIR="${VMH_BUILD_DIR:-${SCRIPT_DIR}/build}"
+BUILD_DIR="${GOSTI_BUILD_DIR:-${SCRIPT_DIR}/build}"
 STAGE_DIR="${BUILD_DIR}/autounattend-stage"
 ISO_PATH="${BUILD_DIR}/autounattend.iso"
 FIRST_BOOT_SRC=""
 CONTROLLER_PUBKEY_SRC=""
-PORTABLE_GIT_SRC="${VMH_PORTABLE_GIT_ARCHIVE:-}"
+PORTABLE_GIT_SRC="${GOSTI_PORTABLE_GIT_ARCHIVE:-}"
 REQUIRE_PORTABLE_GIT=0
 # Which hypervisor the resulting ISO is for. Only affects whether the
 # virtio driver-injection component survives into the staged
-# autounattend.xml — see the VMH:VIRTIO-DRIVERS markers in that file.
+# autounattend.xml — see the GOSTI:VIRTIO-DRIVERS markers in that file.
 TARGET="libvirt"
 
 while [[ $# -gt 0 ]]; do
@@ -122,7 +122,7 @@ fi
 # Default the PowerShell 7 ZIP to whatever ../lib/fetch-powershell.sh left in
 # ./build. Resolved by glob so the recipe does not have to repeat the pinned
 # version (provision-pwsh.ps1 owns it).
-PWSH_ZIP_SRC="${VMH_PWSH_ZIP:-}"
+PWSH_ZIP_SRC="${GOSTI_PWSH_ZIP:-}"
 if [[ -z "${PWSH_ZIP_SRC}" ]]; then
   for candidate in "${BUILD_DIR}"/PowerShell-*-win-x64.zip; do
     [[ -f "${candidate}" ]] && PWSH_ZIP_SRC="${candidate}" && break
@@ -169,16 +169,16 @@ if [[ "${TARGET}" == "hyperv" ]]; then
   # there is nothing to inject and the D:/E: paths name a CD that isn't
   # attached.
   awk '
-    /VMH:VIRTIO-DRIVERS:BEGIN/ { skipping = 1 }
+    /GOSTI:VIRTIO-DRIVERS:BEGIN/ { skipping = 1 }
     !skipping                  { print }
-    /VMH:VIRTIO-DRIVERS:END/   { skipping = 0 }
+    /GOSTI:VIRTIO-DRIVERS:END/   { skipping = 0 }
   ' "${SCRIPT_DIR}/autounattend.xml" > "${STAGE_DIR}/autounattend.xml"
 
   # Fail loudly rather than shipping an unmodified file: if the markers
   # are ever renamed, awk silently copies the input through and the
   # virtio block reaches a Hyper-V install. Both markers must be gone
   # AND the file must have actually shrunk.
-  if grep -q "VMH:VIRTIO-DRIVERS" "${STAGE_DIR}/autounattend.xml"; then
+  if grep -q "GOSTI:VIRTIO-DRIVERS" "${STAGE_DIR}/autounattend.xml"; then
     echo "build-autounattend-iso: virtio strip failed — markers still present" >&2
     exit 1
   fi

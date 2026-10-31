@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 {
-  description = "vm-harness — cross-platform VM lifecycle orchestration library";
+  description = "gosti — cross-platform VM lifecycle orchestration library";
 
   inputs = {
     # nixos-modules is this repo's only upstream flake: nixpkgs, flake-parts and
@@ -60,13 +60,15 @@
             else if pkgs.stdenv.isLinux then
               [
                 pkgs.libvirt
+                # virt-install is shipped separately from libvirt.
+                pkgs.virt-manager
                 pkgs.qemu
                 pkgs.lima
                 # The QemuBootBackend boots UEFI guests through
                 # `-drive if=pflash` and needs an edk2 firmware pair;
                 # `OVMF.fd` carries no binaries, it is here so the pair
                 # is realised in the store and the shellHook can name it
-                # exactly (see VMH_OVMF_CODE / VMH_OVMF_VARS below).
+                # exactly (see GOSTI_OVMF_CODE / GOSTI_OVMF_VARS below).
                 x86GuestPkgs.OVMF.fd
                 # swtpm backs QEMU's `-tpmdev emulator`. The
                 # qemu_windows_arm backend already drives a full swtpm
@@ -160,7 +162,7 @@
             hooks.just-lint = {
               enable = true;
               name = "just lint";
-              entry = "${pkgs.writeShellScript "vm-harness-just-lint" ''
+              entry = "${pkgs.writeShellScript "gosti-just-lint" ''
                 export PATH=${
                   pkgs.lib.makeBinPath (
                     [
@@ -181,12 +183,12 @@
             };
           };
 
-          vm-harness = pkgs.stdenv.mkDerivation {
+          gosti = pkgs.stdenv.mkDerivation {
             pname = "gosti";
             version =
               let
                 declarations = builtins.filter (line: builtins.match "version[[:space:]]*=.*" line != null) (
-                  pkgs.lib.splitString "\n" (builtins.readFile ./vm_harness.nimble)
+                  pkgs.lib.splitString "\n" (builtins.readFile ./gosti.nimble)
                 );
               in
               assert builtins.length declarations == 1;
@@ -202,33 +204,32 @@
               runHook preBuild
               # Nix sandboxes HOME to /homeless-shelter. Keep Nim's cache in
               # the writable build directory.
-              nim c --hints:off --opt:speed \
+              # Respect Nix's per-build worker request instead of Nim's host CPU autodetection.
+              nim c --hints:off --opt:speed --parallelBuild:"$NIX_BUILD_CORES" \
                 --nimcache:$TMPDIR/nimcache \
-                -o:gosti src/vm_harness/cli.nim
+                -o:gosti src/gosti/cli.nim
               runHook postBuild
             '';
             installPhase = ''
               runHook preInstall
               mkdir -p $out/bin \
-                $out/share/vm-harness/guest-scripts \
-                $out/share/vm-harness/guest-recipes
-              # `gosti` plus the `vm-harness` compatibility symlink — the
-              # shared layout script, so `just build` produces the same names.
+                $out/share/gosti/guest-scripts \
+                $out/share/gosti/guest-recipes
+              # The shared layout script, so `just build` installs the same
+              # names.
               bash scripts/install-binaries.sh gosti $out/bin
-              # Hermetic-consumer fixture (docs/design.md §8.6): the real CLI
+              # Hermetic-consumer fixture (docs/contributors/architecture.md §8.6): the real CLI
               # against the file-backed mock backend.
-              install -m755 scripts/vm-harness-fixture.sh \
-                $out/bin/vm-harness-fixture
-              cp -R guest-scripts/* $out/share/vm-harness/guest-scripts/
-              cp -R guest-recipes/* $out/share/vm-harness/guest-recipes/
+              install -m755 scripts/gosti-fixture.sh \
+                $out/bin/gosti-fixture
+              cp -R guest-scripts/* $out/share/gosti/guest-scripts/
+              cp -R guest-recipes/* $out/share/gosti/guest-recipes/
               runHook postInstall
             '';
             meta = {
               description = "Cross-platform VM lifecycle orchestration";
-              homepage = "https://github.com/metacraft-labs/vm-harness";
+              homepage = "https://github.com/metacraft-labs/gosti";
               license = pkgs.lib.licenses.asl20;
-              # `lib.getExe` consumers now run `bin/gosti`; `bin/vm-harness`
-              # remains as a symlink for everything that names it directly.
               mainProgram = "gosti";
               platforms = [
                 "x86_64-linux"
@@ -241,8 +242,8 @@
         in
         {
           packages = {
-            default = vm-harness;
-            gosti = vm-harness;
+            default = gosti;
+            inherit gosti;
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
             # The fast-booting libvirt test golden needs a Linux kernel,
@@ -259,7 +260,21 @@
 
           checks = {
             inherit pre-commit-check;
-            package-build = vm-harness;
+            package-build = gosti;
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            # Independent builds must produce the same guest bytes; comparing
+            # only a store path cannot detect an input-addressed recipe's
+            # transient inode, directory ordering or timestamp dependencies.
+            guest-linux-tpm-reproducible =
+              let
+                first = guest-linux-tpm.overrideAttrs { name = "guest-linux-tpm-first"; };
+                second = guest-linux-tpm.overrideAttrs { name = "guest-linux-tpm-second"; };
+              in
+              pkgs.runCommand "guest-linux-tpm-reproducible" { } ''
+                ${pkgs.diffutils}/bin/diff --recursive ${first} ${second}
+                touch "$out"
+              '';
           };
 
           # Packaging the CLI does not require hypervisors or booting a guest.
@@ -310,24 +325,24 @@
 
             shellHook = ''
               ${ownRepoOnly installGitHooks}
-              export VM_HARNESS_ROOT="$PWD"
+              export GOSTI_ROOT="$PWD"
               ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-                # Pin the firmware pair src/vm_harness/firmware.nim resolves
+                # Pin the firmware pair src/gosti/firmware.nim resolves
                 # to. Its last-resort fallback is a /nix/store glob whose
                 # winner is the lexically greatest store hash, which is not a
                 # stable choice; naming the flake's own OVMF makes a UEFI boot
                 # gate assert against the firmware this shell pins. Respects an
                 # operator override.
-                export VMH_OVMF_CODE="''${VMH_OVMF_CODE:-${x86GuestPkgs.OVMF.fd}/FV/OVMF_CODE.fd}"
-                export VMH_OVMF_VARS="''${VMH_OVMF_VARS:-${x86GuestPkgs.OVMF.fd}/FV/OVMF_VARS.fd}"
+                export GOSTI_OVMF_CODE="''${GOSTI_OVMF_CODE:-${x86GuestPkgs.OVMF.fd}/FV/OVMF_CODE.fd}"
+                export GOSTI_OVMF_VARS="''${GOSTI_OVMF_VARS:-${x86GuestPkgs.OVMF.fd}/FV/OVMF_VARS.fd}"
                 # The vTPM gate's guest, pinned the same way. Naming the
                 # store path here is what lets
                 # tests/integration/t_guest_sees_tpm_device.nim run with
                 # no network and no build step of its own: entering the
                 # shell realises it once. Respects an operator override.
-                export VMH_TPM_GUEST_DIR="''${VMH_TPM_GUEST_DIR:-${guest-linux-tpm}}"
+                export GOSTI_TPM_GUEST_DIR="''${GOSTI_TPM_GUEST_DIR:-${guest-linux-tpm}}"
               ''}
-              echo "vm-harness dev shell"
+              echo "gosti dev shell"
               echo "  nim:    $(nim --version | head -n1)"
               echo "  nimble: $(nimble --version | head -n1)"
             '';

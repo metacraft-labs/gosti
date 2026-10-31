@@ -10,6 +10,21 @@
 # Medic service that re-enables both, and Delivery Optimization (update
 # download peer-to-peer). UsoSvc and WaaSMedicSvc refuse an ONLINE change even
 # from an elevated administrator, which is why this is an offline edit.
+# Start=4 alone does NOT hold for these three: on 2026-10-23, on clones of a
+# golden whose servicing was ~3 weeks old, SYSTEM switched WaaSMedicSvc to
+# demand start during boot (System event 7040 logged by services.exe a few
+# seconds after the SCM came up, no scheduled task involved), and wuauserv /
+# UsoSvc ~1 min later. The same golden had stayed off when it was fresh. So
+# ci-background-off-system.reg also replaces their SCM security descriptor
+# (Services\<svc>\Security\Security) with one that denies Everyone, SYSTEM
+# included, change-config / write-DAC / write-owner / delete:
+#   O:SYG:SYD:(D;;DCSDWDWO;;;WD)(A;;RC;;;OW)(A;;CCLCSWRPWPDTLOCRRC;;;SY)
+#     (A;;CCLCSWRPWPDTLOCRRC;;;BA)(A;;CCLCSWRPLORC;;;AU)
+#     S:(AU;FA;CCDCLCSWRPWPDTLOSDRCWDWO;;;WD)
+# The OWNER RIGHTS entry removes the owner's implicit WRITE_DAC. The SACL, the
+# AU entry and the SY owner/group are the stock descriptor's (an SD without an
+# owner and group makes the SCM fail OpenService with 1338, which was tried).
+# The SCM reads it at boot and checks every ChangeServiceConfig against it.
 wuauserv
 UsoSvc
 WaaSMedicSvc

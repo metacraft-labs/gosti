@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
 # SPDX-License-Identifier: Apache-2.0
-## t_crud_store_roundtrip — VM state persists across ``vm-harness crud``
+## t_crud_store_roundtrip — VM state persists across ``gosti crud``
 ## invocations (design doc §8.6).
 ##
 ## Every step below is a SEPARATE CLI process, exactly as a subprocess
@@ -16,10 +16,10 @@
 ##     with ``backend-error``; ``start_vm`` re-materialises it and
 ##     ``delete_vm`` clears the record;
 ##   * names are validated (``bad-args``) and nothing is written for them;
-##   * fault injection for consumers (``VMH_MOCK_FAIL`` → 5,
-##     ``VMH_MOCK_UNAVAILABLE`` → 4);
+##   * fault injection for consumers (``GOSTI_MOCK_FAIL`` → 5,
+##     ``GOSTI_MOCK_UNAVAILABLE`` → 4);
 ##   * a held per-VM lock makes a call fail ``busy`` (5) instead of racing;
-##   * stores are isolated by location, and ``VMH_CRUD_STATE_DIR`` is honoured;
+##   * stores are isolated by location, and ``GOSTI_CRUD_STATE_DIR`` is honoured;
 ##   * a record-trusting backend (``noop``: no hypervisor to ask) also keeps
 ##     its VMs across calls.
 ##
@@ -28,14 +28,14 @@
 ## that §8.6 ships for hermetic consumers — and ``noop`` is the sanctioned
 ## fixture. The CLI, the crud store, process boundaries, locks, and the
 ## filesystem are all real. The test binary re-execs itself as the CLI
-## (``__vmh_cli``) so no external binary is needed.
+## (``__gosti_cli``) so no external binary is needed.
 
 import std/[json, os, osproc, streams, strtabs, strutils, tempfiles, unittest]
-import vm_harness/cli
+import gosti/cli
 
 when isMainModule:
   let params = commandLineParams()
-  if params.len >= 1 and params[0] == "__vmh_cli":
+  if params.len >= 1 and params[0] == "__gosti_cli":
     quit(runCli(params[1 .. ^1]))
 
 type Run = object
@@ -46,10 +46,10 @@ type Run = object
 proc runCrud(stateDir: string, args: seq[string],
              extraEnv: openArray[(string, string)] = [],
              backend = "mock"): Run =
-  ## One ``vm-harness crud`` process. Flags go BEFORE ``--`` (everything
+  ## One ``gosti crud`` process. Flags go BEFORE ``--`` (everything
   ## after it is the guest argv), so ``--backend``/``--state-dir`` are
   ## spliced in right after the verb and name.
-  var argv = @["__vmh_cli", "crud"]
+  var argv = @["__gosti_cli", "crud"]
   let dd = args.find("--")
   let head = if dd >= 0: args[0 ..< dd] else: args
   argv.add(head)
@@ -84,7 +84,7 @@ proc vanish(stateDir, instance: string) =
   writeFile(fleet, doc.pretty)
 
 suite "t_crud_store_roundtrip":
-  let work = createTempDir("vmh-crud-store-rt-", "")
+  let work = createTempDir("gosti-crud-store-rt-", "")
 
   test "every verb, one process per verb, sees the previous calls":
     let sd = work / "lifecycle"
@@ -188,20 +188,20 @@ suite "t_crud_store_roundtrip":
     check not fileExists(sd / "escape.json")
     check runCrud(sd, @["list_vms"]).env["data"]["vms"].len == 0
 
-  test "fault injection: VMH_MOCK_FAIL and VMH_MOCK_UNAVAILABLE":
+  test "fault injection: GOSTI_MOCK_FAIL and GOSTI_MOCK_UNAVAILABLE":
     let sd = work / "faults"
     check runCrud(sd, @["create_vm", "vm1"]).code == 0
     var r = runCrud(sd, @["exec", "vm1", "--", "true"],
-                    [("VMH_MOCK_FAIL", "exec")])
+                    [("GOSTI_MOCK_FAIL", "exec")])
     check r.code == 5
     check r.env["error"]["kind"].getStr == "backend-error"
     check "injected failure" in r.env["error"]["message"].getStr
     # The failed exec changed nothing: the VM is still there and running.
     check runCrud(sd, @["get_vm", "vm1"]).vmState == "running"
-    r = runCrud(sd, @["create_vm", "vm2"], [("VMH_MOCK_FAIL", "revert,exec")])
+    r = runCrud(sd, @["create_vm", "vm2"], [("GOSTI_MOCK_FAIL", "revert,exec")])
     check r.code == 5
     check runCrud(sd, @["get_vm", "vm2"]).code == 3   # no half-created record
-    r = runCrud(sd, @["list_vms"], [("VMH_MOCK_UNAVAILABLE", "1")])
+    r = runCrud(sd, @["list_vms"], [("GOSTI_MOCK_UNAVAILABLE", "1")])
     check r.code == 4
     check r.env["error"]["kind"].getStr == "backend-unavailable"
 
@@ -217,17 +217,17 @@ suite "t_crud_store_roundtrip":
     removeDir(lockDir)
     check runCrud(sd, @["get_vm", "vm1"]).code == 0
 
-  test "stores are isolated by location; VMH_CRUD_STATE_DIR is honoured":
+  test "stores are isolated by location; GOSTI_CRUD_STATE_DIR is honoured":
     let a = work / "iso-a"
     let b = work / "iso-b"
     check runCrud(a, @["create_vm", "vm1"]).code == 0
     check runCrud(b, @["get_vm", "vm1"]).code == 3
     let envDir = work / "iso-env"
     check runCrud("", @["create_vm", "vmx"],
-                  [("VMH_CRUD_STATE_DIR", envDir)]).code == 0
+                  [("GOSTI_CRUD_STATE_DIR", envDir)]).code == 0
     check fileExists(envDir / "mock" / "vmx.json")
     check runCrud("", @["get_vm", "vmx"],
-                  [("VMH_CRUD_STATE_DIR", envDir)]).vmState == "running"
+                  [("GOSTI_CRUD_STATE_DIR", envDir)]).vmState == "running"
 
   test "a record-trusting backend (noop) also persists across calls":
     let sd = work / "noop"
@@ -241,18 +241,18 @@ suite "t_crud_store_roundtrip":
     check runCrud(sd, @["get_vm", "n1"], backend = "noop").code == 3
 
   when defined(posix):
-    test "scripts/vm-harness-fixture.sh drives the same contract":
+    test "scripts/gosti-fixture.sh drives the same contract":
       # The consumer-facing wrapper (§8.6): real CLI, mock backend, per-test
-      # state dir. VMH_FIXTURE_CLI points it at this binary's CLI role.
+      # state dir. GOSTI_FIXTURE_CLI points it at this binary's CLI role.
       let script = currentSourcePath().parentDir.parentDir.parentDir /
-                   "scripts" / "vm-harness-fixture.sh"
+                   "scripts" / "gosti-fixture.sh"
       let sd = work / "fixture"
       proc fx(args: seq[string], extra: openArray[(string, string)] = []):
           (int, JsonNode) =
         var env = newStringTable(modeCaseSensitive)
         for k, v in envPairs(): env[k] = v
-        env["VMH_FIXTURE_STATE_DIR"] = sd
-        env["VMH_FIXTURE_CLI"] = getAppFilename() & " __vmh_cli"
+        env["GOSTI_FIXTURE_STATE_DIR"] = sd
+        env["GOSTI_FIXTURE_CLI"] = getAppFilename() & " __gosti_cli"
         for (k, v) in extra: env[k] = v
         let p = startProcess("/usr/bin/env", args = @["bash", script] & args,
                              env = env, options = {})
@@ -265,7 +265,7 @@ suite "t_crud_store_roundtrip":
       let (ec, ex) = fx(@["exec", "vm1", "--", "echo", "hi"])
       check ec == 0
       check ex["data"]["stdout"].getStr == "mock-exec: echo hi\n"
-      check fx(@["exec", "vm1", "--", "true"], [("VMH_MOCK_FAIL", "exec")])[0] == 5
+      check fx(@["exec", "vm1", "--", "true"], [("GOSTI_MOCK_FAIL", "exec")])[0] == 5
       check fx(@["delete_vm", "vm1"])[0] == 0
       check fx(@["get_vm", "vm1"])[0] == 3
 

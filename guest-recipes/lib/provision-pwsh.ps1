@@ -47,9 +47,8 @@
 #
 # So the binary has to be in the image. This is also the shape the fleet has
 # already proven: the persistent (non-GARM) Windows runner installs the same
-# pinned PowerShell 7 ZIP to the same `C:\pwsh` -- see
-# infra/machines/server/_windows-runner-001/system_windows_runner.nim, whose
-# comment records the motivating incident (codetracer-cairo-recorder
+# pinned PowerShell 7 ZIP to the same `C:\pwsh`. The motivating incident was
+# a missing pwsh in a Windows job (codetracer-cairo-recorder
 # `ci-windows-diy`, 2026-07-03, `pwsh: command not found`). The ephemeral fleet
 # simply never got the same treatment.
 #
@@ -101,9 +100,9 @@
 # Idempotent: a matching install (same version marker + pwsh.exe present) is a
 # no-op, and the PATH edit de-dupes.
 #
-# Diagnostics: C:\Windows\Temp\vmh-pwsh-provision.log
-# Failure marker: C:\Windows\Temp\vmh-pwsh-provision-failed
-# Success marker: C:\Windows\Temp\vmh-pwsh-provision-done (contains the version)
+# Diagnostics: C:\Windows\Temp\gosti-pwsh-provision.log
+# Failure marker: C:\Windows\Temp\gosti-pwsh-provision-failed
+# Success marker: C:\Windows\Temp\gosti-pwsh-provision-done (contains the version)
 #
 # ---------------------------------------------------------------------------
 # FAILURE HANDLING -- AND THE GATE THAT MAKES IT SAFE
@@ -149,9 +148,9 @@ $PwshVersion = '7.4.6'
 $PwshSha256X64 = 'ed49ce5adb2162cc4a835d740486be729ba904627cca71fcb6c2b95be11b993d'
 $PwshSha256Arm64 = '875af8ae039abb583976129b8508c7cc39f0371ae790db096561e44019da0165'
 
-$log = 'C:\Windows\Temp\vmh-pwsh-provision.log'
-$failMarker = 'C:\Windows\Temp\vmh-pwsh-provision-failed'
-$doneMarker = 'C:\Windows\Temp\vmh-pwsh-provision-done'
+$log = 'C:\Windows\Temp\gosti-pwsh-provision.log'
+$failMarker = 'C:\Windows\Temp\gosti-pwsh-provision-failed'
+$doneMarker = 'C:\Windows\Temp\gosti-pwsh-provision-done'
 
 function Log([string] $Message) {
   $line = '{0:o} {1}' -f (Get-Date), $Message
@@ -208,14 +207,14 @@ try {
   # never removed, which meant the exclusion was captured into the golden:
   # a clone of the promoted image was found carrying
   #
-  #     C:\Windows\Temp\vmh-pwsh-extract-6752
+  #     C:\Windows\Temp\gosti-pwsh-extract-6752
   #
   # in Get-MpPreference, naming a directory that stopped existing during the
   # build. Windows reuses PIDs freely, so any later process that draws 6752
   # recreates that exact path and inherits an UNSCANNED directory under
   # C:\Windows\Temp -- on machines whose entire job is running pull-request
   # code. An exclusion must not outlive the thing it was excluding.
-  $staging = "C:\Windows\Temp\vmh-pwsh-extract-$PID"
+  $staging = "C:\Windows\Temp\gosti-pwsh-extract-$PID"
   try {
     Add-MpPreference -ExclusionPath $InstallDir -ErrorAction Stop
     Log "added Defender exclusion for $InstallDir"
@@ -423,7 +422,7 @@ try {
   # it makes an interactive session on the build VM behave sanely.
   try {
     $sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'
-    $native = Add-Type -MemberDefinition $sig -Name VmhWin32PwshSendMessageTimeout -Namespace VmhWin32Pwsh -PassThru
+    $native = Add-Type -MemberDefinition $sig -Name GostiWin32PwshSendMessageTimeout -Namespace GostiWin32Pwsh -PassThru
     $result = [UIntPtr]::Zero
     $null = $native::SendMessageTimeout([IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
     Log 'broadcast WM_SETTINGCHANGE'
@@ -450,7 +449,7 @@ try {
   #
   # The name carries $PID so two runs cannot truncate each other's probe, and
   # the file is deleted in a `finally` so it is never captured into the golden.
-  $probeScript = "C:\Windows\Temp\vmh-pwsh-probe-$PID.ps1"
+  $probeScript = "C:\Windows\Temp\gosti-pwsh-probe-$PID.ps1"
   $probe = @()
   try {
     $probeBody = @(

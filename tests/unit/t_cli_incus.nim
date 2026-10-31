@@ -2,10 +2,34 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import std/[os, strutils, tables, tempfiles, unittest]
-import vm_harness/cli
-import vm_harness/backends/incus
+import gosti/cli
+import gosti/backends/incus
 
 suite "CLI Incus lifecycle":
+  test "Incus profiles retain administrator order and reject other routes":
+    let opts = parseCliOpts(@[
+      "run", "--ephemeral", "--backend", "incus",
+      "--incus-profile", "default", "--incus-profile", "ci-store",
+      "--baseline", "runner-profiles", "--", "true",
+    ])
+    check opts.incusProfiles == @["default", "ci-store"]
+    let defaults = parseCliOpts(@[
+      "run", "--ephemeral", "--backend", "incus", "--baseline", "plain",
+    ])
+    check defaults.incusProfiles.len == 0
+    for invalid in [
+      @["run", "--backend", "incus", "--incus-profile", "ci-store"],
+      @["run", "--ephemeral", "--backend", "libvirt",
+        "--incus-profile", "ci-store"],
+      @["run", "--ephemeral", "--backend", "auto",
+        "--incus-profile", "ci-store"],
+      @["provision", "--backend", "incus", "--incus-profile", "ci-store"],
+      @["run", "--ephemeral", "--backend", "incus", "--incus-profile"],
+      @["run", "--ephemeral", "--backend", "incus", "--incus-profile", ""],
+    ]:
+      expect ValueError:
+        discard parseCliOpts(invalid)
+
   test "nested capability flags parse only for ephemeral Incus runs":
     let both = parseCliOpts(@[
       "run", "--ephemeral", "--backend", "incus",
@@ -60,7 +84,7 @@ suite "CLI Incus lifecycle":
 
   test "CLI applies --cpus/--memory-mb as limits before the container starts":
     when defined(linux):
-      let work = createTempDir("vmh-cli-incus-limits", "")
+      let work = createTempDir("gosti-cli-incus-limits", "")
       defer: removeDir(work)
       let logPath = work / "incus.log"
       let fakeIncus = work / "incus"
@@ -72,9 +96,9 @@ suite "CLI Incus lifecycle":
         "esac\n")
       setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
 
-      let previous = getEnv("VMH_INCUS_CMD")
-      putEnv("VMH_INCUS_CMD", fakeIncus)
-      defer: putEnv("VMH_INCUS_CMD", previous)
+      let previous = getEnv("GOSTI_INCUS_CMD")
+      putEnv("GOSTI_INCUS_CMD", fakeIncus)
+      defer: putEnv("GOSTI_INCUS_CMD", previous)
 
       check runCli(@[
         "run", "--ephemeral", "--backend", "incus",
@@ -94,7 +118,7 @@ suite "CLI Incus lifecycle":
 
   test "privileged Incus CLI path keeps the configured container running":
     when defined(linux):
-      let work = createTempDir("vmh-cli-incus-capability", "")
+      let work = createTempDir("gosti-cli-incus-capability", "")
       defer: removeDir(work)
       let logPath = work / "incus.log"
       let fakeIncus = work / "incus"
@@ -107,9 +131,9 @@ suite "CLI Incus lifecycle":
         "esac\n")
       setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
 
-      let previous = getEnv("VMH_INCUS_CMD")
-      putEnv("VMH_INCUS_CMD", fakeIncus)
-      defer: putEnv("VMH_INCUS_CMD", previous)
+      let previous = getEnv("GOSTI_INCUS_CMD")
+      putEnv("GOSTI_INCUS_CMD", fakeIncus)
+      defer: putEnv("GOSTI_INCUS_CMD", previous)
 
       check runCli(@[
         "run", "--ephemeral", "--backend", "incus",
@@ -129,7 +153,7 @@ suite "CLI Incus lifecycle":
 
   test "ephemeral-destroy delegates only the named container to Incus":
     when defined(linux):
-      let work = createTempDir("vmh-cli-incus", "")
+      let work = createTempDir("gosti-cli-incus", "")
       defer: removeDir(work)
       let logPath = work / "incus.log"
       let fakeIncus = work / "incus"
@@ -147,9 +171,9 @@ suite "CLI Incus lifecycle":
         "esac\n")
       setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
 
-      let previous = getEnv("VMH_INCUS_CMD")
-      putEnv("VMH_INCUS_CMD", fakeIncus)
-      defer: putEnv("VMH_INCUS_CMD", previous)
+      let previous = getEnv("GOSTI_INCUS_CMD")
+      putEnv("GOSTI_INCUS_CMD", fakeIncus)
+      defer: putEnv("GOSTI_INCUS_CMD", previous)
 
       check runCli(@[
         "ephemeral-destroy",
@@ -166,7 +190,7 @@ suite "CLI Incus lifecycle":
 
   test "instance operations use typed Incus backend methods":
     when defined(linux):
-      let work = createTempDir("vmh-cli-incus-instance", "")
+      let work = createTempDir("gosti-cli-incus-instance", "")
       defer: removeDir(work)
       let logPath = work / "incus.log"
       let statePath = work / "state"
@@ -186,9 +210,9 @@ suite "CLI Incus lifecycle":
         "esac\n")
       setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
 
-      let previous = getEnv("VMH_INCUS_CMD")
-      putEnv("VMH_INCUS_CMD", fakeIncus)
-      defer: putEnv("VMH_INCUS_CMD", previous)
+      let previous = getEnv("GOSTI_INCUS_CMD")
+      putEnv("GOSTI_INCUS_CMD", fakeIncus)
+      defer: putEnv("GOSTI_INCUS_CMD", previous)
 
       check runCli(@["instance", "start", "--backend", "incus",
                      "reproos-instance"]) == 0

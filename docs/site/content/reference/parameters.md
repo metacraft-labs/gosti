@@ -10,16 +10,15 @@ Gosti is a toolkit whose value is its parameters. This page documents the
 knobs consumers rely on as a stable, public contract: name, type, default,
 effect, and security/performance implications. Three surfaces matter most:
 
-- the runner-image recipe seams (`VMH_RUNNER_*` and friends) that shape the
-  `vmh-linux-runner` Incus image, and
+- the runner-image recipe seams (`GOSTI_RUNNER_*` and friends) that shape the
+  `gosti-linux-runner` Incus image, and
 - the Gosti ephemeral Incus capability flags a trusted controller sends
   to a remote host, and
 - the GARM Incus provider options (`incus*`) a fleet operator sets to grant
   per-job containers their capabilities.
 
 Every value below was verified against source; nothing here is invented. If you
-change a default, treat it as an API change — downstream repos (e.g. the
-`metacraft-labs/infra` runner fleet) build policy against these values.
+change a default, treat it as an API change — runner fleets downstream build policy against these values.
 
 
 ## 1. Runner-image recipe seams
@@ -33,32 +32,32 @@ before invoking the script.
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `VMH_INCUS_CMD` | command (space-split) | `incus` | The incus invocation the recipe shells to. Set to `sudo -n incus` when the session lacks `incus-admin` group access. |
-| `VMH_RUNNER_ALIAS` | string | `vmh-linux-runner` | Output image alias. Point this at a SIDE alias (e.g. `vmh-linux-runner-nested`) for capability bakes so the live image is never overwritten. |
-| `VMH_CLOUD_BASE` | string | `im2-debian-cloud` | Local Debian cloud base alias (must ship cloud-init). |
-| `VMH_CLOUD_REMOTE` | string | `images:debian/12/cloud` | Remote image copied into `VMH_CLOUD_BASE` if the local alias is absent (needs host network). |
-| `VMH_CLOUD_BRIDGE` | string | `incusbr0` | The incus bridge used to derive the build container's static egress IP. |
-| `VMH_RUNNER_RECIPE_REVISION` | string | `linux-x64-runner-v1` | Stamped onto the published image as the `vmh.recipe_revision` property. A consumer rebuilds when its expected revision differs — the fleet-refresh lever. |
+| `GOSTI_INCUS_CMD` | command (space-split) | `incus` | The incus invocation the recipe shells to. Set to `sudo -n incus` when the session lacks `incus-admin` group access. |
+| `GOSTI_RUNNER_ALIAS` | string | `gosti-linux-runner` | Output image alias. Point this at a SIDE alias (e.g. `gosti-linux-runner-nested`) for capability bakes so the live image is never overwritten. |
+| `GOSTI_CLOUD_BASE` | string | `im2-debian-cloud` | Local Debian cloud base alias (must ship cloud-init). |
+| `GOSTI_CLOUD_REMOTE` | string | `images:debian/12/cloud` | Remote image copied into `GOSTI_CLOUD_BASE` if the local alias is absent (needs host network). |
+| `GOSTI_CLOUD_BRIDGE` | string | `incusbr0` | The incus bridge used to derive the build container's static egress IP. |
+| `GOSTI_RUNNER_RECIPE_REVISION` | string | `linux-x64-runner-v1` | Stamped onto the published image as the `gosti.recipe_revision` property. A consumer rebuilds when its expected revision differs — the fleet-refresh lever. |
 
 ### GitHub Actions runner staging
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `VMH_RUNNER_VERSION` | string | `2.337.0` | actions/runner release version to stage, or `latest` to resolve the newest release at build time (not reproducible). GitHub stops dispatching jobs to deprecated runner releases, so keep the pin within one minor release of upstream latest. |
-| `VMH_RUNNER_SHA256` | string | unchecked | Expected sha256 of the runner tarball; the build fails on a mismatch. |
-| `VMH_RUNNER_STALENESS_CHECK` | bool | `1` | Warn when the pin is two or more minor releases behind upstream latest (best effort; `0` skips the lookup). |
-| `VMH_RUNNER_TARBALL` | path | download to `/tmp` | Pre-downloaded runner tarball to use instead of downloading (useful offline). |
-| `VMH_RUNNER_USER` | string | `runner` | Unprivileged runner user (created with passwordless sudo; the runner refuses to run as root). |
-| `VMH_RUNNER_CACHE` | path | `/home/<user>/actions-runner` | In-image runner directory. Must match GARM's Linux install template's cached path, or the per-job bootstrap re-downloads the ~200 MB runner every job. |
+| `GOSTI_RUNNER_VERSION` | string | `2.337.0` | actions/runner release version to stage, or `latest` to resolve the newest release at build time (not reproducible). GitHub stops dispatching jobs to deprecated runner releases, so keep the pin within one minor release of upstream latest. |
+| `GOSTI_RUNNER_SHA256` | string | unchecked | Expected sha256 of the runner tarball; the build fails on a mismatch. |
+| `GOSTI_RUNNER_STALENESS_CHECK` | bool | `1` | Warn when the pin is two or more minor releases behind upstream latest (best effort; `0` skips the lookup). |
+| `GOSTI_RUNNER_TARBALL` | path | download to `/tmp` | Pre-downloaded runner tarball to use instead of downloading (useful offline). |
+| `GOSTI_RUNNER_USER` | string | `runner` | Unprivileged runner user (created with passwordless sudo; the runner refuses to run as root). |
+| `GOSTI_RUNNER_CACHE` | path | `/home/<user>/actions-runner` | In-image runner directory. Must match GARM's Linux install template's cached path, or the per-job bootstrap re-downloads the ~200 MB runner every job. |
 
-### Nested Docker bake (HR1)
+### Nested Docker bake
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `VMH_RUNNER_DOCKER` | bool (`1` = on) | off | Bake docker/moby + fuse-overlayfs + a `docker.service`/`docker.socket` so an in-guest Docker daemon can run. Off ⇒ the live image is byte-unchanged. Pairs with the provider's `incusSecurityNesting = true` — the image ships the userspace, the provider grants the privilege. |
-| `VMH_DOCKER_VERSION` | string | `27.5.1` | Docker static-binary bundle version. |
-| `VMH_DOCKER_TARBALL` | path | download on host | Pre-downloaded docker static bundle (streamed in, not `incus file push`ed). |
-| `VMH_DOCKER_STORAGE_DRIVER` | string | `fuse-overlayfs` | Docker storage driver written into `daemon.json`. An unprivileged nested container cannot use the kernel `overlay2` driver, so `fuse-overlayfs` is the safe default. |
+| `GOSTI_RUNNER_DOCKER` | bool (`1` = on) | off | Bake docker/moby + fuse-overlayfs + a `docker.service`/`docker.socket` so an in-guest Docker daemon can run. Off ⇒ the live image is byte-unchanged. Pairs with the provider's `incusSecurityNesting = true` — the image ships the userspace, the provider grants the privilege. |
+| `GOSTI_DOCKER_VERSION` | string | `27.5.1` | Docker static-binary bundle version. |
+| `GOSTI_DOCKER_TARBALL` | path | download on host | Pre-downloaded docker static bundle (streamed in, not `incus file push`ed). |
+| `GOSTI_DOCKER_STORAGE_DRIVER` | string | `fuse-overlayfs` | Docker storage driver written into `daemon.json`. An unprivileged nested container cannot use the kernel `overlay2` driver, so `fuse-overlayfs` is the safe default. |
 
 Security/perf: nested Docker requires the container to run with
 `security.nesting` plus the mknod/setxattr syscall intercepts (the provider's
@@ -66,32 +65,32 @@ Security/perf: nested Docker requires the container to run with
 one-job guest; the socket is group-owned `docker` so the runner reaches it
 without sudo.
 
-### Nested KVM bake (HR2)
+### Nested KVM bake
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `VMH_RUNNER_KVM` | bool (`1` = on) | off | Bake `qemu-system-x86` + a guest kernel so an in-guest `qemu-system-x86_64 -enable-kvm` boots a hardware-accelerated nested VM. Off ⇒ the live image is byte-unchanged. Pairs with the provider's `incusNestedKvm = true`. |
+| `GOSTI_RUNNER_KVM` | bool (`1` = on) | off | Bake `qemu-system-x86` + a guest kernel so an in-guest `qemu-system-x86_64 -enable-kvm` boots a hardware-accelerated nested VM. Off ⇒ the live image is byte-unchanged. Pairs with the provider's `incusNestedKvm = true`. |
 
 Security/perf: hardware acceleration requires the host to expose `/dev/kvm`
 with nested virt enabled (`kvm_intel.nested=Y` / `kvm_amd.nested=Y`) and the
-provider to attach `/dev/kvm` into the container. `VMH_RUNNER_DOCKER=1
-VMH_RUNNER_KVM=1` bakes both into one image (the prod `incus-nested` class needs
+provider to attach `/dev/kvm` into the container. `GOSTI_RUNNER_DOCKER=1
+GOSTI_RUNNER_KVM=1` bakes both into one image (the prod `incus-nested` class needs
 both).
 
-### `repro` CLI bake (HR-REPRO)
+### `repro` CLI bake
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `VMH_RUNNER_REPRO` | bool (`0` = off) | on | Bake the pinned `repro` CLI onto PATH (as the portable self-extractor) and pre-warm its extraction at bake time so per-job first-run is fast (~4 s warm vs ~50 s cold). Set `0` to reproduce the pre-repro image byte-for-byte. |
-| `VMH_REPRO_PIN` | git rev | resolved from nixos-modules `flake.lock` | reprobuild rev to build `repro-portable` from. Overrides the single-source-of-truth pin (e.g. to test an unlanded rev). |
-| `VMH_REPRO_BUNDLE` | path | nix-built on host | Pre-built `repro-portable` self-extractor to install, skipping the nix build. |
-| `VMH_NIXOS_MODULES_LOCK` | path | `../../../nixos-modules/flake.lock` (relative to the script) | The `flake.lock` whose `reprobuild` node rev pins `repro`. This is the single source of truth so the runner image and the nix fleet install byte-identical `repro`. |
+| `GOSTI_RUNNER_REPRO` | bool (`0` = off) | on | Bake the pinned `repro` CLI onto PATH (as the portable self-extractor) and pre-warm its extraction at bake time so per-job first-run is fast (~4 s warm vs ~50 s cold). Set `0` to reproduce the pre-repro image byte-for-byte. |
+| `GOSTI_REPRO_PIN` | git rev | resolved from nixos-modules `flake.lock` | reprobuild rev to build `repro-portable` from. Overrides the single-source-of-truth pin (e.g. to test an unlanded rev). |
+| `GOSTI_REPRO_BUNDLE` | path | nix-built on host | Pre-built `repro-portable` self-extractor to install, skipping the nix build. |
+| `GOSTI_NIXOS_MODULES_LOCK` | path | `../../../nixos-modules/flake.lock` (relative to the script) | The `flake.lock` whose `reprobuild` node rev pins `repro`. This is the single source of truth so the runner image and the nix fleet install byte-identical `repro`. |
 
-Note for out-of-tree consumers: the default `VMH_NIXOS_MODULES_LOCK` path
+Note for out-of-tree consumers: the default `GOSTI_NIXOS_MODULES_LOCK` path
 assumes the sibling-checkout workspace layout. When the recipe is invoked from a
 context without that sibling (e.g. an isolated Nix-store source), either set
-`VMH_NIXOS_MODULES_LOCK` to a real path, set `VMH_REPRO_PIN` explicitly, or set
-`VMH_RUNNER_REPRO=0` to skip the bake — otherwise the build aborts.
+`GOSTI_NIXOS_MODULES_LOCK` to a real path, set `GOSTI_REPRO_PIN` explicitly, or set
+`GOSTI_RUNNER_REPRO=0` to skip the bake — otherwise the build aborts.
 
 ### Build-egress overrides (host-dependent)
 
@@ -101,9 +100,9 @@ on unusual host networking.
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `VMH_BUILD_EGRESS_IP` | IPv4 | host `.249` of the bridge /24 | Static build-container egress IP. |
-| `VMH_BUILD_EGRESS_GW` | IPv4 | the `incusbr0` host address | Default route for the build container. |
-| `VMH_BUILD_EGRESS_DNS` | IPv4 | `1.1.1.1` | Resolver written into the build container. |
+| `GOSTI_BUILD_EGRESS_IP` | IPv4 | host `.249` of the bridge /24 | Static build-container egress IP. |
+| `GOSTI_BUILD_EGRESS_GW` | IPv4 | the `incusbr0` host address | Default route for the build container. |
+| `GOSTI_BUILD_EGRESS_DNS` | IPv4 | `1.1.1.1` | Resolver written into the build container. |
 
 The static address is torn down before publish, so the image carries no stray
 address (the provider injects the real per-job IP via cloud-init).
@@ -120,6 +119,13 @@ the prior `incus launch` argv exactly.
 | --- | --- | --- | --- |
 | `--incus-security-nesting` | bool | `false` | Before first start, sets `security.nesting=true` plus the fixed mknod/setxattr syscall intercepts used by unprivileged nested Docker/Podman. |
 | `--incus-nested-kvm` | bool | `false` | Implies nesting; before first start attaches exactly host `/dev/kvm` to guest `/dev/kvm` as a unix-char device with mode `0666`, then converges and verifies that exact guest mode and a real read/write open. The host path/type/mode are not caller-selectable. |
+| `--incus-profile <name>` | repeatable string | empty | Forwards existing administrator-created Incus profiles in the supplied order. Empty retains Incus's automatic `default` profile. An explicit list replaces it: include `--incus-profile default` first to retain its root disk and NIC before an overlay profile. |
+
+Profiles are applied at instance creation, before the first guest process.
+Their ordering and default behavior follow [Incus's profile contract](https://linuxcontainers.org/incus/docs/main/profiles/).
+This option selects existing host policy; it creates no profile or mount and
+must never be derived from guest user-data or workflow input. A profile failure
+cleans up the half-created instance rather than returning a degraded runner.
 
 The caller is part of the trusted host control plane. Locally it already needs
 the Incus administrative socket; remotely it must possess the overlay-only
@@ -137,9 +143,9 @@ privilege to the container.
 
 :::note
 Where these are defined. These options are the NixOS `services.garm`
-provider surface, defined in the shared `metacraft-labs/nixos-modules` GARM
-module (`modules/garm/default.nix`), and set by a consumer such as
-`infra/services/garm-incus-runners.nix`. They are documented here because they
+provider surface, defined in the shared `metacraft-labs/devops-modules` GARM
+module (`modules/garm/default.nix`), and set by the deployment that runs the
+runner pools. They are documented here because they
 are the run-time half of Gosti's runner-image feature contract — the two
 only work as a pair. Set them in the consumer's NixOS config, not in
 Gosti. All are ignored by non-incus providers.
@@ -149,8 +155,8 @@ Gosti. All are ignored by non-incus providers.
 
 | Option | Type | Default | Effect + security posture |
 | --- | --- | --- | --- |
-| `incusSecurityNesting` | bool | `false` | Enables `security.nesting = true` + `security.syscalls.intercept.mknod` + `.setxattr` on each container before start, so an in-guest Docker/Podman daemon can run on the fuse-overlayfs driver. Requires the image to ship Docker (`VMH_RUNNER_DOCKER=1`). The daemon is unprivileged; the intercepts are what let an unprivileged nested container build overlay image layers. |
-| `incusNestedKvm` | bool | `false` | Exposes host `/dev/kvm` into the container (`incus config device add <c> kvm unix-char source=/dev/kvm mode=0666`) and ensures `security.nesting=true`, so an in-guest `qemu-system-* -enable-kvm` gets hardware-accelerated nested virt. Requires the host to expose `/dev/kvm` with nested virt enabled and the image to ship qemu/kvm (`VMH_RUNNER_KVM=1`). The permissive device mode is confined to the dedicated ephemeral one-job guest. |
+| `incusSecurityNesting` | bool | `false` | Enables `security.nesting = true` + `security.syscalls.intercept.mknod` + `.setxattr` on each container before start, so an in-guest Docker/Podman daemon can run on the fuse-overlayfs driver. Requires the image to ship Docker (`GOSTI_RUNNER_DOCKER=1`). The daemon is unprivileged; the intercepts are what let an unprivileged nested container build overlay image layers. |
+| `incusNestedKvm` | bool | `false` | Exposes host `/dev/kvm` into the container (`incus config device add <c> kvm unix-char source=/dev/kvm mode=0666`) and ensures `security.nesting=true`, so an in-guest `qemu-system-* -enable-kvm` gets hardware-accelerated nested virt. Requires the host to expose `/dev/kvm` with nested virt enabled and the image to ship qemu/kvm (`GOSTI_RUNNER_KVM=1`). The permissive device mode is confined to the dedicated ephemeral one-job guest. |
 | `incusGpuPassthrough` | bool | `false` | Attaches an NVIDIA GPU to each container (`incus config device add <c> gpu gpu` + `nvidia.runtime=true`). Requires `hardware.nvidia-container-toolkit.enable = true` on the host. Backs a GPU runner class. |
 
 ### Shared-store options
@@ -184,24 +190,24 @@ for the libvirt backend, `libvirtURI`, `network`, and `poolDir`.
 
 ## 4. Other backend / recipe environment variables
 
-Several backends read `VMH_*` variables for tool paths, credentials, timeouts,
+Several backends read `GOSTI_*` variables for tool paths, credentials, timeouts,
 and image locations. These are operator escape hatches — the constructor
 defaults are the supported values (documented in [Driving a VM from code](/guides/driving-a-vm)
-and each backend source under `src/vm_harness/backends/`). Notable ones:
+and each backend source under `src/gosti/backends/`). Notable ones:
 
-- Incus backend: `VMH_INCUS_CMD` (invocation vector).
-- Recipe resolution: `VMH_RECIPES_DIR` (override where `--recipe <id>` resolves).
-- Tart: `VMH_TART_CMD` (also honored by `prune`), plus `VMH_UTM_SSH_USER` /
-  `VMH_UTM_SSH_PASSWORD` on the UTM path.
+- Incus backend: `GOSTI_INCUS_CMD` (invocation vector).
+- Recipe resolution: `GOSTI_RECIPES_DIR` (override where `--recipe <id>` resolves).
+- Tart: `GOSTI_TART_CMD` (also honored by `prune`), plus `GOSTI_UTM_SSH_USER` /
+  `GOSTI_UTM_SSH_PASSWORD` on the UTM path.
 - qemu-windows-arm: a large tunable surface —
-  `VMH_QEMU_WINDOWS_ARM_{QEMU_CMD,QEMU_IMG_CMD,SSH_CMD,SCP_CMD,SSHPASS_CMD,SWTPM_CMD,SSH_USER,SSH_PORT,SSH_PASSWORD,SSH_TIMEOUT,BOOT_TIMEOUT,PROBE_TIMEOUT,DISK_MODE,EPHEMERAL_PREFIX}`,
-  and the firmware pair `VMH_QEMU_EFI_CODE` / `VMH_QEMU_EFI_VARS`.
-- Windows golden recipes: `VMH_WIN11_X64_ISO`, `VMH_WIN11_ARM_ISO`,
-  `VMH_OVMF_CODE` / `VMH_OVMF_VARS`, `VMH_GUEST_PASSWORD`,
-  `VMH_SYSPREP_TIMEOUT` / `VMH_SYSPREP_DRY_RUN`, `VMH_DISM_TIMEOUT`, and the
-  ARM OpenSSH/virtio fetch overrides (`VMH_OPENSSH_ARM64_*`,
-  `VMH_VIRTIO_NETKVM_ARM64_*`).
+  `GOSTI_QEMU_WINDOWS_ARM_{QEMU_CMD,QEMU_IMG_CMD,SSH_CMD,SCP_CMD,SSHPASS_CMD,SWTPM_CMD,SSH_USER,SSH_PORT,SSH_PASSWORD,SSH_TIMEOUT,BOOT_TIMEOUT,PROBE_TIMEOUT,DISK_MODE,EPHEMERAL_PREFIX}`,
+  and the firmware pair `GOSTI_QEMU_EFI_CODE` / `GOSTI_QEMU_EFI_VARS`.
+- Windows golden recipes: `GOSTI_WIN11_X64_ISO`, `GOSTI_WIN11_ARM_ISO`,
+  `GOSTI_OVMF_CODE` / `GOSTI_OVMF_VARS`, `GOSTI_GUEST_PASSWORD`,
+  `GOSTI_SYSPREP_TIMEOUT` / `GOSTI_SYSPREP_DRY_RUN`, `GOSTI_DISM_TIMEOUT`, and the
+  ARM OpenSSH/virtio fetch overrides (`GOSTI_OPENSSH_ARM64_*`,
+  `GOSTI_VIRTIO_NETKVM_ARM64_*`).
 
-Only the `VMH_RUNNER_*` recipe seams and the `incus*` provider options in
+Only the `GOSTI_RUNNER_*` recipe seams and the `incus*` provider options in
 sections 1–3 are treated as the primary stable consumer contract; the rest are
 escape hatches whose supported form is the backend constructor default.

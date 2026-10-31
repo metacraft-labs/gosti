@@ -39,13 +39,13 @@ const
   CompilerAtBuild = getCurrentCompilerExe()
 
   # --- Per-repository settings ----------------------------------------------
-  RootMarker = "vm_harness.nimble"
+  RootMarker = "gosti.nimble"
     ## A file every checkout of this repository has, used to validate the
     ## derived checkout root.  Never `config.nims`: that is the thing under
     ## test.
   LevelsBelowRoot = 2
     ## How many directories this file sits below the checkout root.
-  MainModules: seq[string] = @["src/vm_harness/cli.nim"]
+  MainModules: seq[string] = @["src/gosti/cli.nim"]
     ## Checkout-relative main modules probed in debug and release.
 
 var failures = 0

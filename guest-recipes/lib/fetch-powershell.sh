@@ -30,7 +30,7 @@
 #   ./fetch-powershell.sh --arch x64 --output DIR
 #
 # The default output directory is the `build/` dir of the CALLING recipe when
-# VMH_BUILD_DIR is set, else ./build relative to the current directory.
+# GOSTI_BUILD_DIR is set, else ./build relative to the current directory.
 
 set -euo pipefail
 
@@ -38,7 +38,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 PROVISION_PS1="${SCRIPT_DIR}/provision-pwsh.ps1"
 
 ARCH=""
-OUT_DIR="${VMH_BUILD_DIR:-$(pwd)/build}"
+OUT_DIR="${GOSTI_BUILD_DIR:-$(pwd)/build}"
 
 usage() {
   cat <<EOF
@@ -48,7 +48,7 @@ Downloads and SHA-256-verifies the pinned PowerShell 7 standalone ZIP. The pin
 lives in guest-recipes/lib/provision-pwsh.ps1.
 
   --arch x64 | arm64   which PowerShell asset to fetch (required)
-  --output DIR         where to write it (default: \${VMH_BUILD_DIR:-./build})
+  --output DIR         where to write it (default: \${GOSTI_BUILD_DIR:-./build})
 EOF
 }
 

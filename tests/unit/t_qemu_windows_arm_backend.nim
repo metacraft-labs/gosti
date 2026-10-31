@@ -8,12 +8,12 @@
 
 import std/[net, os, osproc, sequtils, streams, strutils, tables, tempfiles,
             times, unittest, xmlparser, xmltree]
-import vm_harness
+import gosti
 
 const
-  PortAllocationWorkerArg = "--vmh-qemu-port-allocation-worker"
-  PortListenerHelperEnv = "VMH_QEMU_PORT_LISTENER_HELPER"
-  PortListenerBindDelayEnv = "VMH_QEMU_PORT_LISTENER_BIND_DELAY_MS"
+  PortAllocationWorkerArg = "--gosti-qemu-port-allocation-worker"
+  PortListenerHelperEnv = "GOSTI_QEMU_PORT_LISTENER_HELPER"
+  PortListenerBindDelayEnv = "GOSTI_QEMU_PORT_LISTENER_BIND_DELAY_MS"
 
 proc qemuForwardedPort(): int =
   const marker = "hostfwd=tcp:127.0.0.1:"
@@ -239,7 +239,7 @@ suite "QemuWindowsArmBackend pure behavior":
     check "foreach ($drive" notin provision
     check ":\\provision-openssh.ps1" notin provision.replace(
       "C:\\Windows\\Temp\\provision-openssh.ps1", "")
-    check "vmh-openssh-provision-failed" in provision
+    check "gosti-openssh-provision-failed" in provision
     check "provision-openssh.ps1 not found" in provision
     check "Add-WindowsCapability" notin provision
     check "function LogError" notin provision
@@ -249,8 +249,8 @@ suite "QemuWindowsArmBackend pure behavior":
   test "windows-arm staged OpenSSH script logs diagnostics and failure marker":
     let provision = windowsArmProvisionOpenSshScript()
 
-    check "C:\\Windows\\Temp\\vmh-openssh-provision.log" in provision
-    check "C:\\Windows\\Temp\\vmh-openssh-provision-failed" in provision
+    check "C:\\Windows\\Temp\\gosti-openssh-provision.log" in provision
+    check "C:\\Windows\\Temp\\gosti-openssh-provision-failed" in provision
     check "C:\\Windows\\Temp\\repro-install-done" in provision
     check "$portableZip = 'C:\\Windows\\Temp\\OpenSSH-ARM64.zip'" in provision
     check "$netKvmDir = 'C:\\Windows\\Temp\\virtio\\NetKVM\\w11\\ARM64'" in
@@ -317,7 +317,7 @@ suite "QemuWindowsArmBackend pure behavior":
     check "OPENSSH_ZIP_SRC" in buildScript
     check "--openssh-arm64-zip" in buildScript
     check "--require-openssh-arm64-zip" in buildScript
-    check "VMH_OPENSSH_ARM64_ZIP" in buildScript
+    check "GOSTI_OPENSSH_ARM64_ZIP" in buildScript
     check "./build/OpenSSH-ARM64.zip" in buildScript
     check "mkdir -p \"${STAGE_DIR}/openssh\"" in buildScript
     check "cp \"${OPENSSH_ZIP_SRC}\" \"${STAGE_DIR}/openssh/OpenSSH-ARM64.zip\"" in
@@ -331,7 +331,7 @@ suite "QemuWindowsArmBackend pure behavior":
     check "VIRTIO_NETKVM_SRC" in buildScript
     check "--virtio-netkvm-arm64-dir" in buildScript
     check "--require-virtio-netkvm-arm64" in buildScript
-    check "VMH_VIRTIO_NETKVM_ARM64_DIR" in buildScript
+    check "GOSTI_VIRTIO_NETKVM_ARM64_DIR" in buildScript
     check "./build/virtio/NetKVM/w11/ARM64" in buildScript
     check "netkvm.inf" in buildScript
     check "mkdir -p \"${STAGE_DIR}/virtio/NetKVM/w11/ARM64\"" in buildScript
@@ -349,7 +349,7 @@ suite "QemuWindowsArmBackend pure behavior":
       fetchScript
     check "curl -fL --retry 3" in fetchScript
     check "checksum mismatch" in fetchScript
-    check "VMH_OPENSSH_ARM64_ZIP_OUT" in fetchScript
+    check "GOSTI_OPENSSH_ARM64_ZIP_OUT" in fetchScript
 
   test "windows-arm VirtIO NetKVM ARM64 fetch helper pins qemus release checksum and validates contents":
     let fetchScript = readFile(windowsArmRecipeFile("fetch-virtio-netkvm-arm64.sh"))
@@ -363,8 +363,8 @@ suite "QemuWindowsArmBackend pure behavior":
     check "grep -qx \"${MEMBER_ROOT}/netkvm.inf\" \"${member_list}\"" in fetchScript
     check "tar -xf \"${ARCHIVE_OUT}\" -C \"${extract_tmp}\" \"NetKVM\"" in
       fetchScript
-    check "VMH_VIRTIO_NETKVM_ARM64_ARCHIVE_OUT" in fetchScript
-    check "VMH_VIRTIO_NETKVM_ARM64_DIR_OUT" in fetchScript
+    check "GOSTI_VIRTIO_NETKVM_ARM64_ARCHIVE_OUT" in fetchScript
+    check "GOSTI_VIRTIO_NETKVM_ARM64_DIR_OUT" in fetchScript
 
   test "windows-arm install-done marker is gated on OpenSSH success":
     # Located by Description rather than by a hardcoded index: inserting a new
@@ -382,7 +382,7 @@ suite "QemuWindowsArmBackend pure behavior":
         break
 
     check found
-    check "Test-Path -LiteralPath 'C:\\Windows\\Temp\\vmh-openssh-provision-failed'" in
+    check "Test-Path -LiteralPath 'C:\\Windows\\Temp\\gosti-openssh-provision-failed'" in
       marker
     check "Get-Service -Name sshd" in marker
     check ".Status -ne 'Running'" in marker
@@ -430,7 +430,7 @@ suite "QemuWindowsArmBackend pure behavior":
       check "exit 1" notin command.elementText("CommandLine")
 
   test "baseline directory validation requires windows.qcow2":
-    let tmp = createTempDir("vmh-qemu-win-arm-validate-", "")
+    let tmp = createTempDir("gosti-qemu-win-arm-validate-", "")
     defer: removeDir(tmp)
 
     expect ValueError:
@@ -446,7 +446,7 @@ suite "QemuWindowsArmBackend pure behavior":
 
   test "concurrent QEMU launches allocate distinct forwarded SSH ports":
     when defined(posix):
-      let tmp = createTempDir("vmh-qemu-win-arm-port-allocation-", "")
+      let tmp = createTempDir("gosti-qemu-win-arm-port-allocation-", "")
       defer: removeDir(tmp)
       let stateDir = tmp / "state"
       let resultA = tmp / "result-a"
@@ -494,7 +494,7 @@ suite "QemuWindowsArmBackend pure behavior":
 
   test "QEMU cleanup terminates the direct child and releases its port":
     when defined(posix):
-      let tmp = createTempDir("vmh-qemu-win-arm-cleanup-", "")
+      let tmp = createTempDir("gosti-qemu-win-arm-cleanup-", "")
       defer: removeDir(tmp)
       let vmDir = tmp / "vm"
       createDir(vmDir)
@@ -519,7 +519,7 @@ suite "QemuWindowsArmBackend pure behavior":
       skip()
 
   test "QEMU argv uses aarch64 HVF, user networking, and a cloned disk path":
-    let tmp = createTempDir("vmh-qemu-win-arm-argv-", "")
+    let tmp = createTempDir("gosti-qemu-win-arm-argv-", "")
     defer: removeDir(tmp)
     writeFile(tmp / "windows.qcow2", "")
     writeFile(tmp / "QEMU_EFI.fd", "")
@@ -538,7 +538,7 @@ suite "QemuWindowsArmBackend pure behavior":
     check "virtio-net-pci,netdev=net0,id=net0,mac=52:54:00:c9:18:27" in args
     let tpmArg = args[args.find("-chardev") + 1]
     check tpmArg.startsWith("socket,id=chrtpm,path=")
-    check "vmh-qwa-tpm-" in tpmArg
+    check "gosti-qwa-tpm-" in tpmArg
     check tpmArg.endsWith(".sock")
     check "emulator,id=tpm0,chardev=chrtpm" in args
     check "tpm-tis-device,tpmdev=tpm0" in args
@@ -549,7 +549,7 @@ suite "QemuWindowsArmBackend pure behavior":
     check "file:" & tmp / "serial.log" in args
     let monArg = args[args.find("-monitor") + 1]
     check monArg.startsWith("unix:")
-    check "vmh-qwa-mon-" in monArg
+    check "gosti-qwa-mon-" in monArg
     check monArg.endsWith(".sock,server=on,wait=off")
     check "-rtc" in args
     check args[args.find("-rtc") + 1] == "base=utc"
@@ -558,8 +558,8 @@ suite "QemuWindowsArmBackend pure behavior":
     check args[args.find("-bios") + 1] == tmp / "QEMU_EFI.fd"
 
   test "ephemeral copy clones only boot-relevant files":
-    let base = createTempDir("vmh-qemu-win-arm-base-", "")
-    let state = createTempDir("vmh-qemu-win-arm-state-", "")
+    let base = createTempDir("gosti-qemu-win-arm-base-", "")
+    let state = createTempDir("gosti-qemu-win-arm-state-", "")
     defer:
       removeDir(base)
       removeDir(state)
@@ -581,10 +581,10 @@ suite "QemuWindowsArmBackend pure behavior":
     check readFile(dest / "tpm" / "tpm2-00.permall") == "tpm-state"
 
   test "Windows SSH command quoting preserves argv boundaries and env":
-    let env = {"VMH_TEST": "a&b'c", "VMH_SECOND": "two words"}.toTable
+    let env = {"GOSTI_TEST": "a&b'c", "GOSTI_SECOND": "two words"}.toTable
     let remote = buildWindowsRemoteCommand(env,
       @["powershell", "-NoProfile", "-Command", "Write-Output \"hello world\""])
-    check remote == "$env:VMH_SECOND = 'two words'; $env:VMH_TEST = 'a&b''c'; & 'powershell' '-NoProfile' '-Command' 'Write-Output \"hello world\"'"
+    check remote == "$env:GOSTI_SECOND = 'two words'; $env:GOSTI_TEST = 'a&b''c'; & 'powershell' '-NoProfile' '-Command' 'Write-Output \"hello world\"'"
 
     let b = newQemuWindowsArmBackend(sshpassCmd = "sshpass-test",
                                      sshCmd = "ssh-test",
@@ -603,7 +603,7 @@ suite "QemuWindowsArmBackend pure behavior":
 
   test "probeAvailability is bounded when qemu command is silent":
     when defined(macosx):
-      let tmp = createTempDir("vmh-qemu-win-arm-probe-", "")
+      let tmp = createTempDir("gosti-qemu-win-arm-probe-", "")
       defer: removeDir(tmp)
       let silent = tmp / "silent-qemu"
       let sshpass = tmp / "sshpass"
@@ -625,7 +625,7 @@ suite "QemuWindowsArmBackend pure behavior":
 
   test "probeAvailability requires qemu, swtpm, and sshpass":
     when defined(macosx):
-      let tmp = createTempDir("vmh-qemu-win-arm-probe-ok-", "")
+      let tmp = createTempDir("gosti-qemu-win-arm-probe-ok-", "")
       defer: removeDir(tmp)
       let qemu = tmp / "qemu-system-aarch64"
       let swtpm = tmp / "swtpm"
