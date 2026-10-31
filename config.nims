@@ -13,6 +13,11 @@ switch("path", "src")
 # only the private pipe constructor changes. Other platforms retain osproc.
 when defined(linux) and not (defined(reproInterfaceMode) or defined(reproProviderMode)):
   patchFile("stdlib", "osproc", "src/gosti/compat/osproc")
+  # Nim 2.2.10 switched Linux startProcess from fork to posix_spawn, which the
+  # repair and its regression test do not cover. Keep the fork launcher on
+  # every compiler the lock may select (2.2.4 in the dev shell, 2.2.10 under
+  # repro).
+  switch("define", "useFork")
 
 # Graph metadata declares tools before any build tool can be selected.
 # These modes do not compile the CLI or its PCRE-dependent serial matcher.

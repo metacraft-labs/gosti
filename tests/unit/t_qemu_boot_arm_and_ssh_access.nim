@@ -13,7 +13,7 @@
 ## precondition checks run against a real handle the backend would build,
 ## minus the QEMU process.
 
-import std/[os, strutils, tables, unittest]
+import std/[os, sequtils, strutils, tables, unittest]
 import gosti
 
 proc idx(args: seq[string], needle: string): int =
@@ -115,7 +115,8 @@ suite "ARM firmware resolution":
 
   test "QEMU's own share directory is searched next to the binary":
     let c = armFirmwareCandidates(false, "/opt/qemu/bin/qemu-system-arm")
-    check "/opt/qemu/share/qemu/edk2-arm-code.fd" in c
+    # Windows joins the derived path with backslashes.
+    check "/opt/qemu/share/qemu/edk2-arm-code.fd" in c.mapIt(it.replace('\\', '/'))
 
 suite "SSH access preconditions":
   let b = newQemuBootBackend(stateDir = getTempDir() / "gosti-qb-unit",
