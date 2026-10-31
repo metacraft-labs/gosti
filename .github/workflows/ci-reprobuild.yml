@@ -117,9 +117,14 @@ jobs:
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@d3cbb8f661cdab9d4bc3cad4d48fee65c1b0ae1a
         with:
           env-flavor: reprobuild
-          # A release that reads the committed repro.lock schema (v3).
-          # Windows ARM64 runs its x64 build under emulation.
+          # v0.2.18 reads the committed repro.lock schema (v3). Windows installs
+          # its release; Windows ARM64 runs that x64 build under emulation.
+          # Linux and macOS build the same commit from source: their release
+          # bundles compile the interface against a system blake3.h the
+          # runners lack, and Linux ARM64 has no release bundle at all.
           repro-version: v0.2.18
+          repro-from-source: ${{ runner.os != 'Windows' }}
+          repro-build-pin: 413830138a7a73293dfc551d623f7bf2cb0ab62c
           gh-token: ${{ steps.ci-token.outputs.token }}
           substituters: ${{ vars.SUBSTITUTERS }}
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
