@@ -125,6 +125,9 @@ jobs:
           repro-version: v0.2.18
           repro-from-source: ${{ runner.os != 'Windows' }}
           repro-build-pin: 413830138a7a73293dfc551d623f7bf2cb0ab62c
+          # The RunQuota revision that commit's flake.lock records; dev lacks
+          # runquota_ipc.directoryResolvesWithin, which it imports.
+          repro-runquota-pin: 35b9dfe4af6e18f3f2a2242ece7cff330eb581e2
           gh-token: ${{ steps.ci-token.outputs.token }}
           substituters: ${{ vars.SUBSTITUTERS }}
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
