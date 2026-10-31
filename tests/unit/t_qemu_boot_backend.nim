@@ -126,7 +126,10 @@ suite "qemu_boot argv":
     let b = newQemuBootBackend(stateDir = createTempDir("gosti-qb-", "-noqmp"))
     let r = b.systemReset(VmHandle(name: "none", extra: initTable[string, string]()))
     check not r.ok
-    check "no QMP socket" in r.detail
+    when defined(posix):
+      check "no QMP socket" in r.detail
+    else:
+      check "QMP requires a POSIX host" in r.detail
 
   test "an SSH forward replaces the isolated NIC":
     var l = baseLaunch()
