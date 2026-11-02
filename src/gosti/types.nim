@@ -278,6 +278,13 @@ type
     kind*: BootMediaKind
     mediaPath*: string              ## primary boot media (VHDX/ISO/tar path)
     secondaryIsoPath*: string       ## optional second ISO (e.g. cloud-init seed)
+    dataDiskPaths*: seq[string]     ## caller-owned extra writable disks
+      ## Attached after the boot disk, in order, as virtio disks the guest
+      ## can write (qcow2 when the name ends ``.qcow2``, raw otherwise).
+      ## The caller creates and removes them: the backend never deletes
+      ## one, so a disk can outlive the VM and be attached to the next --
+      ## the shape of a reinstall that keeps a data disk. Realised by
+      ## ``qemu-boot``; other backends refuse a non-empty value.
     targetDiskPath*: string         ## optional caller-owned blank install disk
       ## Valid only with bmkIso. When set, the backend creates a blank disk at
       ## this exact path, installs into it, and never removes it during VM

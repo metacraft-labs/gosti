@@ -373,6 +373,7 @@ type
     arch*: GuestArch           ## machine model + CPU + TPM device spelling
     diskReadonly*: bool        ## ``readonly=on`` on the boot disk
     seedPath*: string          ## read-only data disk (cloud-init NoCloud seed)
+    dataDiskPaths*: seq[string] ## writable extra disks, after the boot disk
     qmpSocketPath*: string     ## QMP monitor socket; "" => no monitor
     networkRestricted*: bool   ## ``restrict=on`` on the user-mode network
     guestForwards*: seq[GuestForward]
@@ -513,6 +514,16 @@ proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
     result.add(@["-drive",
       "file=" & l.diskPath & ",format=" & fmt & ",if=virtio" &
       (if l.diskReadonly: ",readonly=on" else: "")])
+  for d in l.dataDiskPaths:
+    # A data disk the caller owns, writable, after the boot disk so the
+    # guest's device order (vda boot, vdb, ...) is stable. QEMU splits
+    # ``-drive`` options on commas, so a path with one is refused rather
+    # than half-parsed.
+    if ',' in d:
+      raise newException(ValueError,
+        "QemuBootLaunch.dataDiskPaths may not contain a comma: " & d)
+    let fmt = if d.endsWith(".qcow2"): "qcow2" else: "raw"
+    result.add(@["-drive", "file=" & d & ",format=" & fmt & ",if=virtio"])
   if l.seedPath.len > 0:
     # A NoCloud seed as a read-only virtio disk rather than ``-cdrom``:
     # the ``virt`` board has no IDE/AHCI controller for a CD drive, and
@@ -805,6 +816,11 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
         qmpSocketPath: qmpSocketPath,
         networkRestricted: spec.networkRestricted,
         guestForwards: spec.guestForwards)
+      for d in spec.dataDiskPaths:
+        if not fileExists(d):
+          raise newException(IOError,
+            "BootMediaSpec.dataDiskPaths names a missing disk: " & d)
+        launch.dataDiskPaths.add(absolutePath(d))
       if spec.secondaryIsoPath.len > 0:
         if not fileExists(spec.secondaryIsoPath):
           raise newException(IOError,

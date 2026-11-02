@@ -2758,6 +2758,11 @@ method bootFromMedia*(b: LibvirtBackend, spec: BootMediaSpec): VmHandle =
   ## *Important*: this method returns a started VmHandle but does not begin
   ## polling its file-backed serial output. Pass the handle to
   ## ``captureSerial`` and always finish with ``stopAndCleanup``.
+  if spec.dataDiskPaths.len > 0:
+    # Only qemu-boot realises extra data disks (BootMediaSpec.dataDiskPaths);
+    # dropping them would boot a guest without the disk the caller relies on.
+    raise newException(BackendUnavailableError,
+      "LibvirtBackend.bootFromMedia does not attach BootMediaSpec.dataDiskPaths")
   when defined(linux):
     if spec.kind == bmkRootfsTar:
       raise newException(BackendUnavailableError,

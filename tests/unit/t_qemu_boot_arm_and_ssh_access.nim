@@ -96,6 +96,28 @@ suite "read-only disks and seeds":
       check "file=/tmp/seed.iso,format=raw,if=virtio,readonly=on" in drives
       check idx(buildQemuBootArgs(l), "-cdrom") < 0
 
+suite "data disks":
+  test "no data disk leaves the argv unchanged":
+    check values(buildQemuBootArgs(baseLaunch()), "-drive") ==
+      @["file=/tmp/disk.qcow2,format=qcow2,if=virtio"]
+
+  test "data disks follow the boot disk, writable, in order":
+    var l = baseLaunch()
+    l.dataDiskPaths = @["/tmp/data.qcow2", "/tmp/raw.img"]
+    let drives = values(buildQemuBootArgs(l), "-drive")
+    let boot = drives.find("file=" & l.diskPath & ",format=qcow2,if=virtio")
+    check boot >= 0
+    check drives[boot + 1] == "file=/tmp/data.qcow2,format=qcow2,if=virtio"
+    check drives[boot + 2] == "file=/tmp/raw.img,format=raw,if=virtio"
+    for d in drives[boot + 1 .. boot + 2]:
+      check "readonly" notin d
+
+  test "a comma in a data disk path is refused":
+    var l = baseLaunch()
+    l.dataDiskPaths = @["/tmp/a,b.qcow2"]
+    expect ValueError:
+      discard buildQemuBootArgs(l)
+
 suite "ARM firmware resolution":
   test "an explicit image wins, and a missing one is an error":
     let f = getTempDir() / ("gosti-fw-" & $getCurrentProcessId() & ".fd")

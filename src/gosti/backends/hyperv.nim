@@ -956,6 +956,11 @@ method bootFromMedia*(b: HyperVBackend, spec: BootMediaSpec): VmHandle =
   ## Create a transient Gen-2 UEFI VM around the given VHDX (kind=vhdx)
   ## or ISO (kind=iso). The VM is left in the Off state; call
   ## ``captureSerial`` to start it AND begin tailing COM1.
+  if spec.dataDiskPaths.len > 0:
+    # Only qemu-boot realises extra data disks (BootMediaSpec.dataDiskPaths);
+    # dropping them would boot a guest without the disk the caller relies on.
+    raise newException(BackendUnavailableError,
+      "HyperVBackend.bootFromMedia does not attach BootMediaSpec.dataDiskPaths")
   when defined(windows):
     if spec.kind == bmkRootfsTar:
       raise newException(BackendUnavailableError,
