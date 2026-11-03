@@ -482,13 +482,17 @@ log "checking runner runtime dependencies in the base image"
 #         repository in a separate sub-step below.
 #     apt needs egress, which incusbr0 does not lease; bring up the shared
 #     static build IP for the install (idempotent — the HR1/HR2 bakes reuse it).
-log "installing CI baseline tools (git, git-lfs, xz-utils, ca-certificates, fuse3, gawk, jq, gh, dbus)"
+log "installing CI baseline tools (git, git-lfs, xz-utils, ca-certificates, curl, fuse3, gawk, jq, gh, dbus)"
 ensure_build_egress
 "${INCUS[@]}" exec "$BLD" -- sh -c "
   set -e
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq --no-install-recommends git git-lfs xz-utils ca-certificates fuse3 gawk jq dbus
+  apt-get install -y -qq --no-install-recommends git git-lfs xz-utils ca-certificates curl fuse3 gawk jq dbus
+  # curl is BASELINE: CI workflow steps call the GitHub REST API with it (the
+  # lint job's rate-limit probe fails with "curl is not on this runner image"
+  # on any image built without it, 2026-11-03).
+  command -v curl
   command -v git
   command -v git-lfs
   command -v gawk
