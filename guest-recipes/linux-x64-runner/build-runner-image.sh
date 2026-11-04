@@ -498,32 +498,35 @@ ensure_build_egress
   command -v gawk
   command -v jq
   command -v xz
+  # NO backticks or double quotes in these comments: this whole script is a
+  # double-quoted host string, so the HOST shell would expand them before the
+  # guest sees anything (t_guest_recipe_sh_c_quoting).
   # dbus is BASELINE, not a docker dependency. It used to be installed only in
   # the HR1 docker bake, which left a non-docker image unable to start a
   # session bus at all. Anything that needs a private bus needs it here:
-  # agent-harbor's Computer-Use substrate runs `dbus-daemon --session` with its
+  # agent-harbor's Computer-Use substrate runs 'dbus-daemon --session' with its
   # own --address to drive a headless desktop, and that is unrelated to docker.
   command -v dbus-daemon
-  # ...and `--session` needs its CONFIG, which Debian 12 ships in a different
+  # ...and '--session' needs its CONFIG, which Debian 12 ships in a different
   # binary package from the daemon (dbus-session-bus-common, not dbus-daemon).
-  # Installing the `dbus` metapackage above pulls both; asserting the file here
+  # Installing the 'dbus' metapackage above pulls both; asserting the file here
   # is what makes a future slimming of that package list fail the BUILD instead
   # of a CI job a week later.
   #
   # This is the measured failure mode. Run by hand with no session config
   # present, dbus-daemon dies exactly the way the ephemeral runners do:
   #   $ dbus-daemon --session --nofork --address=unix:path=/tmp/x
-  #   Failed to start message bus: Failed to open ".../session.conf": No such file
+  #   Failed to start message bus: Failed to open '.../session.conf': No such file
   #   exit 1
   # which matches 'managed child exited before publishing its socket: exit
-  # status: 1' in ~50 ms, on every `garm-*` guest and on none of the persistent
+  # status: 1' in ~50 ms, on every 'garm-*' guest and on none of the persistent
   # runners. See agent-harbor
   # issues/2026-10-10-ephemeral-garm-runners-cannot-start-a-private-dbus.md.
   #
   # A machine id is NOT the cause, though it is the folklore answer. Verified by
   # supplying a config file on a host with neither /etc/machine-id nor
   # /var/lib/dbus/machine-id: dbus-daemon starts and keeps running. So no
-  # `dbus-uuidgen` here -- systemd still mints a per-instance id at boot, and
+  # 'dbus-uuidgen' here -- systemd still mints a per-instance id at boot, and
   # baking one into the image would make every cloned guest share an identity.
   test -f /usr/share/dbus-1/session.conf
   # Assert the helper is present AND setuid — an installed-but-not-setuid
