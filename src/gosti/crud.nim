@@ -11,7 +11,7 @@
 ##
 ##   create_vm / start_vm / stop_vm / delete_vm / get_vm / list_vms /
 ##   exec / copy_to_vm / copy_from_vm / ssh_endpoint /
-##   snapshot / restore_snapshot / list_snapshots
+##   snapshot / restore_snapshot / list_snapshots / list_images
 ##
 ## This module is the ADAPTER between those two vocabularies. It does NOT
 ## reimplement any backend behaviour — every verb is a thin wrapper that
@@ -36,15 +36,19 @@
 ##   CRUD verb        VmBackend realisation
 ##   ===============  =========================================================
 ##   create_vm        provisionBaseline(spec)  [idempotent: ensure template]
-##                    + revertToBaseline(baseline) → VmHandle  [start instance]
-##                    ⇒ state Running. (gosti folds start into revert; there
-##                    is no stopped-created instance to hand back.)
+##                    + createInstance(name, spec) → VmHandle  [start
+##                    instance; default = revertToBaseline(baseline), incus
+##                    = a fresh container with mounts + cloud-init user-data]
+##                    ⇒ state Running (exec-ready; cloud-init may still be
+##                    running — see architecture §8.2).
 ##   start_vm         Idempotent when the instance is already running
-##                    (startAndAwaitReady). After a stop_vm released the
+##                    (startAndAwaitReady, which also boots a kept stopped
+##                    incus container). After a stop_vm released the
 ##                    handle, re-materialise it via revertToBaseline.
-##   stop_vm(force)   stopAndCleanup(vm, deleteVm = false); handle released,
-##                    state Stopped. (force is accepted for trait parity; the
-##                    backend method never raises, so it is advisory today.)
+##   stop_vm(force)   stopAndCleanup(vm, deleteVm = false), state Stopped;
+##                    the handle is released unless keepsInstanceOnStop.
+##                    (force is accepted for trait parity; the backend method
+##                    never raises, so it is advisory today.)
 ##   delete_vm(force) stopAndCleanup(vm, deleteVm = true) + drop the registry
 ##                    entry. The VM no longer resolves.
 ##   get_vm           Registry lookup → VmInfo (state + ssh endpoint).
@@ -56,6 +60,7 @@
 ##   snapshot         backend.snapshot(handle.name, snap) → opaque id.
 ##   restore_snapshot backend.restoreSnapshot(handle.name, snap).
 ##   list_snapshots   backend.listSnapshots(handle.name).
+##   list_images      backend.listImages() (no VM name; not locked).
 ##   ===============  =========================================================
 ##
 ## Snapshot verbs address the backend by the instance's real name
@@ -176,7 +181,7 @@ type
 const CrudVerbs* = [
   "create_vm", "start_vm", "stop_vm", "delete_vm", "get_vm", "list_vms",
   "exec", "copy_to_vm", "copy_from_vm", "ssh_endpoint",
-  "snapshot", "restore_snapshot", "list_snapshots"]
+  "snapshot", "restore_snapshot", "list_snapshots", "list_images"]
   ## The stable verb vocabulary. ``list_vms`` here is the machine-readable
   ## surface; unknown verbs are a ``bad-args`` failure.
 
@@ -390,8 +395,11 @@ proc createVm(session: CrudSession, p: CrudParams): JsonNode =
   # cloud-init inherit the seam's default, which ignores userData and behaves
   # exactly like revertToBaseline — so this is behaviour-preserving for them.
   session.backend.provisionBaseline(spec)
-  let handle =
-    session.backend.revertToBaselineWithUserData(baseline, spec.userData)
+  # ``createInstance`` defaults to exactly the previous call,
+  # ``revertToBaselineWithUserData(baseline, spec.userData)``; a backend that
+  # creates instances fresh (incus) overrides it to receive the CRUD name and
+  # the whole spec (mounts included).
+  let handle = session.backend.createInstance(p.name, spec)
   let rec = VmRecord(name: p.name, baseline: baseline,
                      handle: handle, state: vsRunning)
   session.put(rec)
@@ -415,7 +423,11 @@ proc stopVm(session: CrudSession, p: CrudParams): JsonNode =
   var rec = requireRecord(session, p.name)
   if rec.handle != nil:
     session.backend.stopAndCleanup(rec.handle, deleteVm = false)
-    rec.handle = nil
+    # A backend whose stop leaves a bootable instance (incus) keeps the
+    # handle, so start_vm restarts THAT instance and delete_vm still removes
+    # it. Otherwise the handle is released (start_vm re-materialises).
+    if not session.backend.keepsInstanceOnStop():
+      rec.handle = nil
   rec.state = vsStopped
   session.put(rec)
   %*{"vm": toJson(toVmInfo(session, rec))}
@@ -504,6 +516,22 @@ proc listSnapshotsVm(session: CrudSession, p: CrudParams): JsonNode =
     arr.add(%s)
   %*{"vm": p.name, "snapshots": arr}
 
+proc toJson*(img: ImageInfo): JsonNode =
+  ## Stable ``list_images`` entry shape.
+  %*{"id": img.id, "aliases": img.aliases, "description": img.description,
+     "type": img.kind, "architecture": img.architecture,
+     "size_bytes": img.sizeBytes, "created_at": img.createdAt}
+
+proc listImagesVerb(session: CrudSession, p: CrudParams): JsonNode =
+  ## ``list_images``: every image the backend can create a VM from (no VM
+  ## name). A backend without image enumeration, or whose daemon is down, is
+  ## ``backend-unavailable`` (4); a failed/unreadable listing is
+  ## ``backend-error`` (5).
+  var arr = newJArray()
+  for img in session.backend.listImages():
+    arr.add(toJson(img))
+  %*{"backend": $session.backend.id, "images": arr}
+
 # ---------------------------------------------------------------------------
 # The single dispatch entry point. The CLI and the gate both call this, so
 # the verb table, the success envelope, and the error envelope are shared.
@@ -521,7 +549,8 @@ proc runCrud*(session: CrudSession, verb: string, p: CrudParams): CrudResponse =
   var data: JsonNode
   var lock: CrudLock
   try:
-    if session.store != nil and verb != "list_vms" and verb in CrudVerbs and
+    if session.store != nil and verb notin ["list_vms", "list_images"] and
+       verb in CrudVerbs and
        p.name.len > 0:
       # One writer per VM across processes (§8.6). list_vms reads the
       # atomically-replaced records without a lock.
@@ -542,6 +571,7 @@ proc runCrud*(session: CrudSession, verb: string, p: CrudParams): CrudResponse =
       of "snapshot": snapshotVm(session, p)
       of "restore_snapshot": restoreSnapshotVm(session, p)
       of "list_snapshots": listSnapshotsVm(session, p)
+      of "list_images": listImagesVerb(session, p)
       else:
         raise newCrudError(cekBadArgs, "unknown crud verb '" & verb & "'")
   except CrudNameError as e:
@@ -561,6 +591,14 @@ proc runCrud*(session: CrudSession, verb: string, p: CrudParams): CrudResponse =
       exitCode: exitCode(e.kind),
       json: %*{"ok": false, "verb": verb,
                "error": {"code": exitCode(e.kind), "kind": $e.kind,
+                         "message": e.msg}})
+  except InvalidSpecError as e:
+    # The request cannot be expressed by this backend as given (invalid
+    # instance name, bad mount path, user-data for a non-cloud-init image).
+    return CrudResponse(
+      exitCode: exitCode(cekBadArgs),
+      json: %*{"ok": false, "verb": verb,
+               "error": {"code": exitCode(cekBadArgs), "kind": $cekBadArgs,
                          "message": e.msg}})
   except BackendUnavailableError as e:
     return CrudResponse(

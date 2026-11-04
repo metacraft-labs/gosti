@@ -21,7 +21,10 @@
 ## process-local (see ``crud.nim``): each verb is checked on its own.
 ##
 ## Mock policy (design doc §9.1): the ONLY mock is ``NoopBackend`` — the
-## sanctioned fixture — so the gate is hermetic. The CLI, the daemon, the
+## sanctioned fixture — so the gate is hermetic. The ``list_images`` incus
+## cases add a fake ``incus`` script (via ``GOSTI_INCUS_CMD``) whose answer
+## is switched by marker files: what is pinned is the envelope/exit-code
+## mapping across both paths, not the daemon. The CLI, the daemon, the
 ## TCP transport, HTTP framing and bearer auth are all real. Same self-exec
 ## topology as ``t_gosti_serve_roundtrip``: the test binary re-execs
 ## itself as the CLI (``__gosti_cli``) and as the daemon (``__serve``).
@@ -78,6 +81,19 @@ suite "t_crud_serve_parity":
   let portFile = work / "port"
   let token = "crud-parity-bearer-7c1e"
   writeFile(tokenFile, token)
+  # A fake ``incus`` for the list_images cases (the daemon's workers inherit
+  # GOSTI_INCUS_CMD). Marker files switch its answer, so the local and the
+  # serve call of one case see the same daemon state.
+  let fakeIncus = work / "incus"
+  writeFile(fakeIncus, "#!/bin/sh\n" &
+    "d=\"$(dirname \"$0\")\"\n" &
+    "if [ \"$1\" = info ]; then [ -f \"$d/down\" ] && exit 1; exit 0; fi\n" &
+    "if [ \"$1\" = image ]; then\n" &
+    "  [ -f \"$d/down\" ] || [ -f \"$d/fail\" ] && { echo 'Error: boom'; exit 1; }\n" &
+    "  echo '[{\"fingerprint\":\"f00d\",\"aliases\":[{\"name\":\"deb12\"}],\"type\":\"container\"}]'\n" &
+    "  exit 0\nfi\nexit 1\n")
+  setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
+  putEnv("GOSTI_INCUS_CMD", fakeIncus)
   let daemon = startProcess(
     getAppFilename(),
     args = @["__serve", "127.0.0.1", "0", tokenFile, portFile],
@@ -164,6 +180,30 @@ suite "t_crud_serve_parity":
   test "missing verb: bad-args (2)":
     discard checkParity(@[], 2)
 
+  test "list_images (incus): ok, byte-identical over serve":
+    let env = checkParity(@["list_images", "--backend", "incus"], 0)
+    check env["verb"].getStr == "list_images"
+    check env["data"]["backend"].getStr == "incus"
+    check env["data"]["images"].len == 1
+    check env["data"]["images"][0]["id"].getStr == "f00d"
+    check env["data"]["images"][0]["aliases"] == %*["deb12"]
+
+  test "list_images (incus, daemon answers with an error): backend-error (5)":
+    writeFile(work / "fail", "")
+    defer: removeFile(work / "fail")
+    let env = checkParity(@["list_images", "--backend", "incus"], 5)
+    check env["error"]["kind"].getStr == "backend-error"
+
+  test "list_images (incus, daemon unreachable): backend-unavailable (4)":
+    writeFile(work / "down", "")
+    defer: removeFile(work / "down")
+    let env = checkParity(@["list_images", "--backend", "incus"], 4)
+    check env["error"]["kind"].getStr == "backend-unavailable"
+
+  test "list_images (noop, no image enumeration): backend-unavailable (4)":
+    let env = checkParity(@["list_images", "--backend", "noop"], 4)
+    check env["error"]["kind"].getStr == "backend-unavailable"
+
   test "multi-invocation: local and serve calls share one crud store":
     # §8.6: a VM created by one call is visible to later calls, whichever
     # path each call takes. Both paths resolve the same --state-dir here
@@ -200,6 +240,11 @@ suite "t_crud_serve_parity":
     check local(@["list_vms", "--backend", "mock"])[1]["data"]["vms"].len == 2
     check local(@["delete_vm", "m2", "--backend", "mock"])[0] == 0
     check remote(@["get_vm", "m2", "--backend", "mock"])[0] == 3
+    # list_images on the shared mock fleet: one image per baseline, same
+    # answer from both paths.
+    let imgs = checkParity(@["list_images", "--backend", "mock"], 0,
+                           sharedDir = shared)
+    check imgs["data"]["images"].len == 2
 
   client.shutdown()
   discard daemon.waitForExit(timeout = 5000)

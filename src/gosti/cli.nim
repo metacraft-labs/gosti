@@ -383,10 +383,17 @@ Subcommands:
                           get_vm, list_vms, exec (-- <argv>), copy_to_vm
                           <src> <dst>, copy_from_vm <src> <dst>, ssh_endpoint,
                           snapshot <snap>, restore_snapshot <snap>,
-                          list_snapshots.
+                          list_snapshots, list_images (no vm name: the images
+                          create_vm --source-image can use).
                           create_vm also accepts --user-data <path> (cloud-init
                           user-data — how a sandbox VM boots its runner/agent),
-                          --mount host:guest (repeatable), and --ssh-user <user>.
+                          --mount host:guest[:OPTS] (repeatable; OPTS is a
+                          comma list of ro|rw and shift; default rw,
+                          unshifted), and --ssh-user <user>. On
+                          incus both are honoured (cloud-init.user-data +
+                          disk devices, set before first boot; user-data
+                          needs a /cloud image; create returns exec-ready,
+                          before cloud-init finishes).
                           exec also accepts --cwd <dir>, --run-as <user>, and
                           --timeout <sec> (a portable guest-side argv wrap).
                           ALWAYS prints one stable JSON
@@ -527,7 +534,8 @@ Common flags:
                                   polling sessions instead of one long one; a
                                   transient SSH failure no longer kills it.
                                   Replaces the `--` command (linux/macOS).
-  --mount host:guest              crud create_vm (repeatable): host→guest share.
+  --mount host:guest[:opts]       crud create_vm (repeatable): host→guest share;
+                                  opts = comma list of ro|rw, shift (incus).
   --cwd <dir>                     crud exec: run argv with this guest CWD.
   --run-as <user>                 crud exec: run argv as this guest user.
   --timeout <sec>                 crud exec: guest-side wall-clock kill (0=none).
@@ -3051,9 +3059,10 @@ proc crudCreateGuard*(verb: string, opts: CliOpts,
   ##
   ## The guard consults the backend's capability signals:
   ##   * ``--user-data`` is allowed iff ``backend.honorsUserData()`` (libvirt
-  ##     builds + attaches a NoCloud "cidata" seed; the others fail closed).
-  ##   * ``--mount`` is allowed iff ``backend.honorsMounts()`` (no backend does
-  ##     yet, so it stays fail-closed everywhere).
+  ##     builds + attaches a NoCloud "cidata" seed; incus sets
+  ##     ``cloud-init.user-data`` before first boot; the others fail closed).
+  ##   * ``--mount`` is allowed iff ``backend.honorsMounts()`` (incus attaches
+  ##     disk devices; the others fail closed).
   ## ``--ssh-user`` is genuinely advisory (a backend may ignore it) and is NOT
   ## guarded — it reaches the spec as accept-advisory.
   if verb != "create_vm":
