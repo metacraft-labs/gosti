@@ -307,6 +307,10 @@ host all tests/e2e/t_gosti_incus_ephemeral_run.nim
 host all tests/e2e/t_gosti_serve_roundtrip_incus.nim
 # §7.4 layered base images: snapshot -> publish -> export -> import -> launch.
 host all tests/e2e/t_incus_layered_base_image.nim
+# WR2 layer in-use guard against REAL Incus: a container created from a
+# published image makes `gosti layer gc <images>/<fingerprint>` refuse (exit
+# 3) stopped and running, and deletable once it is gone. Always --dry-run.
+host all tests/e2e/t_layer_gc_incus_host.nim
 
 # Previously Reprobuild-only deterministic CLI coverage.
 test posix tests/unit/t_cli_ephemeral_vmrun.nim

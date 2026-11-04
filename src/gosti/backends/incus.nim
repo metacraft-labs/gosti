@@ -489,6 +489,148 @@ proc tryListContainers*(b: IncusBackend): InventoryResult =
   except ValueError as err:
     inventoryFailure(err.msg)
 
+type
+  IncusInstanceImage* = object
+    ## One instance (container or VM, ANY state) and the image it was
+    ## created from.
+    name*: string
+    project*: string
+    image*: string
+      ## ``volatile.base_image`` — the full image FINGERPRINT, which is also
+      ## the file name incusd stores the image under
+      ## (``<incus-dir>/images/<fingerprint>``, plus ``<fingerprint>.rootfs``
+      ## for a split image). "" for an instance created without an image
+      ## (``incus init --empty``).
+
+proc parseIncusInstanceImages*(text: string): seq[IncusInstanceImage] =
+  ## Parse ``incus list --format json``. RAISES ``ValueError`` on anything
+  ## that is not an array of named instance objects: the caller deletes on
+  ## the strength of this answer, so output it cannot read is "I do not
+  ## know", never "no instances".
+  var doc: JsonNode
+  try:
+    doc = parseJson(text)
+  except CatchableError as err:
+    raise newException(ValueError,
+      "incus list --format json: unparseable output: " & err.msg)
+  if doc.kind != JArray:
+    raise newException(ValueError,
+      "incus list --format json: expected a JSON array, got " & $doc.kind)
+  for item in doc:
+    if item.kind != JObject or not item.hasKey("name") or
+        item["name"].kind != JString or item["name"].getStr().len == 0:
+      raise newException(ValueError,
+        "incus list --format json: an entry has no instance name")
+    var entry = IncusInstanceImage(name: item["name"].getStr(),
+      project: item{"project"}.getStr("default"))
+    # `config` is the instance's own keys; `volatile.*` lives there. Fall
+    # back to `expanded_config` rather than reading a missing key as "".
+    for key in ["config", "expanded_config"]:
+      let cfg = item{key}
+      if cfg != nil and cfg.kind == JObject and
+          cfg{"volatile.base_image"} != nil:
+        entry.image = cfg["volatile.base_image"].getStr()
+        break
+    result.add(entry)
+
+proc tryListInstanceImages*(b: IncusBackend):
+    tuple[ok: bool; instances: seq[IncusInstanceImage]; message: string] =
+  ## Every instance in EVERY project, in any state, with the image it was
+  ## created from — or ``ok = false`` when incus could not answer.
+  ##
+  ## Same contract as ``tryListContainers`` and libvirt's
+  ## ``tryListAllDomainNames``: a missing binary (``startProcess`` raises), a
+  ## non-zero exit (daemon down, socket not reachable by this user, a project
+  ## this user may not list) and output that does not parse all fold into
+  ## ``ok = false``. An image file is shared by every project, so a listing
+  ## scoped to one project would under-report its users; ``--all-projects``
+  ## is not optional.
+  var r: ExecResult
+  try:
+    r = b.runIncus(@["list", "--all-projects", "--format", "json"],
+                   timeoutSec = 60)
+  except CatchableError as err:
+    return (false, @[], "could not run " & b.incusCmd.join(" ") & ": " &
+      err.msg)
+  if r.exitCode != 0:
+    let detail = (r.stdout.strip() & " " & r.stderr.strip()).strip()
+    return (false, @[], b.incusCmd.join(" ") &
+      " list --all-projects --format json exited " & $r.exitCode &
+      (if detail.len > 0: ": " & detail else: ""))
+  try:
+    (true, parseIncusInstanceImages(r.stdout), "")
+  except ValueError as err:
+    (false, @[], err.msg)
+
+const DefaultIncusDir* = "/var/lib/incus"
+
+proc incusStateCandidates*(): seq[string] =
+  ## Every path whose existence would mean an Incus daemon has (or had) state
+  ## on this host: ``$INCUS_DIR`` and ``$INCUS_SOCKET`` when set (the client
+  ## and daemon both honour them), plus the defaults ``/var/lib/incus`` and
+  ## ``/run/incus``. The defaults are ALWAYS included, even when
+  ## ``INCUS_DIR`` is set: this process's environment need not be the
+  ## daemon's, and a candidate checked needlessly costs nothing while one
+  ## skipped could read a populated host as empty.
+  for name in ["INCUS_DIR", "INCUS_SOCKET"]:
+    let v = getEnv(name).strip()
+    if v.len > 0: result.add(v)
+  for p in [DefaultIncusDir, "/run/incus"]:
+    if p notin result: result.add(p)
+
+proc pathMayExist(p: string): bool =
+  ## True unless ``p`` PROVABLY does not exist. ``lstat`` failing with
+  ## ENOENT/ENOTDIR is proof; any other failure (EACCES on a parent, EIO, …)
+  ## is "cannot tell" and counts as present.
+  when defined(posix):
+    var st: Stat
+    if lstat(p.cstring, st) == 0: return true
+    let e = errno
+    return e != ENOENT and e != ENOTDIR
+  else:
+    fileExists(p) or dirExists(p) or symlinkExists(p)
+
+proc incusClientMissing*(b: IncusBackend): bool =
+  ## True only when the configured command's EXECUTABLE provably does not
+  ## exist: a bare name not found on ``PATH``, or a path that is not there.
+  ## A wrapper (``sudo -n incus``) whose first word exists is not "missing" —
+  ## it runs, and its failure is an ordinary enumeration failure.
+  if b.incusCmd.len == 0: return true
+  let exe = b.incusCmd[0]
+  if exe.len == 0: return true
+  if DirSep in exe or AltSep in exe:
+    return not pathMayExist(exe)
+  findExe(exe).len == 0
+
+proc tryListHostInstanceImages*(b: IncusBackend;
+    stateCandidates: seq[string] = incusStateCandidates()):
+    tuple[ok: bool; instances: seq[IncusInstanceImage]; message: string] =
+  ## ``tryListInstanceImages`` for a caller that deletes on the answer
+  ## (``gosti layer``), with ONE extra way to reach "no instances": the
+  ## ``incus`` client is not installed AND no Incus state exists on this
+  ## host (none of ``stateCandidates`` may exist). With no daemon state there
+  ## is no instance to reference any file, so the empty list is KNOWN, not
+  ## guessed — which is what lets a libvirt-only host keep running
+  ## ``gosti layer``. On success ``message`` then carries a note saying so.
+  ##
+  ## Every other shape still fails closed: a missing client with ANY state
+  ## candidate present (or unstat-able) is ``ok = false`` — the daemon may
+  ## have instances that cannot be listed — and a client that is present but
+  ## cannot answer is ``ok = false`` whether or not state exists.
+  if b.incusClientMissing():
+    var present: seq[string]
+    for p in stateCandidates:
+      if pathMayExist(p): present.add(p)
+    let cmd = b.incusCmd.join(" ")
+    if present.len == 0:
+      return (true, @[], "incus client (" & cmd & ") not installed and no " &
+        "Incus state on this host (checked " & stateCandidates.join(", ") &
+        "): no Incus instances exist")
+    return (false, @[], "incus client (" & cmd & ") not installed, but " &
+      "Incus state exists at " & present.join(", ") &
+      ", so instances may exist that cannot be listed")
+  b.tryListInstanceImages()
+
 proc containerPresent(b: IncusBackend, name: string): bool =
   ## Exact-name presence check that RAISES when incus cannot answer. (``incus
   ## info`` would conflate "absent" with "daemon unreachable", and ``incus list

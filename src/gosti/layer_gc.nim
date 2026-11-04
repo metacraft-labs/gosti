@@ -100,8 +100,11 @@ type
       ## start.
     liveContainers*: seq[string]
     containerImages*: seq[string]
-      ## Image aliases/fingerprints currently in use by ``liveContainers``,
-      ## positionally aligned with it.
+      ## Image paths or fingerprints currently in use by ``liveContainers``,
+      ## positionally aligned with it. The CLI fills it with Incus's
+      ## ``volatile.base_image`` fingerprint, which is the image's file name
+      ## under ``<incus-dir>/images/``. An ALIAS never matches a layer path:
+      ## aliases are mutable names, not files.
     snapshotFiles*: seq[string]
       ## Absolute paths of snapshot disk/memory-state files. A snapshot's
       ## frozen disk is a backing file for the live overlay above it, so a
@@ -136,6 +139,8 @@ type
 
 const
   OverlaySuffix* = ".overlay.qcow2"
+  IncusRootfsSuffix* = ".rootfs"
+    ## The second file of a split Incus image (metadata + rootfs).
   DefaultStaleOverlayAgeSec* = 24 * 3600
   Qcow2Magic = ['Q', 'F', 'I', '\xfb']
 
@@ -277,11 +282,16 @@ proc layerReferents*(scope: LayerScope; layerPath: string;
       if overlay.name in scope.liveDomains:
         result.add(LayerReferent(kind: lrkDomain, name: overlay.name,
           path: overlay.path))
+  let layerFile = extractFilename(layerPath)
   for i, container in scope.liveContainers:
     if i < scope.containerImages.len:
       let image = scope.containerImages[i]
+      # An Incus image is stored as ``images/<fingerprint>`` and, for a SPLIT
+      # image, also ``images/<fingerprint>.rootfs``; an instance records only
+      # the fingerprint (``volatile.base_image``), so both files match it.
       if image.len > 0 and
-          (samePath(image, layerPath) or image == extractFilename(layerPath)):
+          (samePath(image, layerPath) or image == layerFile or
+           image & IncusRootfsSuffix == layerFile):
         result.add(LayerReferent(kind: lrkContainer, name: container,
           path: image))
   for snapshot in scope.snapshotFiles:

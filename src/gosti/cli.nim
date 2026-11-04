@@ -341,7 +341,17 @@ Subcommands:
                           any overlay, defined domain, container or snapshot
                           still resolves onto it. Deleting a layer under a
                           live overlay destroys that overlay outright, so
-                          there is no warn-and-continue mode.
+                          there is no warn-and-continue mode. Domains come
+                          from `virsh list --all`, containers (any state)
+                          and their images from `incus list --all-projects`;
+                          an Incus image's layer path is
+                          <incus-dir>/images/<fingerprint>[.rootfs]. If
+                          either cannot be listed -- including an absent
+                          binary -- the command exits 3 rather than guess.
+                          (Sole exception: no `incus` client AND no Incus
+                          state on the host -- $INCUS_DIR, $INCUS_SOCKET,
+                          /var/lib/incus, /run/incus all absent -- means no
+                          containers.)
   layer sweep-overlays --image-pool-dir <dir> [--older-than <sec>] [--dry-run]
                           Remove per-job CoW overlays that no defined instance
                           owns and that are older than the age guard (default
@@ -349,7 +359,8 @@ Subcommands:
                           therefore never a candidate. Reports reclaimed bytes
                           as BOTH apparent and allocated: a CoW overlay is
                           sparse and one number alone misstates it by orders
-                          of magnitude.
+                          of magnitude. Enumerates domains and containers as
+                          `layer gc` does, with the same exit-3 refusal.
   prune --ephemeral-prefix <p> [--backend all|tart|qemu-windows-arm]
         [--state-dir <dir>] [--tart-vms-dir <dir>] [--older-than <sec>]
         [--sweep-tmp] [--dry-run]
@@ -2836,8 +2847,9 @@ proc cmdLayer(opts: CliOpts): int =
   ## outcome to warn about. Exit 3 is reserved for that refusal so a caller
   ## can tell "in use" from a usage error (2) without parsing text.
   ##
-  ## Live domains are supplied to the planner as DATA. Populating them here,
-  ## from the resolved backend, keeps the decision procedure a pure function
+  ## Live domains (``virsh``) and Incus instances with their images
+  ## (``incus list``) are supplied to the planner as DATA. Populating them
+  ## here, from the host, keeps the decision procedure a pure function
   ## of its scope -- which is what lets the gate exercise the real decision
   ## without a hypervisor.
   if opts.cmd.len < 1:
@@ -2882,6 +2894,31 @@ proc cmdLayer(opts: CliOpts): int =
       stderr.writeLine("gosti layer: cannot enumerate domains (" &
         err.msg & "); refusing to act without that list")
       return 3
+    # Read-only: `incus list --all-projects --format json`. Every instance in
+    # any state (a STOPPED container still owns its rootfs and is one
+    # `incus start` from using it again) and the image it was created from,
+    # as `volatile.base_image` — the fingerprint incusd also uses as the
+    # image's FILE NAME, which is what `layerReferents` matches a layer path
+    # against.
+    #
+    # Fails CLOSED with the virsh semantics above: a client that cannot
+    # reach its daemon, or answers with something unparseable, exits 3. An
+    # ABSENT `incus` client fails closed too, UNLESS the host provably has
+    # no Incus state at all (no `$INCUS_DIR`, `$INCUS_SOCKET`,
+    # `/var/lib/incus` or `/run/incus`): with no daemon state there are no
+    # instances, so a libvirt-only host can still run `gosti layer`. "No
+    # client on PATH" alone does not prove "no daemon", and only the second
+    # reading deletes anything.
+    let instances = newIncusBackend().tryListHostInstanceImages()
+    if not instances.ok:
+      stderr.writeLine("gosti layer: cannot enumerate incus instances (" &
+        instances.message & "); refusing to act without that list")
+      return 3
+    if instances.message.len > 0:
+      stderr.writeLine("gosti layer: " & instances.message)
+    for inst in instances.instances:
+      scope.liveContainers.add(inst.name)
+      scope.containerImages.add(inst.image)
 
   case opts.cmd[0]
   of "gc":
