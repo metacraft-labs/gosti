@@ -79,6 +79,32 @@ type
 const
   DefaultVmName* = "repro-m69-hyperv"
 
+proc defaultHyperVProvisionScriptPath*(): string =
+  ## Locate gosti's built-in ``provision-base-vm.ps1`` under
+  ## ``guest-recipes/windows-x64-base/hyperv-dev-vm/``. Respects an explicit
+  ## ``$GOSTI_HYPERV_PROVISION_SCRIPT`` override first, then searches the
+  ## standard recipe directories (mirroring ``cli.resolveRecipeDir``).
+  let envOverride = getEnv("GOSTI_HYPERV_PROVISION_SCRIPT")
+  if envOverride.len > 0:
+    return envOverride
+  let rel = "windows-x64-base" / "hyperv-dev-vm" / "provision-base-vm.ps1"
+  var candidates: seq[string] = @[]
+  let recipesOverride = getEnv("GOSTI_RECIPES_DIR")
+  if recipesOverride.len > 0:
+    candidates.add(recipesOverride / rel)
+  let rootOverride = getEnv("GOSTI_ROOT")
+  if rootOverride.len > 0:
+    candidates.add(rootOverride / "guest-recipes" / rel)
+  candidates.add(getCurrentDir() / "guest-recipes" / rel)
+  let exeDir = getAppDir()
+  candidates.add(exeDir / ".." / "guest-recipes" / rel)
+  candidates.add(exeDir / ".." / ".." / "guest-recipes" / rel)
+  candidates.add(exeDir / ".." / "share" / "gosti" / "guest-recipes" / rel)
+  for c in candidates:
+    if fileExists(c):
+      return absolutePath(c)
+  return ""
+
 proc newHyperVBackend*(vmName: string = DefaultVmName,
                        credentialCachePath: string = "",
                        runScriptPath: string = "",
@@ -211,21 +237,28 @@ method probeAvailability*(b: HyperVBackend): bool =
     return false
 
 method provisionBaseline*(b: HyperVBackend, spec: BaselineSpec) =
-  ## Hyper-V provisioning is delegated to reprobuild's
-  ## ``provision-base-vm.ps1`` when ``b.provisionScriptPath`` is set
-  ## (the reprobuild-adapter case). When unset we treat
-  ## ``provisionBaseline`` as a no-op asserting the snapshot already
-  ## exists — the assumption is that the consumer (or an out-of-band
-  ## admin) has built the baseline VM previously.
-  ##
-  ## Future work (post-M1): teach the generic mode to construct a
-  ## baseline VM from scratch via Hyper-V cmdlets.
-  if b.provisionScriptPath.len == 0:
+  ## Hyper-V provisioning delegates to ``provision-base-vm.ps1`` (either
+  ## ``b.provisionScriptPath`` when explicitly configured or gosti's built-in
+  ## ``guest-recipes/windows-x64-base/hyperv-dev-vm/provision-base-vm.ps1``
+  ## when the caller invokes ``gosti provision`` or supplies a ``sourceImage``
+  ## VHDX). When ``b.provisionScriptPath`` is unset and the baseline is an
+  ## arbitrary tag from ``gosti run`` without ``sourceImage``, we keep the
+  ## no-op assertion unless ``spec.name`` is one of the canonical base VM
+  ## checkpoints (``base-clean`` / ``base-with-vs``) and the built-in script
+  ## is present on a Windows host.
+  let scriptPath =
+    if b.provisionScriptPath.len > 0:
+      b.provisionScriptPath
+    elif spec.sourceImage.len > 0 or spec.name in ["base-clean", "base-with-vs"]:
+      defaultHyperVProvisionScriptPath()
+    else:
+      ""
+  if scriptPath.len == 0:
     return
   when defined(windows):
-    let inv = HyperVProvisionInvocation(scriptPath: b.provisionScriptPath,
+    let inv = HyperVProvisionInvocation(scriptPath: scriptPath,
                                         force: false,
-                                        vhdxOverridePath: "",
+                                        vhdxOverridePath: spec.sourceImage,
                                         skipVsInstall: spec.name == "base-clean")
     let cmd = buildHyperVProvisionArgs(b.powershellLauncher, inv)
     let r = runProcessCapture(cmd, timeoutSec = 0)
@@ -234,8 +267,9 @@ method provisionBaseline*(b: HyperVBackend, spec: BaselineSpec) =
         "provision-base-vm.ps1 failed with exit " & $r.exitCode &
         "\n" & r.stdout)
   else:
-    raise newException(BackendUnavailableError,
-      "HyperVBackend.provisionBaseline requires a Windows host")
+    if b.provisionScriptPath.len > 0:
+      raise newException(BackendUnavailableError,
+        "HyperVBackend.provisionBaseline requires a Windows host")
 
 method revertToBaseline*(b: HyperVBackend, baselineName: string): VmHandle =
   ## Restore the named checkpoint and return a started VM handle. The
@@ -1872,16 +1906,19 @@ proc provisionBaselineViaReproScript*(b: HyperVBackend,
                                      force: bool = false,
                                      vhdxOverridePath: string = "",
                                      skipVsInstall: bool = false): ExecResult =
-  ## Invoke reprobuild's ``provision-base-vm.ps1`` to (idempotently)
-  ## build the M69 base VM and its two snapshots. Returns the captured
-  ## stdout/stderr/exit. Raises ``BackendUnavailableError`` if
-  ## ``provisionScriptPath`` is unset or the host isn't Windows.
-  if b.provisionScriptPath.len == 0:
+  ## Invoke ``provision-base-vm.ps1`` to (idempotently) build the base VM
+  ## and its snapshots. Returns the captured stdout/stderr/exit. Raises
+  ## ``BackendUnavailableError`` if no script path can be resolved or the
+  ## host isn't Windows.
+  let scriptPath =
+    if b.provisionScriptPath.len > 0: b.provisionScriptPath
+    else: defaultHyperVProvisionScriptPath()
+  if scriptPath.len == 0:
     raise newException(BackendUnavailableError,
       "HyperVBackend: provisionScriptPath not configured")
   when defined(windows):
     let inv = HyperVProvisionInvocation(
-      scriptPath: b.provisionScriptPath,
+      scriptPath: scriptPath,
       force: force,
       vhdxOverridePath: vhdxOverridePath,
       skipVsInstall: skipVsInstall)

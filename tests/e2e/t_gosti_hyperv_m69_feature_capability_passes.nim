@@ -34,9 +34,7 @@ suite "e2e_gosti_hyperv_m69_feature_capability_passes":
     let runScript = getEnv("GOSTI_HYPERV_RUN_SCRIPT",
                           "D:\\metacraft\\reprobuild\\tools\\" &
                           "hyperv-m69-system\\run-hyperv-m69-system.ps1")
-    let provisionScript = getEnv("GOSTI_HYPERV_PROVISION_SCRIPT",
-                                 "D:\\metacraft\\reprobuild\\tools\\" &
-                                 "hyperv-m69-system\\provision-base-vm.ps1")
+    let provisionScript = defaultHyperVProvisionScriptPath()
     let credPath = getEnv("GOSTI_HYPERV_CRED_XML",
                           getHomeDir() / "AppData" / "Local" /
                           "Repro" / "hyperv-m69" / "vm-cred.xml")
