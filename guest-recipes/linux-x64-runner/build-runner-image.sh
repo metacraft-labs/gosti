@@ -490,7 +490,7 @@ ensure_build_egress
   apt-get update -qq
   apt-get install -y -qq --no-install-recommends git git-lfs xz-utils ca-certificates curl fuse3 gawk jq dbus
   # curl is BASELINE: CI workflow steps call the GitHub REST API with it (the
-  # lint job's rate-limit probe fails with "curl is not on this runner image"
+  # lint job's rate-limit probe fails with curl is not on this runner image
   # on any image built without it, 2026-11-03).
   command -v curl
   command -v git
