@@ -28,7 +28,9 @@ test all tests/unit/t_crud_surface_growth.nim
 # container, --source-image by full/unique-prefix fingerprint (ambiguous =>
 # bad-args; an alias keeps the csv probe), and the list_images verb (shape +
 # exit codes 0/4/5; mock, noop).
-# A fake incus script stands in for the daemon. Hermetic.
+# A fake incus script stands in for the daemon. Hermetic. The cases that
+# create a container skip off Linux, where IncusBackend refuses every
+# lifecycle call; the pure cases and list_images run everywhere.
 test all tests/unit/t_crud_incus_parity.nim
 # Cross-invocation crud state (design doc §8.6): the store's location chain,
 # name validation, record round-trip, locks (busy + stale-owner break), and

@@ -225,115 +225,139 @@ suite "incus crud create: spec conversion (pure)":
     check not imageRendersUserData("templates:\n  /etc/hostname:\n    template: hostname.tpl\n")
     check not imageRendersUserData("")
 
+# The tests below that create, start or stop a container drive
+# IncusBackend's lifecycle methods, which are Linux-only: on any other host
+# each one refuses before it runs incus (backend-unavailable, 4), so the
+# argv and ordering they check never exist there. They skip off Linux, as
+# tests/unit/t_cli_incus.nim does; the pure spec conversion above, the CLI
+# guard and list_images still run on every platform.
 suite "incus crud create: argv through the façade (fake incus)":
   test "--user-data + --mount: init, user-data on stdin, devices, THEN start":
-    let (dir, exe) = fakeIncus()
-    let host = createTempDir("gosti-mnt-", "")
-    defer:
-      removeDir(dir)
-      removeDir(host)
-    let s = session(exe)
-    var p = params("vm1")
-    p.sourceImage = "images:debian/12/cloud"
-    p.userData = "#cloud-config\nruncmd: [[touch, /SECRET-MARKER]]\n"
-    p.mounts = @[(host: host, guest: "/mnt/ro:ro"), (host: host, guest: "/mnt/rw")]
-    let r = runCrud(s, "create_vm", p)
-    check r.exitCode == 0
-    check r.json["data"]["vm"]["state"].getStr == "running"
-    let log = argvLog(dir)
-    let iInit = log.indexOf("init images:debian/12/cloud vm1 --config user.gosti.owner=crud-")
-    let iMeta = log.indexOf("config metadata show vm1")
-    let iUd = log.indexOf("config set vm1 cloud-init.user-data -")
-    let iDev0 = log.indexOf("config device add vm1 gosti-mount-0 disk source=" &
-                            host & " path=/mnt/ro readonly=true")
-    let iDev1 = log.indexOf("config device add vm1 gosti-mount-1 disk source=" &
-                            host & " path=/mnt/rw")
-    let iStart = log.indexOf("start vm1")
-    check iInit >= 0 and iMeta > iInit and iUd > iMeta
-    check iDev0 > iUd and iDev1 > iDev0 and iStart > iDev1
-    check log[iDev1] == "config device add vm1 gosti-mount-1 disk source=" &
-                        host & " path=/mnt/rw"   # rw ⇒ no readonly key
-    check log.indexOf("launch ") < 0             # never the launch-then-config path
-    # The body went on stdin, never into an argv.
-    check readFile(dir / "stdin-cloud-init.user-data") == p.userData
-    check "SECRET-MARKER" notin readFile(dir / "argv.log")
-    # create_vm returns at exec-ready; it never blocks on cloud-init (§8.2).
-    check "cloud-init" notin readFile(dir / "argv.log").replace(
-      "cloud-init.user-data", "")
+    when defined(linux):
+      let (dir, exe) = fakeIncus()
+      let host = createTempDir("gosti-mnt-", "")
+      defer:
+        removeDir(dir)
+        removeDir(host)
+      let s = session(exe)
+      var p = params("vm1")
+      p.sourceImage = "images:debian/12/cloud"
+      p.userData = "#cloud-config\nruncmd: [[touch, /SECRET-MARKER]]\n"
+      p.mounts = @[(host: host, guest: "/mnt/ro:ro"), (host: host, guest: "/mnt/rw")]
+      let r = runCrud(s, "create_vm", p)
+      check r.exitCode == 0
+      check r.json["data"]["vm"]["state"].getStr == "running"
+      let log = argvLog(dir)
+      let iInit = log.indexOf("init images:debian/12/cloud vm1 --config user.gosti.owner=crud-")
+      let iMeta = log.indexOf("config metadata show vm1")
+      let iUd = log.indexOf("config set vm1 cloud-init.user-data -")
+      let iDev0 = log.indexOf("config device add vm1 gosti-mount-0 disk source=" &
+                              host & " path=/mnt/ro readonly=true")
+      let iDev1 = log.indexOf("config device add vm1 gosti-mount-1 disk source=" &
+                              host & " path=/mnt/rw")
+      let iStart = log.indexOf("start vm1")
+      check iInit >= 0 and iMeta > iInit and iUd > iMeta
+      check iDev0 > iUd and iDev1 > iDev0 and iStart > iDev1
+      check log[iDev1] == "config device add vm1 gosti-mount-1 disk source=" &
+                          host & " path=/mnt/rw"   # rw ⇒ no readonly key
+      check log.indexOf("launch ") < 0             # never the launch-then-config path
+      # The body went on stdin, never into an argv.
+      check readFile(dir / "stdin-cloud-init.user-data") == p.userData
+      check "SECRET-MARKER" notin readFile(dir / "argv.log")
+      # create_vm returns at exec-ready; it never blocks on cloud-init (§8.2).
+      check "cloud-init" notin readFile(dir / "argv.log").replace(
+        "cloud-init.user-data", "")
+    else:
+      skip()
 
   test "user-data for an image with no cloud-init template: bad-args, container removed":
-    let (dir, exe) = fakeIncus()
-    defer: removeDir(dir)
-    putEnv("FAKE_NO_TEMPLATE", "1")
-    defer: delEnv("FAKE_NO_TEMPLATE")
-    var p = params("vm2")
-    p.sourceImage = "images:alpine/3.21"
-    p.userData = "#cloud-config\n"
-    let r = runCrud(session(exe), "create_vm", p)
-    check r.exitCode == 2
-    check r.json["error"]["kind"].getStr == "bad-args"
-    check "cloud-init" in r.json["error"]["message"].getStr
-    let log = argvLog(dir)
-    check log.indexOf("delete --force vm2") > log.indexOf("config metadata show vm2")
-    check log.indexOf("config set vm2 cloud-init.user-data") < 0
-    check log.indexOf("start vm2") < 0
-    check not dirExists(dir / "c" / "vm2")
+    when defined(linux):
+      let (dir, exe) = fakeIncus()
+      defer: removeDir(dir)
+      putEnv("FAKE_NO_TEMPLATE", "1")
+      defer: delEnv("FAKE_NO_TEMPLATE")
+      var p = params("vm2")
+      p.sourceImage = "images:alpine/3.21"
+      p.userData = "#cloud-config\n"
+      let r = runCrud(session(exe), "create_vm", p)
+      check r.exitCode == 2
+      check r.json["error"]["kind"].getStr == "bad-args"
+      check "cloud-init" in r.json["error"]["message"].getStr
+      let log = argvLog(dir)
+      check log.indexOf("delete --force vm2") > log.indexOf("config metadata show vm2")
+      check log.indexOf("config set vm2 cloud-init.user-data") < 0
+      check log.indexOf("start vm2") < 0
+      check not dirExists(dir / "c" / "vm2")
+    else:
+      skip()
 
   test "a failing device add tears the container down (backend-error 5)":
-    let (dir, exe) = fakeIncus()
-    defer: removeDir(dir)
-    let host = createTempDir("gosti-mnt-", "")
-    defer: removeDir(host)
-    putEnv("FAKE_DEVICE_RC", "1")
-    defer: delEnv("FAKE_DEVICE_RC")
-    var p = params("vm3")
-    p.mounts = @[(host: host, guest: "/mnt/x")]
-    let r = runCrud(session(exe), "create_vm", p)
-    check r.exitCode == 5
-    check not dirExists(dir / "c" / "vm3")
-    check argvLog(dir).indexOf("start vm3") < 0
+    when defined(linux):
+      let (dir, exe) = fakeIncus()
+      defer: removeDir(dir)
+      let host = createTempDir("gosti-mnt-", "")
+      defer: removeDir(host)
+      putEnv("FAKE_DEVICE_RC", "1")
+      defer: delEnv("FAKE_DEVICE_RC")
+      var p = params("vm3")
+      p.mounts = @[(host: host, guest: "/mnt/x")]
+      let r = runCrud(session(exe), "create_vm", p)
+      check r.exitCode == 5
+      check not dirExists(dir / "c" / "vm3")
+      check argvLog(dir).indexOf("start vm3") < 0
+    else:
+      skip()
 
   test "invalid incus name: bad-args before anything is created":
-    let (dir, exe) = fakeIncus()
-    defer: removeDir(dir)
-    let r = runCrud(session(exe), "create_vm", params("bad_name"))
-    check r.exitCode == 2
-    let log = argvLog(dir)
-    check log.indexOf("init ") < 0 and log.indexOf("launch ") < 0
+    when defined(linux):
+      let (dir, exe) = fakeIncus()
+      defer: removeDir(dir)
+      let r = runCrud(session(exe), "create_vm", params("bad_name"))
+      check r.exitCode == 2
+      let log = argvLog(dir)
+      check log.indexOf("init ") < 0 and log.indexOf("launch ") < 0
+    else:
+      skip()
 
   test "no options: the original launch shape, no pre-start config":
-    let (dir, exe) = fakeIncus()
-    defer: removeDir(dir)
-    let r = runCrud(session(exe), "create_vm", params("vm4"))
-    check r.exitCode == 0
-    let log = argvLog(dir)
-    check log.indexOf("launch gosti-base vm4 --config user.gosti.owner=crud-") >= 0
-    check log.indexOf("config metadata") < 0
-    check log.indexOf("config device") < 0
+    when defined(linux):
+      let (dir, exe) = fakeIncus()
+      defer: removeDir(dir)
+      let r = runCrud(session(exe), "create_vm", params("vm4"))
+      check r.exitCode == 0
+      let log = argvLog(dir)
+      check log.indexOf("launch gosti-base vm4 --config user.gosti.owner=crud-") >= 0
+      check log.indexOf("config metadata") < 0
+      check log.indexOf("config device") < 0
+    else:
+      skip()
 
   test "stop_vm keeps the container; start_vm restarts it; delete_vm removes it":
-    let (dir, exe) = fakeIncus()
-    let store = createTempDir("gosti-crud-store-", "")
-    defer:
-      removeDir(dir)
-      removeDir(store)
-    check runCrud(session(exe, store), "create_vm", params("vm5")).exitCode == 0
-    let st = runCrud(session(exe, store), "stop_vm", params("vm5"))
-    check st.exitCode == 0
-    check st.json["data"]["vm"]["state"].getStr == "stopped"
-    check dirExists(dir / "c" / "vm5")                # kept, not deleted
-    check argvLog(dir).indexOf("stop --force vm5") >= 0
-    let g = runCrud(session(exe, store), "get_vm", params("vm5"))
-    check g.json["data"]["vm"]["state"].getStr == "stopped"
-    let sv = runCrud(session(exe, store), "start_vm", params("vm5"))
-    check sv.exitCode == 0
-    check sv.json["data"]["vm"]["state"].getStr == "running"
-    let log = argvLog(dir)
-    check log.indexOf("start vm5") > log.indexOf("stop --force vm5")
-    discard runCrud(session(exe, store), "stop_vm", params("vm5"))
-    check runCrud(session(exe, store), "delete_vm", params("vm5")).exitCode == 0
-    check not dirExists(dir / "c" / "vm5")            # no residue after stop+delete
-    check runCrud(session(exe, store), "get_vm", params("vm5")).exitCode == 3
+    when defined(linux):
+      let (dir, exe) = fakeIncus()
+      let store = createTempDir("gosti-crud-store-", "")
+      defer:
+        removeDir(dir)
+        removeDir(store)
+      check runCrud(session(exe, store), "create_vm", params("vm5")).exitCode == 0
+      let st = runCrud(session(exe, store), "stop_vm", params("vm5"))
+      check st.exitCode == 0
+      check st.json["data"]["vm"]["state"].getStr == "stopped"
+      check dirExists(dir / "c" / "vm5")                # kept, not deleted
+      check argvLog(dir).indexOf("stop --force vm5") >= 0
+      let g = runCrud(session(exe, store), "get_vm", params("vm5"))
+      check g.json["data"]["vm"]["state"].getStr == "stopped"
+      let sv = runCrud(session(exe, store), "start_vm", params("vm5"))
+      check sv.exitCode == 0
+      check sv.json["data"]["vm"]["state"].getStr == "running"
+      let log = argvLog(dir)
+      check log.indexOf("start vm5") > log.indexOf("stop --force vm5")
+      discard runCrud(session(exe, store), "stop_vm", params("vm5"))
+      check runCrud(session(exe, store), "delete_vm", params("vm5")).exitCode == 0
+      check not dirExists(dir / "c" / "vm5")            # no residue after stop+delete
+      check runCrud(session(exe, store), "get_vm", params("vm5")).exitCode == 3
+    else:
+      skip()
 
   test "the CLI guard lets --user-data / --mount through for incus":
     let b: VmBackend = newIncusBackend()
@@ -343,6 +367,7 @@ suite "incus crud create: argv through the façade (fake incus)":
     check opts.mounts == @[(host: "/a", guest: "/b:ro")]
     check crudCreateGuard("create_vm", opts, b).isNone
 
+# Linux-only for the same reason as the façade suite above.
 suite "incus crud create: --source-image by fingerprint (fake incus)":
   const FpImages = """[
    {"fingerprint": "abc123ff", "aliases": [], "type": "container"},
@@ -350,40 +375,49 @@ suite "incus crud create: --source-image by fingerprint (fake incus)":
    {"fingerprint": "beef0001", "aliases": [], "type": "container"}]"""
 
   test "full and unique-prefix fingerprints create; JSON lookup, no csv probe":
-    for fp in ["abc123ff", "abc", "beef0001"]:
-      let (dir, exe) = fakeIncus()
-      defer: removeDir(dir)
-      writeFile(dir / "images.json", FpImages)
-      var p = params("vm-fp")
-      p.sourceImage = fp
-      let r = runCrud(session(exe), "create_vm", p)
-      check r.exitCode == 0
-      let log = argvLog(dir)
-      check log.indexOf("image list " & fp & " --format json") >= 0
-      check log.indexOf("image list " & fp & " --format csv") < 0
-      check log.indexOf("launch " & fp & " vm-fp ") >= 0
+    when defined(linux):
+      for fp in ["abc123ff", "abc", "beef0001"]:
+        let (dir, exe) = fakeIncus()
+        defer: removeDir(dir)
+        writeFile(dir / "images.json", FpImages)
+        var p = params("vm-fp")
+        p.sourceImage = fp
+        let r = runCrud(session(exe), "create_vm", p)
+        check r.exitCode == 0
+        let log = argvLog(dir)
+        check log.indexOf("image list " & fp & " --format json") >= 0
+        check log.indexOf("image list " & fp & " --format csv") < 0
+        check log.indexOf("launch " & fp & " vm-fp ") >= 0
+    else:
+      skip()
 
   test "ambiguous prefix => bad-args (2); unknown => backend-error (5)":
-    for (fp, code) in [("ab", 2), ("c0ffee", 5)]:
-      let (dir, exe) = fakeIncus()
-      defer: removeDir(dir)
-      writeFile(dir / "images.json", FpImages)
-      var p = params("vm-fp")
-      p.sourceImage = fp
-      let r = runCrud(session(exe), "create_vm", p)
-      check r.exitCode == code
-      if code == 2: check "ambiguous" in r.json["error"]["message"].getStr
-      let log = argvLog(dir)
-      check log.indexOf("launch ") < 0 and log.indexOf("init ") < 0
+    when defined(linux):
+      for (fp, code) in [("ab", 2), ("c0ffee", 5)]:
+        let (dir, exe) = fakeIncus()
+        defer: removeDir(dir)
+        writeFile(dir / "images.json", FpImages)
+        var p = params("vm-fp")
+        p.sourceImage = fp
+        let r = runCrud(session(exe), "create_vm", p)
+        check r.exitCode == code
+        if code == 2: check "ambiguous" in r.json["error"]["message"].getStr
+        let log = argvLog(dir)
+        check log.indexOf("launch ") < 0 and log.indexOf("init ") < 0
+    else:
+      skip()
 
   test "an alias keeps the original csv presence probe (byte-identical)":
-    let (dir, exe) = fakeIncus()
-    defer: removeDir(dir)
-    let r = runCrud(session(exe), "create_vm", params("vm-al"))
-    check r.exitCode == 0
-    let log = argvLog(dir)
-    check log.indexOf("image list gosti-base --format csv -c l") >= 0
-    check log.indexOf("image list gosti-base --format json") < 0
+    when defined(linux):
+      let (dir, exe) = fakeIncus()
+      defer: removeDir(dir)
+      let r = runCrud(session(exe), "create_vm", params("vm-al"))
+      check r.exitCode == 0
+      let log = argvLog(dir)
+      check log.indexOf("image list gosti-base --format csv -c l") >= 0
+      check log.indexOf("image list gosti-base --format json") < 0
+    else:
+      skip()
 
 suite "crud list_images":
   test "incus: ok envelope, stable entry shape":
