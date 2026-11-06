@@ -609,6 +609,41 @@ TMPFILES
   test -u /run/wrappers/bin/fusermount3
 "
 
+# 3d. Keep the runner service up when the kernel OOM-kills one of its jobs.
+#
+#     Every per-job container runs under a memory cap (incus limits.memory,
+#     10-24 GiB depending on the host). When a job exceeds it, the kernel kills
+#     the largest process in the container, normally the job's own build (the
+#     runner gives job processes oom_score_adj 500 and itself 0). systemd's
+#     default OOMPolicy=stop then STOPS the whole runner unit, because the
+#     killed process belonged to it. The runner reads the SIGTERM as a host
+#     shutdown, so the job fails with
+#         The runner has received a shutdown signal. This can happen when the
+#         runner service is stopped, or a manually started runner is canceled.
+#     instead of the step failing with exit 137 and the log saying why.
+#     Measured on nixos-ci-bare-004, 2026-11-06 03:56:15Z: nix (10 GiB anon)
+#     OOM-killed in the 10 GiB container garm-ow19qzf1pdyi, and the runner
+#     reported the shutdown signal in the same second.
+#
+#     DefaultOOMPolicy=continue makes the OOM kill fail only the step that
+#     caused it. The runner then finishes the job and uploads its log. The
+#     guest runs nothing but the runner and its job, so the manager default is
+#     the right scope. It also covers dockerd, which should not be stopped
+#     because one container in it ran out of memory.
+log "installing DefaultOOMPolicy=continue (an OOM-killed job step must not stop the runner unit)"
+"${INCUS[@]}" exec "$BLD" -- sh -c "
+  set -e
+  mkdir -p /etc/systemd/system.conf.d
+  cat > /etc/systemd/system.conf.d/50-gosti-oom-policy.conf <<'OOMPOLICY'
+# gosti linux-x64-runner: an OOM kill inside a CI job fails that job step only.
+# The systemd default, stop, would stop the runner service and the job would
+# report a runner shutdown instead of the out-of-memory kill.
+[Manager]
+DefaultOOMPolicy=continue
+OOMPOLICY
+  systemd-analyze cat-config systemd/system.conf | grep -qx 'DefaultOOMPolicy=continue'
+"
+
 # 4. Create the unprivileged runner user with passwordless sudo.
 log "creating '${RUNNER_USER}' user with passwordless sudo"
 "${INCUS[@]}" exec "$BLD" -- sh -c "
