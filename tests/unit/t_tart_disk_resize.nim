@@ -70,6 +70,15 @@ if fixtureName in ["tart-disk" & NativeSuffix, "ssh-disk" & NativeSuffix]:
     else: echo "ready"
   quit(0)
 
+# newTartBackend reads the host's shared-store variables into its default
+# shared directories (tests/unit/t_tart_shared_dirs.nim covers that). A CI
+# macOS host exports MCL_RUNNER_SHARED_REPRO_STORE, and with it set a macOS
+# clone would try to mount that share over SSH at the fixture's unroutable
+# 192.0.2.10. Shared directories are not under test here, so this process
+# drops both variables before it builds any backend.
+delEnv("MCL_RUNNER_SHARED_NIX_STORE")
+delEnv("MCL_RUNNER_SHARED_REPRO_STORE")
+
 proc diskFixtureCommand(dir, name: string): string =
   result = dir / (name & NativeSuffix)
   copyFileWithPermissions(getAppFilename(), result)
