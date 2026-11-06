@@ -70,10 +70,27 @@ proc incusHas(name: string): bool =
 suite "t_gosti_serve_roundtrip_incus":
   # Availability gate first.
   let ib = newIncusBackend(baseImage = baseImage)
+  # The base image is the other prerequisite the header names. Check it the
+  # way t_gosti_incus_ephemeral_run does: provisionBaseline verifies the
+  # image is present and raises when it is not.
+  var haveBaseImage = false
+  if ib.probeAvailability():
+    try:
+      ib.provisionBaseline(BaselineSpec(sourceImage: baseImage,
+                                        guestOs: goLinux))
+      haveBaseImage = true
+    except CatchableError:
+      discard
   if not ib.probeAvailability():
     test "incus usable (else skip)":
       echo "[skip] incus daemon not reachable (set GOSTI_INCUS_CMD=\"sudo -n " &
            "incus\" if the incus-admin group is not active in this session)"
+      skip()
+  elif not haveBaseImage:
+    test "base image present (else skip)":
+      echo "[skip] base image '" & baseImage & "' absent; pull it first " &
+           "(`incus image copy images:debian/12 local: --alias " &
+           baseImage & "`) or set GOSTI_INCUS_BASE"
       skip()
   else:
     let work = createTempDir("gosti-serve-incus-", "")

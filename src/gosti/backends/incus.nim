@@ -29,6 +29,10 @@
 ##   copyFromGuest            ``incus file pull <name>/<guest> <host>``
 ##   stopAndCleanup           ``incus delete --force <name>``  (no residue —
 ##                            the per-container storage volume goes with it)
+##   createInstance (crud)    ``incus init`` → ``config set cloud-init.user-data
+##                            -`` (stdin; image template checked) → ``config
+##                            device add … disk`` per mount → ``incus start``
+##   listImages (crud)        ``incus image list --format json``
 ##
 ## Snapshot methods map onto ``incus snapshot`` / ``incus restore`` /
 ## ``incus delete <name>/<snap>``.
@@ -46,7 +50,7 @@
 ## returns false on non-Linux hosts / when ``incus`` is absent.
 
 import std/[json, options, os, osproc, streams, strtabs,
-            strutils, tables, times]
+            strutils, sysrand, tables, times]
 import ../types
 import ../auto
 import ../ephemeral_inventory
@@ -127,11 +131,45 @@ type
       ## (``incus launch … --network <name>``) instead of the profile's
       ## default bridge, so a gate can give its guest a network it created
       ## and owns (see ``createOwnedNetwork``).
+    cloudInitUserData*: string
+      ## GOSTI2 (crud create_vm --user-data): cloud-init user-data written to
+      ## the instance's ``cloud-init.user-data`` key BEFORE its first start, so
+      ## the image's NoCloud seed template (``/var/lib/cloud/seed/nocloud-net/
+      ## user-data``, shipped by the ``images:<distro>/cloud`` variants)
+      ## renders it at first boot. Distinct from ``userData`` (the GARM
+      ## bootstrap payload, delivered over ``incus exec``). Non-empty selects
+      ## the pre-start path and FAILS CLOSED (``InvalidSpecError``, container
+      ## removed) when the image has no cloud-init user-data template — the
+      ## key would otherwise be set and never read. Passed on stdin, never on
+      ## argv.
+    mounts*: seq[IncusDiskMount]
+      ## GOSTI2 (crud create_vm --mount): host directories attached as
+      ## ``disk`` devices (``gosti-mount-<i>``) before the first start.
+      ## Non-empty selects the pre-start path.
+
+  IncusDiskMount* = object
+    ## One host→guest bind share (an incus ``disk`` device).
+    hostPath*: string      ## absolute host path (must exist)
+    guestPath*: string     ## absolute in-guest mount point
+    readOnly*: bool        ## ``readonly=true`` on the device
+    shift*: bool
+      ## ``shift=true`` on the device (``--mount host:guest:shift``): an
+      ## idmapped mount, so guest uid/gid N reads and writes as host uid/gid
+      ## N. OFF by default: unshifted, the unprivileged container's ids are
+      ## mapped (guest root = host uid 1000000 on a stock idmap), so the guest
+      ## can only write where that mapped uid may, and nothing it creates is
+      ## owned by a real host account. With ``shift`` guest ROOT acts as host
+      ## root inside the shared tree (it can create root-owned and setuid
+      ## files there), so it is an explicit opt-in. Needs kernel idmapped-mount
+      ## support for the source filesystem; without it ``incus start`` fails
+      ## and the create is a backend-error with the container removed.
 
 const
   DefaultIncusBaseImage* = "gosti-base"
   DefaultIncusStoragePool* = "default"
   DefaultIncusReadyTimeoutSec* = 60
+  IncusCrudHandleKey* = "crud"
+    ## ``VmHandle.extra`` marker for a container made by ``createInstance``.
   IncusBootstrapGuestPath* = "/root/garm-bootstrap.sh"
     ## In-guest path the bootstrap payload is delivered to (root-only, 0700).
   IncusBootstrapLogPath* = "/var/log/garm-bootstrap.log"
@@ -488,6 +526,148 @@ proc tryListContainers*(b: IncusBackend): InventoryResult =
     inventorySuccess(parseIncusListCsv(r.stdout))
   except ValueError as err:
     inventoryFailure(err.msg)
+
+type
+  IncusInstanceImage* = object
+    ## One instance (container or VM, ANY state) and the image it was
+    ## created from.
+    name*: string
+    project*: string
+    image*: string
+      ## ``volatile.base_image`` — the full image FINGERPRINT, which is also
+      ## the file name incusd stores the image under
+      ## (``<incus-dir>/images/<fingerprint>``, plus ``<fingerprint>.rootfs``
+      ## for a split image). "" for an instance created without an image
+      ## (``incus init --empty``).
+
+proc parseIncusInstanceImages*(text: string): seq[IncusInstanceImage] =
+  ## Parse ``incus list --format json``. RAISES ``ValueError`` on anything
+  ## that is not an array of named instance objects: the caller deletes on
+  ## the strength of this answer, so output it cannot read is "I do not
+  ## know", never "no instances".
+  var doc: JsonNode
+  try:
+    doc = parseJson(text)
+  except CatchableError as err:
+    raise newException(ValueError,
+      "incus list --format json: unparseable output: " & err.msg)
+  if doc.kind != JArray:
+    raise newException(ValueError,
+      "incus list --format json: expected a JSON array, got " & $doc.kind)
+  for item in doc:
+    if item.kind != JObject or not item.hasKey("name") or
+        item["name"].kind != JString or item["name"].getStr().len == 0:
+      raise newException(ValueError,
+        "incus list --format json: an entry has no instance name")
+    var entry = IncusInstanceImage(name: item["name"].getStr(),
+      project: item{"project"}.getStr("default"))
+    # `config` is the instance's own keys; `volatile.*` lives there. Fall
+    # back to `expanded_config` rather than reading a missing key as "".
+    for key in ["config", "expanded_config"]:
+      let cfg = item{key}
+      if cfg != nil and cfg.kind == JObject and
+          cfg{"volatile.base_image"} != nil:
+        entry.image = cfg["volatile.base_image"].getStr()
+        break
+    result.add(entry)
+
+proc tryListInstanceImages*(b: IncusBackend):
+    tuple[ok: bool; instances: seq[IncusInstanceImage]; message: string] =
+  ## Every instance in EVERY project, in any state, with the image it was
+  ## created from — or ``ok = false`` when incus could not answer.
+  ##
+  ## Same contract as ``tryListContainers`` and libvirt's
+  ## ``tryListAllDomainNames``: a missing binary (``startProcess`` raises), a
+  ## non-zero exit (daemon down, socket not reachable by this user, a project
+  ## this user may not list) and output that does not parse all fold into
+  ## ``ok = false``. An image file is shared by every project, so a listing
+  ## scoped to one project would under-report its users; ``--all-projects``
+  ## is not optional.
+  var r: ExecResult
+  try:
+    r = b.runIncus(@["list", "--all-projects", "--format", "json"],
+                   timeoutSec = 60)
+  except CatchableError as err:
+    return (false, @[], "could not run " & b.incusCmd.join(" ") & ": " &
+      err.msg)
+  if r.exitCode != 0:
+    let detail = (r.stdout.strip() & " " & r.stderr.strip()).strip()
+    return (false, @[], b.incusCmd.join(" ") &
+      " list --all-projects --format json exited " & $r.exitCode &
+      (if detail.len > 0: ": " & detail else: ""))
+  try:
+    (true, parseIncusInstanceImages(r.stdout), "")
+  except ValueError as err:
+    (false, @[], err.msg)
+
+const DefaultIncusDir* = "/var/lib/incus"
+
+proc incusStateCandidates*(): seq[string] =
+  ## Every path whose existence would mean an Incus daemon has (or had) state
+  ## on this host: ``$INCUS_DIR`` and ``$INCUS_SOCKET`` when set (the client
+  ## and daemon both honour them), plus the defaults ``/var/lib/incus`` and
+  ## ``/run/incus``. The defaults are ALWAYS included, even when
+  ## ``INCUS_DIR`` is set: this process's environment need not be the
+  ## daemon's, and a candidate checked needlessly costs nothing while one
+  ## skipped could read a populated host as empty.
+  for name in ["INCUS_DIR", "INCUS_SOCKET"]:
+    let v = getEnv(name).strip()
+    if v.len > 0: result.add(v)
+  for p in [DefaultIncusDir, "/run/incus"]:
+    if p notin result: result.add(p)
+
+proc pathMayExist(p: string): bool =
+  ## True unless ``p`` PROVABLY does not exist. ``lstat`` failing with
+  ## ENOENT/ENOTDIR is proof; any other failure (EACCES on a parent, EIO, …)
+  ## is "cannot tell" and counts as present.
+  when defined(posix):
+    var st: Stat
+    if lstat(p.cstring, st) == 0: return true
+    let e = errno
+    return e != ENOENT and e != ENOTDIR
+  else:
+    fileExists(p) or dirExists(p) or symlinkExists(p)
+
+proc incusClientMissing*(b: IncusBackend): bool =
+  ## True only when the configured command's EXECUTABLE provably does not
+  ## exist: a bare name not found on ``PATH``, or a path that is not there.
+  ## A wrapper (``sudo -n incus``) whose first word exists is not "missing" —
+  ## it runs, and its failure is an ordinary enumeration failure.
+  if b.incusCmd.len == 0: return true
+  let exe = b.incusCmd[0]
+  if exe.len == 0: return true
+  if DirSep in exe or AltSep in exe:
+    return not pathMayExist(exe)
+  findExe(exe).len == 0
+
+proc tryListHostInstanceImages*(b: IncusBackend;
+    stateCandidates: seq[string] = incusStateCandidates()):
+    tuple[ok: bool; instances: seq[IncusInstanceImage]; message: string] =
+  ## ``tryListInstanceImages`` for a caller that deletes on the answer
+  ## (``gosti layer``), with ONE extra way to reach "no instances": the
+  ## ``incus`` client is not installed AND no Incus state exists on this
+  ## host (none of ``stateCandidates`` may exist). With no daemon state there
+  ## is no instance to reference any file, so the empty list is KNOWN, not
+  ## guessed — which is what lets a libvirt-only host keep running
+  ## ``gosti layer``. On success ``message`` then carries a note saying so.
+  ##
+  ## Every other shape still fails closed: a missing client with ANY state
+  ## candidate present (or unstat-able) is ``ok = false`` — the daemon may
+  ## have instances that cannot be listed — and a client that is present but
+  ## cannot answer is ``ok = false`` whether or not state exists.
+  if b.incusClientMissing():
+    var present: seq[string]
+    for p in stateCandidates:
+      if pathMayExist(p): present.add(p)
+    let cmd = b.incusCmd.join(" ")
+    if present.len == 0:
+      return (true, @[], "incus client (" & cmd & ") not installed and no " &
+        "Incus state on this host (checked " & stateCandidates.join(", ") &
+        "): no Incus instances exist")
+    return (false, @[], "incus client (" & cmd & ") not installed, but " &
+      "Incus state exists at " & present.join(", ") &
+      ", so instances may exist that cannot be listed")
+  b.tryListInstanceImages()
 
 proc containerPresent(b: IncusBackend, name: string): bool =
   ## Exact-name presence check that RAISES when incus cannot answer. (``incus
@@ -955,6 +1135,72 @@ proc convergeNestedKvmAccess(b: IncusBackend, name: string) =
       "nested KVM device in " & name & " cannot be opened read/write (exit " &
       $openRes.exitCode & "): " & openRes.stdout)
 
+const
+  IncusUserDataKey* = "cloud-init.user-data"
+  IncusMountDevicePrefix* = "gosti-mount-"
+  IncusCloudInitUserDataTemplate* = "cloud-init-user-data.tpl"
+    ## The template the ``images:<distro>/cloud`` variants render
+    ## ``cloud-init.user-data`` through (into the NoCloud seed).
+
+proc imageRendersUserData*(metadataYaml: string): bool =
+  ## Whether ``incus config metadata show <instance>`` names a template that
+  ## renders ``cloud-init.user-data`` into a cloud-init seed: either the
+  ## stock ``cloud-init-user-data.tpl`` or any template TARGET under
+  ## ``/var/lib/cloud/seed/`` ending in ``/user-data``.
+  for raw in metadataYaml.splitLines():
+    let line = raw.strip()
+    if line == "template: " & IncusCloudInitUserDataTemplate: return true
+    if line.startsWith("/var/lib/cloud/seed/") and line.endsWith("/user-data:"):
+      return true
+  false
+
+proc applyCloudInitUserData(b: IncusBackend, name, base, userData: string) =
+  ## Set ``cloud-init.user-data`` on the still-stopped container, after
+  ## proving the image will actually consume it (fail closed otherwise). The
+  ## content goes on stdin (``config set <name> <key> -``): user-data often
+  ## carries a registration secret, which must not appear in a process argv.
+  let meta = b.runIncus(@["config", "metadata", "show", name],
+                        timeoutSec = incusConfigTimeoutSec())
+  if meta.exitCode != 0:
+    raise newGostiError($b.id, lpProvisioning,
+      "incus config metadata show " & name & " failed (exit " &
+      $meta.exitCode & "): " & meta.stdout)
+  if not imageRendersUserData(meta.stdout):
+    raise (ref InvalidSpecError)(backend: $b.id, phase: lpProvisioning,
+      msg: "--user-data: image '" & base & "' has no cloud-init user-data " &
+        "template (" & IncusCloudInitUserDataTemplate & "), so " &
+        IncusUserDataKey & " would never be read; use a cloud-init image " &
+        "variant such as images:debian/12/cloud")
+  let r = b.runIncus(@["config", "set", name, IncusUserDataKey, "-"],
+                     timeoutSec = incusConfigTimeoutSec(), stdinData = userData)
+  if r.exitCode != 0:
+    raise newGostiError($b.id, lpProvisioning,
+      "incus config set " & IncusUserDataKey & " failed (exit " &
+      $r.exitCode & "): " & r.stdout)
+
+proc diskMountArgs*(container: string, idx: int,
+                    m: IncusDiskMount): seq[string] =
+  ## ``config device add <c> gosti-mount-<i> disk source=<host> path=<guest>
+  ## [readonly=true] [shift=true]`` — the exact argv for one share. Each
+  ## ``key=value`` is ONE argv element and incus splits it at the first
+  ## ``=``, so a ``,``/``=``/space in a path stays inside that path's value.
+  result = @["config", "device", "add", container,
+             IncusMountDevicePrefix & $idx, "disk",
+             "source=" & m.hostPath, "path=" & m.guestPath]
+  if m.readOnly: result.add("readonly=true")
+  if m.shift: result.add("shift=true")
+
+proc attachDiskMounts(b: IncusBackend, name: string,
+                      mounts: seq[IncusDiskMount]) =
+  for i, m in mounts:
+    let r = b.runIncus(diskMountArgs(name, i, m),
+                       timeoutSec = incusConfigTimeoutSec())
+    if r.exitCode != 0:
+      raise newGostiError($b.id, lpProvisioning,
+        "incus config device add " & IncusMountDevicePrefix & $i &
+        " (" & m.hostPath & " -> " & m.guestPath & ") failed (exit " &
+        $r.exitCode & "): " & r.stdout)
+
 proc provisionEphemeralClone*(b: IncusBackend,
                               spec: EphemeralIncusSpec): VmHandle =
   ## Materialise ONE fresh per-job container from the base image.
@@ -996,7 +1242,8 @@ proc provisionEphemeralClone*(b: IncusBackend,
   # runner bootstrap) running uncapped, and would let the guest observe the
   # host's full CPU count at boot.
   let needsPreStartCapabilities =
-    spec.securityNesting or spec.nestedKvm or spec.hasResourceLimits
+    spec.securityNesting or spec.nestedKvm or spec.hasResourceLimits or
+    spec.cloudInitUserData.len > 0 or spec.mounts.len > 0
   var launchArgs = @[
     (if needsPreStartCapabilities: "init" else: "launch"), base, spec.name]
   if spec.ephemeral:
@@ -1028,6 +1275,9 @@ proc provisionEphemeralClone*(b: IncusBackend,
     if needsPreStartCapabilities:
       if spec.securityNesting or spec.nestedKvm:
         b.applyOperatorCapabilities(spec.name, spec)
+      if spec.cloudInitUserData.len > 0:
+        b.applyCloudInitUserData(spec.name, base, spec.cloudInitUserData)
+      b.attachDiskMounts(spec.name, spec.mounts)
       let startRes = b.runIncus(@["start", spec.name],
                                 timeoutSec = incusStartTimeoutSec())
       if startRes.exitCode != 0:
@@ -1152,6 +1402,75 @@ method probeAvailability*(b: IncusBackend): bool =
   else:
     return false
 
+proc parseIncusImageList*(text: string): seq[ImageInfo] =
+  ## Parse ``incus image list --format json``. RAISES ``ValueError`` on
+  ## anything that is not an array of objects carrying a fingerprint: a
+  ## listing gosti cannot read is an error, never "no images".
+  var doc: JsonNode
+  try:
+    doc = parseJson(text)
+  except CatchableError as err:
+    raise newException(ValueError,
+      "incus image list --format json: unparseable output: " & err.msg)
+  if doc.kind != JArray:
+    raise newException(ValueError,
+      "incus image list --format json: expected a JSON array, got " &
+      $doc.kind)
+  for item in doc:
+    if item.kind != JObject or item{"fingerprint"} == nil or
+        item["fingerprint"].kind != JString or
+        item["fingerprint"].getStr().len == 0:
+      raise newException(ValueError,
+        "incus image list --format json: an entry has no fingerprint")
+    var info = ImageInfo(
+      id: item["fingerprint"].getStr(),
+      kind: item{"type"}.getStr(""),
+      architecture: item{"architecture"}.getStr(""),
+      sizeBytes: item{"size"}.getBiggestInt(0).int64,
+      createdAt: item{"created_at"}.getStr(""))
+    let props = item{"properties"}
+    if props != nil and props.kind == JObject:
+      info.description = props{"description"}.getStr("")
+    let aliases = item{"aliases"}
+    if aliases != nil and aliases.kind == JArray:
+      for a in aliases:
+        let n = a{"name"}.getStr("")
+        if n.len > 0: info.aliases.add(n)
+    result.add(info)
+
+type
+  IncusImageResolution* = enum
+    irFound, irMissing, irAmbiguous
+
+proc imageRefName(reference: string): string =
+  ## ``remote:name`` → ``name`` (the part incus resolves on that remote).
+  let c = reference.find(':')
+  if c >= 0: reference[c + 1 .. ^1] else: reference
+
+proc looksLikeFingerprintRef*(reference: string): bool =
+  ## Whether ``[remote:]name`` may name an image by fingerprint: ``name`` is
+  ## non-empty lowercase hex (at most a SHA-256). Such a ref is resolved
+  ## exactly (``resolveIncusImageRef``); any other ref is an alias.
+  let n = imageRefName(reference)
+  if n.len == 0 or n.len > 64: return false
+  for c in n:
+    if c notin {'0'..'9', 'a'..'f'}: return false
+  true
+
+proc resolveIncusImageRef*(images: seq[ImageInfo],
+                           reference: string): IncusImageResolution =
+  ## Incus's own lookup order for ``incus init <ref>``: an exact alias wins;
+  ## otherwise ``ref`` is a fingerprint prefix that must match exactly one
+  ## image (more than one is ambiguous, which incus refuses as well).
+  let n = imageRefName(reference)
+  var prefixHits = 0
+  for img in images:
+    if n in img.aliases: return irFound
+    if img.id.startsWith(n): inc prefixHits
+  if prefixHits == 1: irFound
+  elif prefixHits == 0: irMissing
+  else: irAmbiguous
+
 method provisionBaseline*(b: IncusBackend, spec: BaselineSpec) =
   ## Ensure the base image exists. ``spec.sourceImage`` (when set) names the
   ## image alias/fingerprint to check; otherwise the backend default
@@ -1165,13 +1484,37 @@ method provisionBaseline*(b: IncusBackend, spec: BaselineSpec) =
       raise newGostiError($b.id, lpProvisioning,
         "provisionBaseline: no image alias (spec.sourceImage empty and " &
         "backend baseImage unset)")
-    let r = b.runIncus(@["image", "list", alias, "--format", "csv", "-c", "l"],
-                       timeoutSec = 30)
-    if r.exitCode != 0 or r.stdout.strip().len == 0:
-      raise newGostiError($b.id, lpProvisioning,
+    proc notFound(): ref GostiError =
+      newGostiError($b.id, lpProvisioning,
         "provisionBaseline: base image '" & alias & "' not found in the " &
         "local image store. Pull it first (e.g. `incus image copy " &
         "images:debian/12 local: --alias " & alias & "`).")
+    if looksLikeFingerprintRef(alias):
+      # A (possibly partial) fingerprint: the alias column is empty for an
+      # alias-less image, so resolve it the way incus does (exact alias
+      # first, else a UNIQUE fingerprint prefix) from the JSON listing.
+      let r = b.runIncus(@["image", "list", alias, "--format", "json"],
+                         timeoutSec = 30)
+      if r.exitCode != 0: raise notFound()
+      var images: seq[ImageInfo]
+      try:
+        images = parseIncusImageList(r.stdout)
+      except ValueError as err:
+        raise newGostiError($b.id, lpProvisioning,
+          "provisionBaseline: " & err.msg)
+      case resolveIncusImageRef(images, alias)
+      of irFound: discard
+      of irMissing: raise notFound()
+      of irAmbiguous:
+        raise (ref InvalidSpecError)(backend: $b.id, phase: lpProvisioning,
+          msg: "image '" & alias & "' is an ambiguous fingerprint prefix " &
+            "(it matches more than one image); give more of the fingerprint")
+    else:
+      # Alias (or remote:alias): the original presence check, unchanged.
+      let r = b.runIncus(@["image", "list", alias, "--format", "csv", "-c", "l"],
+                         timeoutSec = 30)
+      if r.exitCode != 0 or r.stdout.strip().len == 0:
+        raise notFound()
   else:
     raise newException(BackendUnavailableError,
       "IncusBackend.provisionBaseline requires a Linux host")
@@ -1184,6 +1527,20 @@ method startAndAwaitReady*(b: IncusBackend, vm: VmHandle,
   when defined(linux):
     let budget = if timeoutSec > 0: timeoutSec else: b.readyTimeoutSec
     let deadline = epochTime() + budget.float
+    # A CRUD container left STOPPED by ``stopAndCleanup(deleteVm = false)``
+    # (crud stop_vm; see ``keepsInstanceOnStop``) is booted again rather than
+    # polled until the budget runs out. Only CRUD handles: the per-job
+    # ephemeral path keeps its exact poll-only behaviour (a stopped runner
+    # there is a failure, not something to restart).
+    if vm.extra.getOrDefault(IncusCrudHandleKey) == "true" and
+        b.containerState(vm.name) == "STOPPED":
+      b.requireContainerOwner(vm)
+      let st = b.runIncus(@["start", vm.name],
+                          timeoutSec = incusStartTimeoutSec())
+      if st.exitCode != 0:
+        raise newGostiError($b.id, lpStartup,
+          "incus start " & vm.name & " failed (exit " & $st.exitCode &
+          "): " & st.stdout)
     while epochTime() < deadline:
       if b.containerState(vm.name) == "RUNNING":
         let r = b.runIncus(@["exec", vm.name, "--", "true"], timeoutSec = 15)
@@ -1539,3 +1896,148 @@ method instancePresence*(b: IncusBackend, vm: VmHandle): InstancePresence =
   let r = b.runIncus(@["list", vm.name, "--format", "csv", "-c", "ns"],
                      timeoutSec = 30)
   incusPresenceFrom(r.exitCode, r.stdout, vm.name)
+
+# ---------------------------------------------------------------------------
+# GOSTI2 incus parity: the CRUD façade's create (with mounts + cloud-init
+# user-data), keep-on-stop, and image enumeration (``crud list_images``).
+
+proc validIncusInstanceName*(name: string): bool =
+  ## Incus instance names are hostnames: 1..63 of ``[A-Za-z0-9-]``, starting
+  ## with a letter and not ending with ``-``.
+  if name.len == 0 or name.len > 63: return false
+  if name[0] notin {'a'..'z', 'A'..'Z'} or name[^1] == '-': return false
+  for c in name:
+    if c notin {'a'..'z', 'A'..'Z', '0'..'9', '-'}: return false
+  true
+
+proc incusMountsFromSpec*(mounts: seq[tuple[host: string, guest: string]]):
+    seq[IncusDiskMount] =
+  ## Validate + convert ``BaselineSpec.mounts`` (``host:guest[:ro|:rw]``).
+  ## RAISES ``InvalidSpecError`` for a relative/missing host path or a
+  ## relative guest path; nothing has been created at that point.
+  proc bad(msg: string): ref InvalidSpecError =
+    (ref InvalidSpecError)(backend: $biIncus, phase: lpProvisioning,
+                           msg: "--mount: " & msg)
+  for m in mounts:
+    var parsed: tuple[path: string, readOnly: bool, shift: bool]
+    try:
+      parsed = parseMountGuest(m.guest)
+    except ValueError as err:
+      raise bad(err.msg)
+    let (guest, ro, shift) = parsed
+    if not m.host.isAbsolute:
+      raise bad("host path '" & m.host & "' must be absolute")
+    if not dirExists(m.host) and not fileExists(m.host):
+      raise bad("host path '" & m.host & "' does not exist")
+    if not guest.isAbsolute or ':' in guest:
+      raise bad("guest path '" & m.guest & "' must be absolute " &
+                "(optionally suffixed :ro, :rw, :shift, :ro,shift or :rw,shift)")
+    result.add(IncusDiskMount(hostPath: m.host, guestPath: guest,
+                              readOnly: ro, shift: shift))
+
+proc newOwnerToken(): string =
+  ## A fresh per-instance ``user.gosti.owner`` token (128 random bits).
+  var bytes: array[16, byte]
+  if not urandom(bytes):
+    raise newGostiError($biIncus, lpProvisioning,
+      "could not read random bytes for the instance owner token")
+  result = "crud-"
+  for x in bytes: result.add(toHex(x.int, 2).toLowerAscii())
+
+proc crudCloneSpec*(instanceName: string, spec: BaselineSpec,
+                    defaultImage: string): EphemeralIncusSpec =
+  ## The ``EphemeralIncusSpec`` a ``crud create_vm`` materialises. Pure
+  ## apart from the mount-path existence check, so a gate can assert it.
+  if not validIncusInstanceName(instanceName):
+    raise (ref InvalidSpecError)(backend: $biIncus, phase: lpProvisioning,
+      msg: "vm name '" & instanceName & "' is not a valid incus instance " &
+        "name (1-63 letters, digits and '-', starting with a letter, not " &
+        "ending with '-')")
+  result = EphemeralIncusSpec(
+    name: instanceName,
+    baseImage: (if spec.sourceImage.len > 0: spec.sourceImage
+                else: defaultImage),
+    ephemeral: false,  # stop_vm keeps the container (keepsInstanceOnStop)
+    config: incusEphemeralLimits(spec.cpus, spec.memoryMB),
+    cloudInitUserData: spec.userData,
+    mounts: incusMountsFromSpec(spec.mounts))
+
+method createInstance*(b: IncusBackend, instanceName: string,
+                       spec: BaselineSpec): VmHandle =
+  ## ``crud create_vm`` on incus: a FRESH container named ``instanceName``
+  ## (the CRUD name, verbatim — an existing container of that name is
+  ## refused, never adopted) from ``spec.sourceImage`` (else the backend's
+  ## ``baseImage``), with the mounts attached and ``cloud-init.user-data``
+  ## set BEFORE its first start, owned by a fresh ``user.gosti.owner`` token,
+  ## and exec-ready on return. cloud-init itself runs asynchronously in the
+  ## guest; a caller that needs it finished runs ``cloud-init status --wait``.
+  when defined(linux):
+    var clone = crudCloneSpec(instanceName, spec, b.baseImage)
+    clone.ownerToken = newOwnerToken()
+    result = b.provisionEphemeralClone(clone)
+    result.extra[IncusCrudHandleKey] = "true"
+    try:
+      b.startAndAwaitReady(result, b.readyTimeoutSec)
+    except CatchableError as e:
+      discard b.deleteContainer(instanceName)
+      raise e
+  else:
+    raise newException(BackendUnavailableError,
+      "IncusBackend.createInstance requires a Linux host")
+
+method revertToBaseline*(b: IncusBackend, baselineName: string): VmHandle =
+  ## Incus has no baseline-revert: every instance is a fresh container
+  ## (``createInstance`` / ``provisionEphemeralClone``). A categorised failure
+  ## (backend-error) instead of the base's uncategorised "not implemented".
+  raise newGostiError($b.id, lpRevert,
+    "incus has no baseline revert for '" & baselineName & "': the " &
+    "container is gone; delete_vm it and create_vm again")
+
+method keepsInstanceOnStop*(b: IncusBackend): bool =
+  ## ``stopAndCleanup(deleteVm = false)`` is ``incus stop --force``: the
+  ## container (and its owner token) stays, and ``startAndAwaitReady`` boots
+  ## it again.
+  true
+
+method honorsUserData*(b: IncusBackend): bool =
+  ## ``createInstance`` sets ``cloud-init.user-data`` before first start and
+  ## fails closed for an image that has no cloud-init template.
+  true
+
+method honorsMounts*(b: IncusBackend): bool =
+  ## ``createInstance`` attaches each mount as an incus ``disk`` device.
+  true
+
+method listImages*(b: IncusBackend): seq[ImageInfo] =
+  ## ``incus image list --format json`` — the local image store, i.e. what
+  ## ``create_vm --source-image <alias|fingerprint>`` launches without a
+  ## pull. Failure mapping (the §8.1 contract): no ``incus`` client, or a
+  ## failed listing while ``incus info`` also fails (daemon down / socket not
+  ## reachable) ⇒ ``BackendUnavailableError`` (exit 4); a failed listing from
+  ## a reachable daemon, or output that does not parse ⇒ ``GostiError``
+  ## (exit 5).
+  proc unavailable(msg: string): ref BackendUnavailableError =
+    (ref BackendUnavailableError)(backend: $b.id, phase: lpProbe, msg: msg)
+  if b.incusClientMissing():
+    raise unavailable("incus client (" & b.incusCmd.join(" ") &
+                      ") is not installed")
+  var r: ExecResult
+  try:
+    r = b.runIncus(@["image", "list", "--format", "json"], timeoutSec = 60)
+  except CatchableError as err:
+    raise unavailable("could not run " & b.incusCmd.join(" ") & ": " & err.msg)
+  if r.exitCode != 0:
+    var reachable = false
+    try:
+      reachable = b.runIncus(@["info"], timeoutSec = 30).exitCode == 0
+    except CatchableError:
+      reachable = false
+    let msg = b.incusCmd.join(" ") & " image list exited " & $r.exitCode &
+      ": " & r.stdout.strip()
+    if not reachable:
+      raise unavailable(msg & " (and `incus info` fails: daemon unreachable)")
+    raise newGostiError($b.id, lpProbe, msg)
+  try:
+    parseIncusImageList(r.stdout)
+  except ValueError as err:
+    raise newGostiError($b.id, lpProbe, err.msg)

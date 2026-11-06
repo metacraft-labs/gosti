@@ -284,9 +284,18 @@ proc runProcessCapture(cmd: seq[string], cwd: string = "",
     if cmd.len == 0:
       raise newException(ValueError, "runProcessCapture: empty cmd")
     let start = epochTime()
+    # ``env`` OVERLAYS the inherited environment, exactly as
+    # ``captureCommand`` does on POSIX. Passing only ``env`` would hand the
+    # child an environment with no ``PATH`` or ``SystemRoot``: Windows then
+    # cannot resolve the child's DLLs from ``PATH``, and Winsock and other
+    # system components fail to initialise without ``SystemRoot``. Every
+    # ``runVirsh`` call sets ``LC_ALL``, so that was every virsh call.
+    # Windows variable names are case-insensitive, hence the table mode.
     var procEnv: StringTableRef = nil
     if env.len > 0:
-      procEnv = newStringTable(modeStyleInsensitive)
+      procEnv = newStringTable(modeCaseInsensitive)
+      for k, v in envPairs():
+        procEnv[k] = v
       for k, v in env:
         procEnv[k] = v
     var p = startProcess(cmd[0], workingDir = cwd, args = cmd[1 .. ^1],
@@ -2758,6 +2767,11 @@ method bootFromMedia*(b: LibvirtBackend, spec: BootMediaSpec): VmHandle =
   ## *Important*: this method returns a started VmHandle but does not begin
   ## polling its file-backed serial output. Pass the handle to
   ## ``captureSerial`` and always finish with ``stopAndCleanup``.
+  if spec.dataDiskPaths.len > 0:
+    # Only qemu-boot realises extra data disks (BootMediaSpec.dataDiskPaths);
+    # dropping them would boot a guest without the disk the caller relies on.
+    raise newException(BackendUnavailableError,
+      "LibvirtBackend.bootFromMedia does not attach BootMediaSpec.dataDiskPaths")
   when defined(linux):
     if spec.kind == bmkRootfsTar:
       raise newException(BackendUnavailableError,

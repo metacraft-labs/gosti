@@ -22,6 +22,16 @@ test all tests/unit/t_crud_facade_mock.nim
 # BACKEND-AWARE fail-closed guard (--user-data allowed only for a backend whose
 # honorsUserData() is true; libvirt honors it, the mock does not). Hermetic.
 test all tests/unit/t_crud_surface_growth.nim
+# GOSTI2 Incus parity: crud create_vm --mount (disk devices, :ro/:rw/:shift) and
+# --user-data (cloud-init.user-data set before first start, on stdin, fail-
+# closed for an image without a cloud-init template), stop/start keeping the
+# container, --source-image by full/unique-prefix fingerprint (ambiguous =>
+# bad-args; an alias keeps the csv probe), and the list_images verb (shape +
+# exit codes 0/4/5; mock, noop).
+# A fake incus script stands in for the daemon. Hermetic. The cases that
+# create a container skip off Linux, where IncusBackend refuses every
+# lifecycle call; the pure cases and list_images run everywhere.
+test all tests/unit/t_crud_incus_parity.nim
 # Cross-invocation crud state (design doc §8.6): the store's location chain,
 # name validation, record round-trip, locks (busy + stale-owner break), and
 # each real backend's instancePresence decision ("gone" only on a successful
@@ -104,6 +114,9 @@ test all tests/unit/t_linux_runner_recipe_pin.nim
 # Guest recipes' `sh -c "..."` scripts carry no host-side expansion: no
 # unescaped backtick, no stray double quote closing the host string early.
 test all tests/unit/t_guest_recipe_sh_c_quoting.nim
+# The Linux runner recipe installs DefaultOOMPolicy=continue, so a job's OOM
+# kill fails that step instead of stopping the runner service.
+test all tests/unit/t_linux_runner_oom_policy.nim
 test all tests/unit/t_tart_backend.nim
 # Tart per-job clones honour --disk-gb: grown with `tart set --disk-size`
 # before boot, an explicit shrink refused by name, and the guest root
@@ -307,6 +320,20 @@ host all tests/e2e/t_gosti_incus_ephemeral_run.nim
 host all tests/e2e/t_gosti_serve_roundtrip_incus.nim
 # §7.4 layered base images: snapshot -> publish -> export -> import -> launch.
 host all tests/e2e/t_incus_layered_base_image.nim
+# WR2 layer in-use guard against REAL Incus: a container created from a
+# published image makes `gosti layer gc <images>/<fingerprint>` refuse (exit
+# 3) stopped and running, and deletable once it is gone. Always --dry-run.
+host all tests/e2e/t_layer_gc_incus_host.nim
+# GOSTI2 Incus parity against REAL Incus, through the `gosti crud` CLI: a
+# container with an RO + an RW host mount and cloud-init user-data (from an
+# images:<distro>/cloud variant), verified via crud exec; list_images lists its
+# image; stop/start keeps it; delete_vm leaves no container/volume/record; and
+# user-data with a non-cloud image is bad-args with no residue; unshifted RW
+# writes land as the mapped uid; --source-image by fingerprint/prefix creates;
+# :shift writes as host root, or fails 5 with no residue where the host cannot
+# idmap. Self-skips when
+# Incus is unreachable or the image cannot be resolved.
+host all tests/e2e/t_crud_incus_real.nim
 
 # Previously Reprobuild-only deterministic CLI coverage.
 test posix tests/unit/t_cli_ephemeral_vmrun.nim

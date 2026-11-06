@@ -341,7 +341,17 @@ Subcommands:
                           any overlay, defined domain, container or snapshot
                           still resolves onto it. Deleting a layer under a
                           live overlay destroys that overlay outright, so
-                          there is no warn-and-continue mode.
+                          there is no warn-and-continue mode. Domains come
+                          from `virsh list --all`, containers (any state)
+                          and their images from `incus list --all-projects`;
+                          an Incus image's layer path is
+                          <incus-dir>/images/<fingerprint>[.rootfs]. If
+                          either cannot be listed -- including an absent
+                          binary -- the command exits 3 rather than guess.
+                          (Sole exception: no `incus` client AND no Incus
+                          state on the host -- $INCUS_DIR, $INCUS_SOCKET,
+                          /var/lib/incus, /run/incus all absent -- means no
+                          containers.)
   layer sweep-overlays --image-pool-dir <dir> [--older-than <sec>] [--dry-run]
                           Remove per-job CoW overlays that no defined instance
                           owns and that are older than the age guard (default
@@ -349,7 +359,8 @@ Subcommands:
                           therefore never a candidate. Reports reclaimed bytes
                           as BOTH apparent and allocated: a CoW overlay is
                           sparse and one number alone misstates it by orders
-                          of magnitude.
+                          of magnitude. Enumerates domains and containers as
+                          `layer gc` does, with the same exit-3 refusal.
   prune --ephemeral-prefix <p> [--backend all|tart|qemu-windows-arm]
         [--state-dir <dir>] [--tart-vms-dir <dir>] [--older-than <sec>]
         [--sweep-tmp] [--dry-run]
@@ -372,10 +383,17 @@ Subcommands:
                           get_vm, list_vms, exec (-- <argv>), copy_to_vm
                           <src> <dst>, copy_from_vm <src> <dst>, ssh_endpoint,
                           snapshot <snap>, restore_snapshot <snap>,
-                          list_snapshots.
+                          list_snapshots, list_images (no vm name: the images
+                          create_vm --source-image can use).
                           create_vm also accepts --user-data <path> (cloud-init
                           user-data — how a sandbox VM boots its runner/agent),
-                          --mount host:guest (repeatable), and --ssh-user <user>.
+                          --mount host:guest[:OPTS] (repeatable; OPTS is a
+                          comma list of ro|rw and shift; default rw,
+                          unshifted), and --ssh-user <user>. On
+                          incus both are honoured (cloud-init.user-data +
+                          disk devices, set before first boot; user-data
+                          needs a /cloud image; create returns exec-ready,
+                          before cloud-init finishes).
                           exec also accepts --cwd <dir>, --run-as <user>, and
                           --timeout <sec> (a portable guest-side argv wrap).
                           ALWAYS prints one stable JSON
@@ -516,7 +534,8 @@ Common flags:
                                   polling sessions instead of one long one; a
                                   transient SSH failure no longer kills it.
                                   Replaces the `--` command (linux/macOS).
-  --mount host:guest              crud create_vm (repeatable): host→guest share.
+  --mount host:guest[:opts]       crud create_vm (repeatable): host→guest share;
+                                  opts = comma list of ro|rw, shift (incus).
   --cwd <dir>                     crud exec: run argv with this guest CWD.
   --run-as <user>                 crud exec: run argv as this guest user.
   --timeout <sec>                 crud exec: guest-side wall-clock kill (0=none).
@@ -2836,8 +2855,9 @@ proc cmdLayer(opts: CliOpts): int =
   ## outcome to warn about. Exit 3 is reserved for that refusal so a caller
   ## can tell "in use" from a usage error (2) without parsing text.
   ##
-  ## Live domains are supplied to the planner as DATA. Populating them here,
-  ## from the resolved backend, keeps the decision procedure a pure function
+  ## Live domains (``virsh``) and Incus instances with their images
+  ## (``incus list``) are supplied to the planner as DATA. Populating them
+  ## here, from the host, keeps the decision procedure a pure function
   ## of its scope -- which is what lets the gate exercise the real decision
   ## without a hypervisor.
   if opts.cmd.len < 1:
@@ -2882,6 +2902,31 @@ proc cmdLayer(opts: CliOpts): int =
       stderr.writeLine("gosti layer: cannot enumerate domains (" &
         err.msg & "); refusing to act without that list")
       return 3
+    # Read-only: `incus list --all-projects --format json`. Every instance in
+    # any state (a STOPPED container still owns its rootfs and is one
+    # `incus start` from using it again) and the image it was created from,
+    # as `volatile.base_image` — the fingerprint incusd also uses as the
+    # image's FILE NAME, which is what `layerReferents` matches a layer path
+    # against.
+    #
+    # Fails CLOSED with the virsh semantics above: a client that cannot
+    # reach its daemon, or answers with something unparseable, exits 3. An
+    # ABSENT `incus` client fails closed too, UNLESS the host provably has
+    # no Incus state at all (no `$INCUS_DIR`, `$INCUS_SOCKET`,
+    # `/var/lib/incus` or `/run/incus`): with no daemon state there are no
+    # instances, so a libvirt-only host can still run `gosti layer`. "No
+    # client on PATH" alone does not prove "no daemon", and only the second
+    # reading deletes anything.
+    let instances = newIncusBackend().tryListHostInstanceImages()
+    if not instances.ok:
+      stderr.writeLine("gosti layer: cannot enumerate incus instances (" &
+        instances.message & "); refusing to act without that list")
+      return 3
+    if instances.message.len > 0:
+      stderr.writeLine("gosti layer: " & instances.message)
+    for inst in instances.instances:
+      scope.liveContainers.add(inst.name)
+      scope.containerImages.add(inst.image)
 
   case opts.cmd[0]
   of "gc":
@@ -3014,9 +3059,10 @@ proc crudCreateGuard*(verb: string, opts: CliOpts,
   ##
   ## The guard consults the backend's capability signals:
   ##   * ``--user-data`` is allowed iff ``backend.honorsUserData()`` (libvirt
-  ##     builds + attaches a NoCloud "cidata" seed; the others fail closed).
-  ##   * ``--mount`` is allowed iff ``backend.honorsMounts()`` (no backend does
-  ##     yet, so it stays fail-closed everywhere).
+  ##     builds + attaches a NoCloud "cidata" seed; incus sets
+  ##     ``cloud-init.user-data`` before first boot; the others fail closed).
+  ##   * ``--mount`` is allowed iff ``backend.honorsMounts()`` (incus attaches
+  ##     disk devices; the others fail closed).
   ## ``--ssh-user`` is genuinely advisory (a backend may ignore it) and is NOT
   ## guarded — it reaches the spec as accept-advisory.
   if verb != "create_vm":

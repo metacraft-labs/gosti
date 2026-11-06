@@ -96,6 +96,28 @@ suite "read-only disks and seeds":
       check "file=/tmp/seed.iso,format=raw,if=virtio,readonly=on" in drives
       check idx(buildQemuBootArgs(l), "-cdrom") < 0
 
+suite "data disks":
+  test "no data disk leaves the argv unchanged":
+    check values(buildQemuBootArgs(baseLaunch()), "-drive") ==
+      @["file=/tmp/disk.qcow2,format=qcow2,if=virtio"]
+
+  test "data disks follow the boot disk, writable, in order":
+    var l = baseLaunch()
+    l.dataDiskPaths = @["/tmp/data.qcow2", "/tmp/raw.img"]
+    let drives = values(buildQemuBootArgs(l), "-drive")
+    let boot = drives.find("file=" & l.diskPath & ",format=qcow2,if=virtio")
+    check boot >= 0
+    check drives[boot + 1] == "file=/tmp/data.qcow2,format=qcow2,if=virtio"
+    check drives[boot + 2] == "file=/tmp/raw.img,format=raw,if=virtio"
+    for d in drives[boot + 1 .. boot + 2]:
+      check "readonly" notin d
+
+  test "a comma in a data disk path is refused":
+    var l = baseLaunch()
+    l.dataDiskPaths = @["/tmp/a,b.qcow2"]
+    expect ValueError:
+      discard buildQemuBootArgs(l)
+
 suite "ARM firmware resolution":
   test "an explicit image wins, and a missing one is an error":
     let f = getTempDir() / ("gosti-fw-" & $getCurrentProcessId() & ".fd")
@@ -145,3 +167,31 @@ suite "SSH access preconditions":
                       sshUser: "root", extra: extra)
     expect GostiError:
       discard b.execInGuest(vm, initTable[string, string](), @["true"])
+
+suite "restricted user networking":
+  test "an unrestricted guest keeps the plain user network":
+    var l = baseLaunch()
+    l.sshForwardPort = 2222
+    check valueAfter(buildQemuBootArgs(l), "-netdev") ==
+      "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22"
+
+  test "restrict=on with a guest forward to a host command":
+    var l = baseLaunch()
+    l.sshForwardPort = 2222
+    l.networkRestricted = true
+    l.guestForwards = @[GuestForward(guestAddress: "10.0.2.100",
+      guestPort: 3128, command: @["/usr/bin/socat", "STDIO", "TCP:127.0.0.1:4000,nodelay"])]
+    check valueAfter(buildQemuBootArgs(l), "-netdev") ==
+      "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22,restrict=on," &
+      "guestfwd=tcp:10.0.2.100:3128-cmd:'/usr/bin/socat' 'STDIO' " &
+      "'TCP:127.0.0.1:4000,,nodelay'"
+
+  test "a forward without an absolute program or with a quote is refused":
+    var l = baseLaunch()
+    l.sshForwardPort = 2222
+    l.guestForwards = @[GuestForward(guestAddress: "10.0.2.100",
+      guestPort: 3128, command: @["socat"])]
+    expect ValueError: discard buildQemuBootArgs(l)
+    l.guestForwards = @[GuestForward(guestAddress: "10.0.2.100",
+      guestPort: 3128, command: @["/bin/sh", "-c", "it's"])]
+    expect ValueError: discard buildQemuBootArgs(l)

@@ -583,7 +583,14 @@ versioning it here.
 **Verbs** (one per `VmOrchestrator` method):
 `create_vm`, `start_vm`, `stop_vm`, `delete_vm`, `get_vm`, `list_vms`, `exec`,
 `copy_to_vm`, `copy_from_vm`, `ssh_endpoint`, `snapshot`, `restore_snapshot`,
-`list_snapshots`.
+`list_snapshots`, `list_images` (additive, GOSTI2 Incus parity; takes no VM
+name).
+
+**`create_vm` options:** `--source-image <image>`, `--user-data <path>`
+(cloud-init user-data), `--mount host:guest[:ro|:rw]` (repeatable; default
+`rw`), `--ssh-user <user>`. A backend that does not honour `--user-data` /
+`--mount` refuses the create with `backend-unavailable` (4) before creating
+anything (libvirt honours user-data; incus honours both).
 
 **Response envelope** — every invocation prints exactly one JSON object on
 stdout:
@@ -609,6 +616,7 @@ stdout:
 | snapshot | `{"snapshot": {"vm": str, "name": str, "id": str}}` |
 | restore_snapshot | `{"vm": str, "snapshot": str, "restored": true}` |
 | list_snapshots | `{"vm": str, "snapshots": [str, …]}` |
+| list_images | `{"backend": str, "images": [ImageInfo, …]}` |
 
 ```jsonc
 VmInfo      = {"name": str, "backend": str, "baseline": str,
@@ -616,7 +624,15 @@ VmInfo      = {"name": str, "backend": str, "baseline": str,
 SshEndpoint = {"host": str, "port": int, "user": str, "auth": AuthKind}
 VmState     = "stopped" | "starting" | "running" | "paused" | "error"
 AuthKind    = "none" | "password" | "keyfile"
+ImageInfo   = {"id": str, "aliases": [str, …], "description": str,
+               "type": str, "architecture": str, "size_bytes": int,
+               "created_at": str}
 ```
+
+`list_images` is `backend-unavailable` (4) on a backend with no image
+enumeration (every backend except incus and the mock today) or when the incus
+daemon is unreachable, and `backend-error` (5) when the daemon answers with an
+error or with output gosti cannot parse — never an empty or partial list.
 
 **Exit codes** (frozen — the binding branches on these, never on message text):
 
@@ -669,6 +685,61 @@ instance. The façade adapts accordingly:
 - `delete_vm` ⇒ `stopAndCleanup(deleteVm=true)`.
 - `exec` / `copy_*` / `ssh_endpoint` ⇒ `execInGuest` / `copyTo|FromGuest` / project the `VmHandle`.
 - `snapshot` / `restore_snapshot` / `list_snapshots` ⇒ the matching `VmBackend` snapshot methods.
+- `list_images` ⇒ `VmBackend.listImages` (default: backend-unavailable).
+
+`create_vm` actually calls `VmBackend.createInstance(name, spec)`, whose
+default is `revertToBaselineWithUserData(baseline, userData)`. **Incus**
+overrides it: a fresh container named after the CRUD VM (an existing one is
+refused, never adopted) from `--source-image`, with a fresh `user.gosti.owner`
+token, created stopped (`incus init`) so that `cloud-init.user-data` (passed
+on stdin, after checking that the image renders it through
+`cloud-init-user-data.tpl`, else `bad-args`) and one `disk` device per mount
+(`gosti-mount-<i>`) are set before its first start. Incus also reports
+`keepsInstanceOnStop`, so `stop_vm` keeps the stopped container and its
+handle, `start_vm` restarts that same container, and `delete_vm` after a stop
+still removes it. Live gate: `tests/e2e/t_crud_incus_real.nim` (host tier).
+
+The incus `create_vm` contract, precisely:
+
+- **Ready means exec-ready, not cloud-init-finished.** `create_vm` returns
+  `running` once `incus exec -- true` succeeds. cloud-init runs
+  asynchronously after that, as it does on libvirt (whose NoCloud seed path
+  also returns at SSH-ready). A caller that needs it finished runs
+  `crud exec <vm> -- cloud-init status --wait` (exit 0 = done, 2 = done with
+  recoverable errors). create does not wait, because user-data commonly
+  starts a long-running agent or runner from `runcmd`, which would keep
+  cloud-init's final stage from ever finishing.
+- **`--source-image`** is an alias, `remote:alias`, or a full or partial
+  fingerprint, resolved the way incus resolves it: an exact alias wins,
+  otherwise the fingerprint prefix must match exactly one image. An
+  ambiguous prefix is `bad-args`; an image that is not there is
+  `backend-error`. An alias ref keeps the original
+  `incus image list <ref> --format csv -c l` presence probe byte-for-byte; a
+  lowercase-hex ref is resolved from `incus image list <ref> --format json`.
+- **Mounts** are `--mount host:guest[:opts]`, where `opts` is a
+  comma-separated list of `ro` or `rw` (default `rw`) and `shift`. The host
+  path must be absolute and exist, and the guest path must be absolute.
+  Anything else is `bad-args` and nothing is created. Each `key=value` is one
+  argv element, so `,`, `=` or spaces in a path cannot add device options.
+  - Without `shift` (the default), the container's ids are mapped. Guest root
+    is the container's mapped uid on the host (1000000 on a stock idmap), so
+    a guest write into an RW share needs a host directory that uid may write.
+    The files it creates are owned by that uid, not by a host account, and a
+    root-owned 0755 host directory refuses guest-root writes (`EACCES`). This
+    default is deliberate. A sandbox guest's root never acts as a real host
+    account on the share.
+  - `shift` adds `shift=true`, an idmapped mount: guest uid/gid N acts as
+    host uid/gid N inside that tree. Guest root then acts as host root there.
+    It can create root-owned and setuid files, so `shift` is an explicit
+    opt-in and only suits trusted guests. It needs kernel idmapped-mount
+    support for the source filesystem. Without that support, `incus start`
+    fails ("idmapping abilities are required but aren't supported"), and the
+    create is `backend-error` with the container removed.
+- **cloud-init inputs**: only user-data (`--user-data`). `vendor-data` and
+  `network-config` are not part of the create surface, because the binding's
+  `VmCreateOptions` carries only `userData`, `mounts` and `sshUser`, and the
+  PR-6 parity gate names cloud-init user-data only. A caller that needs either
+  key sets it in its own image or profile.
 
 See `crud.nim`'s module header for the full table. §8.6 covers how the
 instance registry persists across invocations.

@@ -405,6 +405,11 @@ method bootFromMedia*(b: WslBackend, spec: BootMediaSpec): VmHandle =
   ## install systemd + write wsl.conf, terminate. The returned VmHandle
   ## points at a distro whose next ``wsl -d <name>`` exec will boot
   ## under systemd PID 1. Use ``captureSerial`` next.
+  if spec.dataDiskPaths.len > 0:
+    # Only qemu-boot realises extra data disks (BootMediaSpec.dataDiskPaths);
+    # dropping them would boot a guest without the disk the caller relies on.
+    raise newException(BackendUnavailableError,
+      "WslBackend.bootFromMedia does not attach BootMediaSpec.dataDiskPaths")
   when defined(windows):
     if spec.kind != bmkRootfsTar:
       raise newException(BackendUnavailableError,

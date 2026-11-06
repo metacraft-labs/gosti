@@ -373,7 +373,29 @@ type
     arch*: GuestArch           ## machine model + CPU + TPM device spelling
     diskReadonly*: bool        ## ``readonly=on`` on the boot disk
     seedPath*: string          ## read-only data disk (cloud-init NoCloud seed)
+    dataDiskPaths*: seq[string] ## writable extra disks, after the boot disk
     qmpSocketPath*: string     ## QMP monitor socket; "" => no monitor
+    networkRestricted*: bool   ## ``restrict=on`` on the user-mode network
+    guestForwards*: seq[GuestForward]
+
+proc guestForwardOption*(f: GuestForward): string =
+  ## ``guestfwd=tcp:<ip>:<port>-cmd:<command>``. QEMU splits ``-netdev``
+  ## options on commas (a literal comma is written twice), and libslirp
+  ## splits the command with shell quoting rules (``fork_exec``,
+  ## ``g_shell_parse_argv``) before it execs it per connection, so every
+  ## word is single-quoted.
+  if f.guestAddress.len == 0 or f.guestPort notin 1 .. 65535 or
+      f.command.len == 0 or not f.command[0].isAbsolute:
+    raise newException(ValueError, "GuestForward needs an address, a port " &
+      "and a command whose program is an absolute path")
+  var words: seq[string]
+  for w in f.command:
+    if '\'' in w:
+      raise newException(ValueError, "GuestForward command words may not " &
+        "contain a single quote: " & w)
+    words.add("'" & w & "'")
+  "guestfwd=tcp:" & f.guestAddress & ":" & $f.guestPort & "-cmd:" &
+    words.join(" ").replace(",", ",,")
 
 proc kvmUsable*(): bool =
   ## KVM is usable when ``/dev/kvm`` exists and this process may open it
@@ -492,6 +514,16 @@ proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
     result.add(@["-drive",
       "file=" & l.diskPath & ",format=" & fmt & ",if=virtio" &
       (if l.diskReadonly: ",readonly=on" else: "")])
+  for d in l.dataDiskPaths:
+    # A data disk the caller owns, writable, after the boot disk so the
+    # guest's device order (vda boot, vdb, ...) is stable. QEMU splits
+    # ``-drive`` options on commas, so a path with one is refused rather
+    # than half-parsed.
+    if ',' in d:
+      raise newException(ValueError,
+        "QemuBootLaunch.dataDiskPaths may not contain a comma: " & d)
+    let fmt = if d.endsWith(".qcow2"): "qcow2" else: "raw"
+    result.add(@["-drive", "file=" & d & ",format=" & fmt & ",if=virtio"])
   if l.seedPath.len > 0:
     # A NoCloud seed as a read-only virtio disk rather than ``-cdrom``:
     # the ``virt`` board has no IDE/AHCI controller for a CD drive, and
@@ -516,10 +548,15 @@ proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
   result.add(@["-chardev", chardev, "-serial", "chardev:serial0"])
 
   if l.sshForwardPort > 0:
-    result.add(@[
-      "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:" &
-        $l.sshForwardPort & "-:22",
-      "-device", "virtio-net-pci,netdev=net0"])
+    var netdev = "user,id=net0,hostfwd=tcp:127.0.0.1:" & $l.sshForwardPort &
+                 "-:22"
+    if l.networkRestricted:
+      # https://www.qemu.org/docs/master/system/invocation.html (-netdev
+      # user, ``restrict=on``): the guest is isolated; forwards still work.
+      netdev.add(",restrict=on")
+    for f in l.guestForwards:
+      netdev.add("," & guestForwardOption(f))
+    result.add(@["-netdev", netdev, "-device", "virtio-net-pci,netdev=net0"])
   else:
     # Boot gates are network-isolated by default.
     result.add(@["-nic", "none"])
@@ -776,7 +813,14 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
         sshForwardPort: spec.sshForwardPort,
         arch: spec.guestArch,
         diskReadonly: spec.diskReadonly,
-        qmpSocketPath: qmpSocketPath)
+        qmpSocketPath: qmpSocketPath,
+        networkRestricted: spec.networkRestricted,
+        guestForwards: spec.guestForwards)
+      for d in spec.dataDiskPaths:
+        if not fileExists(d):
+          raise newException(IOError,
+            "BootMediaSpec.dataDiskPaths names a missing disk: " & d)
+        launch.dataDiskPaths.add(absolutePath(d))
       if spec.secondaryIsoPath.len > 0:
         if not fileExists(spec.secondaryIsoPath):
           raise newException(IOError,

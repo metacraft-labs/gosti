@@ -29,17 +29,37 @@
 ## testing the safety property at all. The seam is the process boundary, which
 ## is exactly where the real failure occurs.
 ##
+## The CLI suite at the end extends the same substitution to ``incus``: the
+## test binary re-executes itself as the real ``gosti`` CLI (``runCli``,
+## exactly as ``t_crud_store_roundtrip`` does), with a fake ``virsh`` that
+## answers "no domains" on ``PATH`` and a fake ``incus`` named by
+## ``GOSTI_INCUS_CMD`` (and ``INCUS_DIR`` pointing at an existing fixture
+## directory, so "Incus state is present" holds on every host). The
+## justification is the one above: the property under test is what
+## ``gosti layer`` does with what ``incus list`` answers — including when
+## it CANNOT answer — and making a real incusd fail on demand means
+## stopping it. The real-daemon counterpart is
+## ``tests/e2e/t_layer_gc_incus_host.nim`` (host tier).
+##
 ## ``qemu-img`` is a hard prerequisite here, not an optional one. If it is
 ## missing the suite FAILS rather than skipping: a guard that reports success
 ## because it could not build its own fixture is exactly the fail-open shape
 ## the guard exists to prevent.
 
-import std/[json, os, osproc, sequtils, strformat, strutils, tempfiles, times,
-            unittest]
+import std/[json, os, osproc, sequtils, streams, strformat, strtabs, strutils,
+            tempfiles, times, unittest]
 
 import ../native_command_fixture
 import gosti/layer_gc
 import gosti/backends/libvirt
+import gosti/backends/incus
+import gosti/cli
+
+when isMainModule:
+  # The CLI suite re-executes this binary as `gosti` itself.
+  let cliParams = commandLineParams()
+  if cliParams.len >= 1 and cliParams[0] == "__gosti_cli":
+    quit(runCli(cliParams[1 .. ^1]))
 
 when defined(windows):
   import std/winlean
@@ -480,3 +500,284 @@ suite "layer GC — domain enumeration must fail closed":
     check checked.message.len == 0
     # Blank lines are dropped; the names survive in order.
     check checked.names == @["win-job-7", "live-job-00"]
+
+# ---------------------------------------------------------------------------
+# The CLI's Incus enumeration.
+# ---------------------------------------------------------------------------
+
+const
+  LayerFp = "1f3b0c7a9e5d4b2a8c6e0f1a3b5c7d9e1f3b0c7a9e5d4b2a8c6e0f1a3b5c7d9e"
+  OtherFp = "9a8b7c6d5e4f30211203f4e5d6c7b8a99a8b7c6d5e4f30211203f4e5d6c7b8a9"
+
+type
+  IncusFixture = object
+    root: string
+    bin: string        ## on PATH for the child: holds the fake `virsh`
+    pool: string       ## --image-pool-dir (empty of overlays)
+    images: string     ## stands in for <incus-dir>/images
+    layer: string      ## images/<LayerFp>
+    rootfs: string     ## images/<LayerFp>.rootfs (split image's 2nd file)
+    incusState: string ## the child's INCUS_DIR: Incus state IS present, so
+                       ## an absent client must refuse on every host
+
+  CliRun = object
+    code: int
+    output: string
+
+proc makeIncusFixture(tag: string): IncusFixture =
+  result.root = createTempDir("gosti-layer-incus-" & tag & "-", "")
+  result.bin = result.root / "bin"
+  result.pool = result.root / "pool"
+  result.images = result.root / "images"
+  result.incusState = result.root / "incus-state"
+  for d in [result.bin, result.pool, result.images, result.incusState]:
+    createDir(d)
+  # A working virsh with NO domains, so every refusal below is attributable
+  # to the incus enumeration alone.
+  discard commandFixture(result.bin / "virsh", %*{"output": ""})
+  result.layer = result.images / LayerFp
+  result.rootfs = result.images / (LayerFp & IncusRootfsSuffix)
+  writeFile(result.layer, "image metadata stands in here\n")
+  writeFile(result.rootfs, "image rootfs stands in here\n")
+
+proc fakeIncus(f: IncusFixture; config: JsonNode): string =
+  commandFixture(f.root / "fake-incus", config)
+
+proc instanceJson(name, status, image: string; project = "default"): JsonNode =
+  ## The shape `incus list --format json` emits, trimmed to what matters
+  ## plus one unrelated key so the parser is not reading a toy document.
+  result = %*{"name": name, "status": status, "type": "container",
+    "project": project,
+    "config": {"image.os": "Alpine", "volatile.uuid": "x"}}
+  if image.len > 0:
+    result["config"]["volatile.base_image"] = %image
+
+proc runLayerCli(f: IncusFixture; incusCmd: string;
+                 args: seq[string]): CliRun =
+  var env = newStringTable(modeCaseSensitive)
+  for k, v in envPairs(): env[k] = v
+  env["PATH"] = f.bin & $PathSep & getEnv("PATH")
+  env["GOSTI_INCUS_CMD"] = incusCmd
+  env["INCUS_DIR"] = f.incusState
+  let argv = @["__gosti_cli", "layer"] & args &
+    @["--image-pool-dir", f.pool, "--log-format", "json"]
+  let p = startProcess(getAppFilename(), args = argv, env = env,
+    options = {poStdErrToStdOut})
+  p.inputStream.close()
+  result.output = p.outputStream.readAll()
+  result.code = p.waitForExit()
+  p.close()
+
+proc gc(f: IncusFixture; incusCmd, layer: string; dryRun = false): CliRun =
+  f.runLayerCli(incusCmd,
+    @["gc", layer] & (if dryRun: @["--dry-run"] else: @[]))
+
+proc layerEvent(r: CliRun): JsonNode =
+  for line in r.output.splitLines():
+    if line.startsWith("{") and "\"layer-gc\"" in line:
+      return parseJson(line)
+  newJNull()
+
+# `cmdLayer` enumerates domains and instances only on Linux (both are Linux
+# hypervisors), so on another host every fail-closed case would pass or fail
+# for a reason that has nothing to do with the enumeration.
+when defined(linux):
+  suite "layer GC — the CLI asks Incus which images are in use":
+
+    test "parseIncusInstanceImages reads volatile.base_image and refuses junk":
+      let doc = %*[instanceJson("ci-1", "Running", LayerFp),
+                   instanceJson("ci-2", "Stopped", ""),
+                   instanceJson("ci-3", "Running", OtherFp, project = "ci")]
+      let got = parseIncusInstanceImages($doc)
+      check got.len == 3
+      check got[0].name == "ci-1" and got[0].image == LayerFp
+      check got[1].image == ""            # created --empty: listed, no image
+      check got[2].project == "ci" and got[2].image == OtherFp
+      check parseIncusInstanceImages("[]").len == 0
+      for junk in ["not json", "{}", "[{\"status\":\"Running\"}]", "", "[1]"]:
+        expect ValueError:
+          discard parseIncusInstanceImages(junk)
+
+    test "a running container launched from the layer protects it":
+      let f = makeIncusFixture("running")
+      defer: removeDir(f.root)
+      let incus = f.fakeIncus(%*{"output":
+        $(%*[instanceJson("ci-runner-3", "Running", LayerFp)])})
+      let r = f.gc(incus, f.layer)
+      checkpoint(r.output)
+      check r.code == 3
+      check fileExists(f.layer)
+      let ev = r.layerEvent
+      check ev.kind == JObject
+      check ev["outcome"].getStr == "lgoRefused"
+      check ev["referents"].getElems.anyIt(
+        it["kind"].getStr == "lrkContainer" and it["name"].getStr == "ci-runner-3")
+
+    test "a STOPPED container protects it too":
+      let f = makeIncusFixture("stopped")
+      defer: removeDir(f.root)
+      let incus = f.fakeIncus(%*{"output":
+        $(%*[instanceJson("parked", "Stopped", LayerFp)])})
+      let r = f.gc(incus, f.layer)
+      checkpoint(r.output)
+      check r.code == 3
+      check fileExists(f.layer)
+      check "parked" in r.output
+
+    test "the rootfs half of a split image is protected by the same fingerprint":
+      let f = makeIncusFixture("split")
+      defer: removeDir(f.root)
+      let incus = f.fakeIncus(%*{"output":
+        $(%*[instanceJson("ci-runner-4", "Running", LayerFp)])})
+      let r = f.gc(incus, f.rootfs)
+      checkpoint(r.output)
+      check r.code == 3
+      check fileExists(f.rootfs)
+
+    test "no instance, or only an unrelated one, leaves the layer deletable":
+      ## The positive control: an enumeration that refused unconditionally
+      ## would pass every case above.
+      let f = makeIncusFixture("free")
+      defer: removeDir(f.root)
+      let unrelated = f.fakeIncus(%*{"output":
+        $(%*[instanceJson("other-job", "Running", OtherFp),
+             instanceJson("empty-one", "Stopped", "")])})
+      let dry = f.gc(unrelated, f.layer, dryRun = true)
+      checkpoint(dry.output)
+      check dry.code == 0
+      check dry.layerEvent["outcome"].getStr == "lgoDryRun"
+      check fileExists(f.layer)
+
+      let none = f.fakeIncus(%*{"output": "[]"})
+      let r = f.gc(none, f.layer)
+      checkpoint(r.output)
+      check r.code == 0
+      check r.layerEvent["outcome"].getStr == "lgoDeleted"
+      check not fileExists(f.layer)
+
+    test "an incus that cannot reach its daemon is a REFUSAL, not an empty list":
+      let f = makeIncusFixture("down")
+      defer: removeDir(f.root)
+      let incus = f.fakeIncus(%*{"errorOutput":
+        "Error: The incus daemon doesn't appear to be started\n", "exitCode": 1})
+      let r = f.gc(incus, f.layer)
+      checkpoint(r.output)
+      check r.code == 3
+      check fileExists(f.layer)
+      check "cannot enumerate incus instances" in r.output
+      check "exited 1" in r.output
+
+    test "output that does not parse is a REFUSAL":
+      let f = makeIncusFixture("garbage")
+      defer: removeDir(f.root)
+      for junk in ["<html>proxy error</html>", "{\"type\":\"sync\"}",
+                   "[{\"status\":\"Running\"}]"]:
+        let incus = f.fakeIncus(%*{"output": junk})
+        let r = f.gc(incus, f.layer)
+        checkpoint(junk & " -> " & r.output)
+        check r.code == 3
+        check fileExists(f.layer)
+        check "cannot enumerate incus instances" in r.output
+
+    test "an absent incus binary is a REFUSAL, exactly as an absent virsh is":
+      ## ... on a host WITH Incus state (the fixture's INCUS_DIR exists), so
+      ## this holds on every host, Incus-free CI included. The no-state
+      ## exception is pinned below at the procedure level.
+      let f = makeIncusFixture("absent")
+      defer: removeDir(f.root)
+      let r = f.gc(f.root / "no-such-incus-binary", f.layer)
+      checkpoint(r.output)
+      check r.code == 3
+      check fileExists(f.layer)
+      check "cannot enumerate incus instances" in r.output
+      check "Incus state exists at" in r.output
+      check f.incusState in r.output
+
+    test "an absent incus client with NO Incus state means no instances":
+      ## The one non-refusal for a missing client, and the reason a
+      ## libvirt-only host can still run `gosti layer`: with no daemon state
+      ## anywhere there is no instance to reference any file.
+      let f = makeIncusFixture("nostate")
+      defer: removeDir(f.root)
+      let be = newIncusBackend(incusCmd = @[f.root / "no-such-incus-binary"])
+      check be.incusClientMissing()
+      let none = be.tryListHostInstanceImages(
+        @[f.root / "no-incus-dir", f.root / "no-run-incus" / "unix.socket"])
+      checkpoint(none.message)
+      check none.ok
+      check none.instances.len == 0
+      check "no Incus state" in none.message
+      # A bare name that is not on PATH is missing too.
+      check newIncusBackend(
+        incusCmd = @["gosti-no-such-incus-binary-ever"]).incusClientMissing()
+
+    test "an absent incus client with Incus state present is a REFUSAL":
+      let f = makeIncusFixture("state")
+      defer: removeDir(f.root)
+      let be = newIncusBackend(incusCmd = @[f.root / "no-such-incus-binary"])
+      # A state DIRECTORY, a bare SOCKET-like file, and a dangling symlink
+      # each prove (or fail to disprove) that a daemon has state here.
+      let sock = f.root / "unix.socket"
+      writeFile(sock, "")
+      let dangling = f.root / "dangling"
+      createSymlink(f.root / "nowhere", dangling)
+      for present in [f.incusState, sock, dangling]:
+        let r = be.tryListHostInstanceImages(@[f.root / "absent", present])
+        checkpoint(present & " -> " & r.message)
+        check not r.ok
+        check present in r.message
+
+    test "a PRESENT incus that cannot answer refuses even with no Incus state":
+      ## Absence of state only excuses an absent client. A client that runs
+      ## and fails is "I do not know", whatever the filesystem says.
+      let f = makeIncusFixture("present-down")
+      defer: removeDir(f.root)
+      let incus = f.fakeIncus(%*{"exitCode": 1})
+      let be = newIncusBackend(incusCmd = @[incus])
+      check not be.incusClientMissing()
+      let r = be.tryListHostInstanceImages(@[f.root / "no-incus-dir"])
+      checkpoint(r.message)
+      check not r.ok
+      check "exited 1" in r.message
+
+    test "incusStateCandidates honours INCUS_DIR/INCUS_SOCKET and keeps the defaults":
+      let saved = (getEnv("INCUS_DIR"), existsEnv("INCUS_DIR"),
+                   getEnv("INCUS_SOCKET"), existsEnv("INCUS_SOCKET"))
+      defer:
+        if saved[1]: putEnv("INCUS_DIR", saved[0]) else: delEnv("INCUS_DIR")
+        if saved[3]: putEnv("INCUS_SOCKET", saved[2]) else: delEnv("INCUS_SOCKET")
+      putEnv("INCUS_DIR", "/srv/incus-elsewhere")
+      putEnv("INCUS_SOCKET", "/srv/incus.sock")
+      let c = incusStateCandidates()
+      check "/srv/incus-elsewhere" in c
+      check "/srv/incus.sock" in c
+      check DefaultIncusDir in c
+      check "/run/incus" in c
+
+    test "sweep-overlays keeps an overlay a container owns, and refuses blind":
+      ## The sweep reads `liveContainers` as a liveness condition; through the
+      ## CLI that set now comes from incus. And when incus cannot answer, the
+      ## sweep must not run at all — the destructive fail-open shape.
+      let f = makeIncusFixture("sweep")
+      defer: removeDir(f.root)
+      let golden = f.root / "golden.qcow2"
+      makeGolden(golden)
+      let overlay = f.pool / ("incus-owned" & OverlaySuffix)
+      makeOverlay(overlay, golden)
+      setAgeDays(overlay, StaleAgeDays)
+
+      let down = f.fakeIncus(%*{"exitCode": 1})
+      let refused = f.runLayerCli(down, @["sweep-overlays"])
+      checkpoint(refused.output)
+      check refused.code == 3
+      check fileExists(overlay)
+
+      let owner = f.fakeIncus(%*{"output":
+        $(%*[instanceJson("incus-owned", "Stopped", OtherFp)])})
+      let kept = f.runLayerCli(owner, @["sweep-overlays"])
+      checkpoint(kept.output)
+      check kept.code == 0
+      check fileExists(overlay)
+      check "\"keptLive\":[\"incus-owned\"]" in kept.output
+else:
+  echo "[skip] layer GC CLI/Incus suite: cmdLayer enumerates virsh/incus on Linux only"

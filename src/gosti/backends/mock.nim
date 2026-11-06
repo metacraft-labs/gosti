@@ -507,3 +507,18 @@ method instancePresence*(b: MockBackend, vm: VmHandle): InstancePresence =
   of mvsRunning, mvsStarting, mvsPaused: ipRunning
   of mvsStopped: ipStopped
   of mvsError: ipUnknown
+
+method listImages*(b: MockBackend): seq[ImageInfo] =
+  ## ``crud list_images`` on the fixture: one image per provisioned baseline,
+  ## sorted by name, with canned deterministic fields. ``GOSTI_MOCK_FAIL=
+  ## list_images`` injects a backend failure (exit 5).
+  b.calls.add("listImages")
+  b.injectFault("list_images", lpProbe)
+  var names: seq[string]
+  for n in b.baselines.keys: names.add(n)
+  names.sort()
+  for n in names:
+    result.add(ImageInfo(id: "mock-image-" & n, aliases: @[n],
+                         description: "mock baseline " & n,
+                         kind: "virtual-machine", architecture: "x86_64",
+                         sizeBytes: 0, createdAt: ""))

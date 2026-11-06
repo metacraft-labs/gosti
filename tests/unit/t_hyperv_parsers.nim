@@ -243,6 +243,12 @@ suite "newHyperVBackend":
     check b.id == biHyperv
     check b of HyperVBackend
 
+  test "defaultHyperVProvisionScriptPath resolves built-in provision-base-vm.ps1":
+    let p = defaultHyperVProvisionScriptPath()
+    check p.len > 0
+    check p.endsWith("provision-base-vm.ps1")
+    check fileExists(p)
+
   when not defined(windows):
     test "probeAvailability returns false off-Windows":
       let b = newHyperVBackend()

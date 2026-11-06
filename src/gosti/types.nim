@@ -18,7 +18,7 @@
 ## machine-readable mirror of design doc §3.2 + §3.6. Per-backend
 ## implementations live under ``src/gosti/backends/``.
 
-import std/[options, tables]
+import std/[options, strutils, tables]
 
 type
   HostPlatform* = enum
@@ -166,10 +166,12 @@ type
                                  ## host:guest``). Backends that model shared
                                  ## folders (lima, incus, libvirt virtiofs) may
                                  ## honour them; backends that cannot MUST ignore
-                                 ## them. Empty ⇒ no extra mounts. PLUMBED-BUT-
-                                 ## GUARDED like ``userData``: ``crud create_vm
-                                 ## --mount`` fails closed (exit 4) until a
-                                 ## backend attaches these shares.
+                                 ## them. Empty ⇒ no extra mounts. The guest
+                                 ## field may end in ``:ro``/``:rw``
+                                 ## (``parseMountGuest``; default rw). Honoured
+                                 ## by incus (disk devices); ``crud create_vm
+                                 ## --mount`` fails closed (exit 4) on every
+                                 ## backend whose ``honorsMounts`` is false.
     sshUser*: string             ## GOSTI2 PR-3: optional preferred SSH login the
                                  ## caller wants provisioned in the guest (``crud
                                  ## create_vm --ssh-user``). Advisory: a backend
@@ -219,6 +221,22 @@ type
   GuestBootFailureError* = object of GostiError
   CommandFailedError* = object of GostiError
     exitCode*: int
+  InvalidSpecError* = object of GostiError
+    ## The caller's request cannot be expressed by this backend as given (an
+    ## instance name the hypervisor rejects, a relative mount path, user-data
+    ## for an image with no cloud-init seed). Nothing was left behind. The
+    ## CRUD façade maps it to ``bad-args`` (exit 2), not ``backend-error``.
+
+  ImageInfo* = object
+    ## One image a backend can create instances from (``crud list_images``).
+    ## Stable wire shape: see ``crud.toJson(ImageInfo)``.
+    id*: string                  ## backend-native identity (incus: fingerprint)
+    aliases*: seq[string]        ## names it can be addressed by (may be empty)
+    description*: string
+    kind*: string                ## "container" | "virtual-machine" | backend-specific
+    architecture*: string
+    sizeBytes*: int64
+    createdAt*: string           ## RFC 3339 as the backend reports it ("" if unknown)
 
   VmBackend* = ref object of RootObj
     id*: BackendId
@@ -260,6 +278,14 @@ type
     baKvm = "kvm"              ## require Linux KVM acceleration
     baTcg = "tcg"              ## QEMU software emulation
 
+  GuestForward* = object
+    ## One guest-visible TCP endpoint served by a host command
+    ## (``BootMediaSpec.guestForwards``).
+    guestAddress*: string           ## e.g. "10.0.2.100" (in the user net)
+    guestPort*: int
+    command*: seq[string]           ## run per connection, stdin/stdout = the
+                                    ## connection; argv, absolute program
+
   BootMediaSpec* = object
     ## Direct-boot media for testing OS bring-up itself (not test-in-guest).
     ## Distinct from BaselineSpec: BaselineSpec provisions a long-lived
@@ -270,6 +296,13 @@ type
     kind*: BootMediaKind
     mediaPath*: string              ## primary boot media (VHDX/ISO/tar path)
     secondaryIsoPath*: string       ## optional second ISO (e.g. cloud-init seed)
+    dataDiskPaths*: seq[string]     ## caller-owned extra writable disks
+      ## Attached after the boot disk, in order, as virtio disks the guest
+      ## can write (qcow2 when the name ends ``.qcow2``, raw otherwise).
+      ## The caller creates and removes them: the backend never deletes
+      ## one, so a disk can outlive the VM and be attached to the next --
+      ## the shape of a reinstall that keeps a data disk. Realised by
+      ## ``qemu-boot``; other backends refuse a non-empty value.
     targetDiskPath*: string         ## optional caller-owned blank install disk
       ## Valid only with bmkIso. When set, the backend creates a blank disk at
       ## this exact path, installs into it, and never removes it during VM
@@ -332,6 +365,17 @@ type
       ## ``readonly=on``), so no guest action can change the image. This is
       ## the "independently enforced read-only environment" a zero-write
       ## gate runs a probe in.
+    networkRestricted*: bool        ## no guest-initiated traffic leaves the VM
+      ## ``qemu-boot``: the user-mode network gets ``restrict=on``, so the
+      ## guest reaches neither the host nor the outside world (DNS
+      ## included); the SSH forward still works, and ``guestForwards`` are
+      ## the only destinations the guest can open. Realised by ``qemu-boot``
+      ## only; no other backend reads it.
+    guestForwards*: seq[GuestForward]
+      ## ``qemu-boot`` only: guest-side addresses QEMU answers itself by
+      ## running a command per connection (``guestfwd=tcp:IP:PORT-cmd:...``),
+      ## e.g. a relay to a host-side proxy. The way a restricted guest is
+      ## given exactly the services a test wants it to have.
     diskInPlace*: bool              ## boot ``mediaPath`` itself, not an overlay
       ## By default the backend boots a throwaway overlay over the image so
       ## the caller's artifact never changes. A gate that must observe what a
@@ -431,9 +475,67 @@ method honorsUserData*(b: VmBackend): bool {.base.} =
 
 method honorsMounts*(b: VmBackend): bool {.base.} =
   ## Capability signal: does this backend attach the host→guest shares in
-  ## ``BaselineSpec.mounts``? Defaults false — no gosti backend attaches them
-  ## yet, so ``crud create_vm --mount`` stays fail-closed everywhere.
+  ## ``BaselineSpec.mounts``? Defaults false, so ``crud create_vm --mount``
+  ## fails closed; incus overrides it (disk devices in ``createInstance``).
   false
+
+# ---------------------------------------------------------------------------
+# GOSTI2 incus-parity seams (create with the full spec, keep-on-stop, images).
+
+method createInstance*(b: VmBackend, instanceName: string,
+                       spec: BaselineSpec): VmHandle {.base.} =
+  ## Materialise the CRUD instance ``instanceName`` from the provisioned
+  ## ``spec`` with EVERY per-instance option the spec carries (user-data,
+  ## mounts, sizes). The DEFAULT delegates to ``revertToBaselineWithUserData``
+  ## — exactly what ``crud create_vm`` called before this seam existed — so
+  ## every backend that does not override it is unchanged. A backend whose
+  ## instances are created fresh per call (incus) overrides it, because the
+  ## baseline-name-only revert cannot carry the instance name or the mounts.
+  b.revertToBaselineWithUserData(spec.name, spec.userData)
+
+method keepsInstanceOnStop*(b: VmBackend): bool {.base.} =
+  ## Does ``stopAndCleanup(vm, deleteVm = false)`` leave a stopped instance
+  ## that ``startAndAwaitReady(vm)`` can boot again? Defaults false: the CRUD
+  ## façade then releases the handle on ``stop_vm`` and re-materialises from
+  ## the baseline on ``start_vm`` (the original PR-1 mapping). A backend that
+  ## returns true keeps its handle across stop/start, so ``delete_vm`` after a
+  ## stop still removes the instance.
+  false
+
+method listImages*(b: VmBackend): seq[ImageInfo] {.base.} =
+  ## Every image this backend can create instances from (``crud
+  ## list_images``). RAISES ``BackendUnavailableError`` when the backend has
+  ## no image enumeration (the default) or its daemon cannot be reached, and
+  ## a ``GostiError`` when it answered with an error or with output gosti
+  ## cannot read. Never returns a partial or guessed list.
+  raise (ref BackendUnavailableError)(backend: $b.id, phase: lpProbe,
+    msg: "backend '" & $b.id & "' does not enumerate images (list_images)")
+
+proc parseMountGuest*(guest: string):
+    tuple[path: string, readOnly: bool, shift: bool] =
+  ## Split the optional option suffix off a ``--mount host:guest[:opts]``
+  ## guest field (``BaselineSpec.mounts`` keeps the pair shape; the options
+  ## ride on the guest side). ``opts`` is a comma-separated list of ``ro`` |
+  ## ``rw`` (the access mode; default ``rw``) and ``shift`` (opt-in uid/gid
+  ## shifting, see the incus backend); ``ro`` and ``rw`` together raise
+  ## ``ValueError``. A trailing ``:segment`` that is not such a list is part of
+  ## the path and is rejected by the caller's path validation (a guest path
+  ## must be absolute and colon-free).
+  result = (guest, false, false)
+  let colon = guest.rfind(':')
+  if colon < 0: return
+  let opts = guest[colon + 1 .. ^1].split(',')
+  var seenRo, seenRw, seenShift = false
+  for o in opts:
+    case o
+    of "ro": seenRo = true
+    of "rw": seenRw = true
+    of "shift": seenShift = true
+    else: return  # not an option list: leave it on the path
+  if seenRo and seenRw:
+    raise newException(ValueError,
+      "mount options '" & guest[colon + 1 .. ^1] & "': ro and rw conflict")
+  result = (guest[0 ..< colon], seenRo, seenShift)
 
 type
   InstancePresence* = enum

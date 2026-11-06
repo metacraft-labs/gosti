@@ -116,14 +116,16 @@ suite "t_gosti_serve_macos_tart":
 
     test "remote ephemeral tart run: clone -> boot -> probe -> destroy, no residue":
       var logs: seq[string]
-      # Mirror the provider's tart argv: baseline (golden) + ephemeral-prefix
-      # drive the per-job clone; the in-guest probe stands in for the JIT
-      # runner bootstrap. The macOS golden pull is slow on first run, so the
-      # timeout is generous.
+      # Mirror the provider's tart argv: the golden (--source-image) and the
+      # ephemeral-prefix drive the per-job clone; the in-guest probe stands in
+      # for the JIT runner bootstrap. --baseline only names the baseline: a
+      # registry-built tart backend has no default golden and refuses a run
+      # that does not name its image. The macOS golden pull is slow on first
+      # run, so the timeout is generous.
       let code = client.execStream(
         @["run", "--backend", backendId, "--guest",
           (if useMacos: "macos" else: "linux"),
-          "--baseline", sourceImage,
+          "--baseline", sourceImage, "--source-image", sourceImage,
           "--ephemeral-prefix", prefix,
           "--output-dir", outDir,
           "--timeout-sec", "900", "--", "true"],
