@@ -22,14 +22,19 @@
 ##
 ## Mock policy (design doc §9.1): the ONLY mock is ``NoopBackend`` — the
 ## sanctioned fixture — so the gate is hermetic. The ``list_images`` incus
-## cases add a fake ``incus`` script (via ``GOSTI_INCUS_CMD``) whose answer
-## is switched by marker files: what is pinned is the envelope/exit-code
-## mapping across both paths, not the daemon. The CLI, the daemon, the
+## cases add a fake ``incus`` (via ``GOSTI_INCUS_CMD``) whose answer is
+## switched per case: what is pinned is the envelope/exit-code mapping
+## across both paths, not the daemon. The fake is the native command fixture
+## (``tests/native_command_fixture.nim``), a copy of this executable answering
+## from a JSON sidecar, because Windows ``CreateProcess`` cannot start a
+## ``#!/bin/sh`` script: there every incus case would see "client not
+## runnable" (4) instead of the answer under test. The CLI, the daemon, the
 ## TCP transport, HTTP framing and bearer auth are all real. Same self-exec
 ## topology as ``t_gosti_serve_roundtrip``: the test binary re-execs
 ## itself as the CLI (``__gosti_cli``) and as the daemon (``__serve``).
 
 import std/[json, os, osproc, streams, strutils, tempfiles, times, unittest]
+import ../native_command_fixture
 import gosti
 import gosti/cli
 
@@ -82,17 +87,14 @@ suite "t_crud_serve_parity":
   let token = "crud-parity-bearer-7c1e"
   writeFile(tokenFile, token)
   # A fake ``incus`` for the list_images cases (the daemon's workers inherit
-  # GOSTI_INCUS_CMD). Marker files switch its answer, so the local and the
-  # serve call of one case see the same daemon state.
-  let fakeIncus = work / "incus"
-  writeFile(fakeIncus, "#!/bin/sh\n" &
-    "d=\"$(dirname \"$0\")\"\n" &
-    "if [ \"$1\" = info ]; then [ -f \"$d/down\" ] && exit 1; exit 0; fi\n" &
-    "if [ \"$1\" = image ]; then\n" &
-    "  [ -f \"$d/down\" ] || [ -f \"$d/fail\" ] && { echo 'Error: boom'; exit 1; }\n" &
-    "  echo '[{\"fingerprint\":\"f00d\",\"aliases\":[{\"name\":\"deb12\"}],\"type\":\"container\"}]'\n" &
-    "  exit 0\nfi\nexit 1\n")
-  setFilePermissions(fakeIncus, {fpUserRead, fpUserWrite, fpUserExec})
+  # GOSTI_INCUS_CMD). Reconfiguring it rewrites only its sidecar, so the local
+  # and the serve call of one case see the same daemon state.
+  let incusOk = %*{"output":
+    "[{\"fingerprint\":\"f00d\",\"aliases\":[{\"name\":\"deb12\"}]," &
+    "\"type\":\"container\"}]\n"}
+  proc incusAnswers(config: JsonNode): string =
+    commandFixture(work / "incus", config)
+  let fakeIncus = incusAnswers(incusOk)
   putEnv("GOSTI_INCUS_CMD", fakeIncus)
   let daemon = startProcess(
     getAppFilename(),
@@ -189,14 +191,15 @@ suite "t_crud_serve_parity":
     check env["data"]["images"][0]["aliases"] == %*["deb12"]
 
   test "list_images (incus, daemon answers with an error): backend-error (5)":
-    writeFile(work / "fail", "")
-    defer: removeFile(work / "fail")
+    # `image ...` fails; `incus info` (the reachability probe) succeeds.
+    discard incusAnswers(%*{"failFirstArg": "image", "failureCode": 1})
+    defer: discard incusAnswers(incusOk)
     let env = checkParity(@["list_images", "--backend", "incus"], 5)
     check env["error"]["kind"].getStr == "backend-error"
 
   test "list_images (incus, daemon unreachable): backend-unavailable (4)":
-    writeFile(work / "down", "")
-    defer: removeFile(work / "down")
+    discard incusAnswers(%*{"output": "Error: boom\n", "exitCode": 1})
+    defer: discard incusAnswers(incusOk)
     let env = checkParity(@["list_images", "--backend", "incus"], 4)
     check env["error"]["kind"].getStr == "backend-unavailable"
 

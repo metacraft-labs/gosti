@@ -14,8 +14,20 @@
 ## user-data body), and how it maps each daemon answer to the frozen
 ## envelope. The live path is gated by the host-tier
 ## ``tests/e2e/t_crud_incus_real.nim`` against a real Incus daemon.
+##
+## The shell script runs only where ``/bin/sh`` can be exec'd, and the create
+## suites that use it are Linux-only anyway (IncusBackend create is). The
+## ``list_images`` suite runs on every host, so its ``incus`` is the native
+## command fixture (``tests/native_command_fixture.nim``): a copy of this test
+## executable that answers from a JSON sidecar. Windows ``CreateProcess``
+## cannot start a ``#!/bin/sh`` file at all, and a fake that cannot be
+## started reads as "client not runnable" (backend-unavailable, 4) — which
+## would make every exit-code case below either fail or pass for the wrong
+## reason. Same justification as above: what is pinned is how gosti maps each
+## answer to the envelope, not the daemon.
 
 import std/[json, options, os, strutils, tables, tempfiles, unittest]
+import ../native_command_fixture
 import gosti
 import gosti/cli
 import gosti/crud_store
@@ -26,16 +38,11 @@ echo "$*" >> "$state/argv.log"
 cmd="$1"; shift
 case "$cmd" in
   info)
-    if [ $# -eq 0 ]; then exit "${FAKE_INFO_RC:-0}"; fi
+    if [ $# -eq 0 ]; then exit 0; fi
     [ -d "$state/c/$1" ] && exit 0 || exit 1 ;;
   image)
     case "$*" in
-      *"--format json"*)
-        case "${FAKE_IMAGE_MODE:-ok}" in
-          ok) cat "$state/images.json"; exit 0 ;;
-          fail) echo "Error: boom"; exit 1 ;;
-          garbage) echo "not json"; exit 0 ;;
-        esac ;;
+      *"--format json"*) cat "$state/images.json"; exit 0 ;;
       *) echo "$2"; exit 0 ;;
     esac ;;
   launch|init)
@@ -101,10 +108,17 @@ proc fakeIncus(): tuple[dir, exe: string] =
   setFilePermissions(exe, {fpUserRead, fpUserWrite, fpUserExec})
   writeFile(dir / "images.json", ImagesJson)
   putEnv("FAKE_INCUS_STATE", dir)
-  for k in ["FAKE_IMAGE_MODE", "FAKE_INFO_RC", "FAKE_NO_TEMPLATE",
-            "FAKE_DEVICE_RC"]:
+  for k in ["FAKE_NO_TEMPLATE", "FAKE_DEVICE_RC"]:
     delEnv(k)
   (dir, exe)
+
+proc nativeIncus(config: JsonNode): tuple[dir, exe: string] =
+  ## A native ``incus`` stand-in (see the header): every call appends its argv
+  ## to ``<dir>/argv.log`` and then answers as ``config`` says.
+  let dir = createTempDir("gosti-crud-incus-native-", "")
+  var cfg = copy(config)
+  cfg["log"] = %(dir / "argv.log")
+  (dir, commandFixture(dir / "incus", cfg))
 
 proc argvLog(dir: string): seq[string] =
   if fileExists(dir / "argv.log"): readFile(dir / "argv.log").splitLines()
@@ -421,7 +435,7 @@ suite "incus crud create: --source-image by fingerprint (fake incus)":
 
 suite "crud list_images":
   test "incus: ok envelope, stable entry shape":
-    let (dir, exe) = fakeIncus()
+    let (dir, exe) = nativeIncus(%*{"output": ImagesJson})
     defer: removeDir(dir)
     let r = runCrud(session(exe), "list_images", params())
     check r.exitCode == 0
@@ -439,39 +453,36 @@ suite "crud list_images":
     check argvLog(dir).indexOf("image list --format json") >= 0
 
   test "incus: empty store is an empty list, not an error":
-    let (dir, exe) = fakeIncus()
+    let (dir, exe) = nativeIncus(%*{"output": "[]"})
     defer: removeDir(dir)
-    writeFile(dir / "images.json", "[]")
     let r = runCrud(session(exe), "list_images", params())
     check r.exitCode == 0
     check r.json["data"]["images"].len == 0
 
   test "incus: listing fails but the daemon answers => backend-error (5)":
-    let (dir, exe) = fakeIncus()
+    # `image ...` exits 1; every other call (`incus info`) exits 0.
+    let (dir, exe) = nativeIncus(%*{"failFirstArg": "image", "failureCode": 1})
     defer: removeDir(dir)
-    putEnv("FAKE_IMAGE_MODE", "fail")
-    defer: delEnv("FAKE_IMAGE_MODE")
     let r = runCrud(session(exe), "list_images", params())
     check r.exitCode == 5
     check r.json["error"]["kind"].getStr == "backend-error"
+    # The daemon probe really ran: 5 is the answer to "info succeeded".
+    check argvLog(dir).indexOf("info") >= 0
 
   test "incus: listing AND incus info fail => backend-unavailable (4)":
-    let (dir, exe) = fakeIncus()
+    let (dir, exe) = nativeIncus(%*{"errorOutput": "Error: boom\n",
+                                     "exitCode": 1})
     defer: removeDir(dir)
-    putEnv("FAKE_IMAGE_MODE", "fail")
-    putEnv("FAKE_INFO_RC", "1")
-    defer:
-      delEnv("FAKE_IMAGE_MODE")
-      delEnv("FAKE_INFO_RC")
     let r = runCrud(session(exe), "list_images", params())
     check r.exitCode == 4
     check r.json["error"]["kind"].getStr == "backend-unavailable"
+    # A refusal from the probe, not a client that could not be started.
+    check argvLog(dir).indexOf("info") >= 0
+    check "exited 1" in r.json["error"]["message"].getStr
 
   test "incus: unparseable listing => backend-error (5), never an empty list":
-    let (dir, exe) = fakeIncus()
+    let (dir, exe) = nativeIncus(%*{"output": "not json\n"})
     defer: removeDir(dir)
-    putEnv("FAKE_IMAGE_MODE", "garbage")
-    defer: delEnv("FAKE_IMAGE_MODE")
     let r = runCrud(session(exe), "list_images", params())
     check r.exitCode == 5
     expect ValueError:
