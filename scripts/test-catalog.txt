@@ -117,6 +117,9 @@ test all tests/unit/t_guest_recipe_sh_c_quoting.nim
 # The Linux runner recipe installs DefaultOOMPolicy=continue, so a job's OOM
 # kill fails that step instead of stopping the runner service.
 test all tests/unit/t_linux_runner_oom_policy.nim
+# The Linux runner recipe bakes a working C compiler (gcc + libc6-dev) and curl,
+# which reprobuild needs on a host without Nix, and compiles a probe at build.
+test all tests/unit/t_linux_runner_c_toolchain.nim
 test all tests/unit/t_tart_backend.nim
 # Tart per-job clones honour --disk-gb: grown with `tart set --disk-size`
 # before boot, an explicit shrink refused by name, and the guest root

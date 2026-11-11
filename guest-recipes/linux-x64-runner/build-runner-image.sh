@@ -480,15 +480,32 @@ log "checking runner runtime dependencies in the base image"
 #         (`common.nix`) and is invoked directly by workflows. It is NOT in
 #         Debian `main`, so it is installed from GitHub's official apt
 #         repository in a separate sub-step below.
+#       * `gcc` + `libc6-dev` (a C compiler that can link against libc) are
+#         BASELINE because reprobuild needs the system C compiler on a Linux
+#         host without Nix: it compiles each `repro.nim` recipe with it, and
+#         this image has no /nix/store. The `setup-reprobuild` action's release
+#         bundle, run by `repro exec` on a host with neither Nix nor `cc`, dies
+#         with "could not provision the C compiler that compiles the recipe".
+#         With `gcc libc6-dev` it gets further and then needs `curl` to fetch
+#         the Nim source archive (a `.tar.xz`, hence `xz` too); both of those
+#         are already listed above. Measured 2026-11-11 with the v0.2.20
+#         release bundle in a stock debian:12 container that had `git`,
+#         `ca-certificates` and `xz-utils` installed: `repro exec` fails
+#         without `gcc libc6-dev`, fails with them but without `curl`, and
+#         succeeds with all of them. CI jobs failed exactly this way on
+#         `garm-*` runners and passed on bare-metal runners that have `cc` or
+#         Nix. `gcc` alone is not enough: without `libc6-dev` there are no
+#         libc headers or crt objects, so the first `#include` of a libc
+#         header fails.
 #     apt needs egress, which incusbr0 does not lease; bring up the shared
 #     static build IP for the install (idempotent — the HR1/HR2 bakes reuse it).
-log "installing CI baseline tools (git, git-lfs, xz-utils, ca-certificates, curl, fuse3, gawk, jq, gh, dbus)"
+log "installing CI baseline tools (git, git-lfs, xz-utils, ca-certificates, curl, gcc, libc6-dev, fuse3, gawk, jq, gh, dbus)"
 ensure_build_egress
 "${INCUS[@]}" exec "$BLD" -- sh -c "
   set -e
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq --no-install-recommends git git-lfs xz-utils ca-certificates curl fuse3 gawk jq dbus
+  apt-get install -y -qq --no-install-recommends git git-lfs xz-utils ca-certificates curl gcc libc6-dev fuse3 gawk jq dbus
   # curl is BASELINE: CI workflow steps call the GitHub REST API with it (the
   # lint job's rate-limit probe fails with curl is not on this runner image
   # on any image built without it, 2026-11-03).
@@ -498,6 +515,15 @@ ensure_build_egress
   command -v gawk
   command -v jq
   command -v xz
+  # gcc and libc6-dev are BASELINE: reprobuild compiles every recipe with the
+  # system C compiler when the host has no Nix, which this image does not.
+  # Compile AND link a program, not just look for cc on PATH: gcc without
+  # libc6-dev passes command -v and still fails on the first libc header.
+  command -v cc
+  printf '%s\\n' '#include <stdio.h>' 'int main(void) { return puts(__FILE__) < 0; }' > /tmp/cc-probe.c
+  cc -o /tmp/cc-probe /tmp/cc-probe.c
+  /tmp/cc-probe
+  rm -f /tmp/cc-probe /tmp/cc-probe.c
   # NO backticks or double quotes in these comments: this whole script is a
   # double-quoted host string, so the HOST shell would expand them before the
   # guest sees anything (t_guest_recipe_sh_c_quoting).
