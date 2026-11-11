@@ -514,6 +514,11 @@ Common flags:
                                   the container's limits.cpu (a CPU count)
                                   and limits.memory (MiB) before first start.
                                   Omitted ⇒ the container is uncapped.
+  --cpus/--memory-mb (Tart)       tart-macos / tart-linux-arm: every per-job
+                                  clone gets this CPU count and memory (MiB)
+                                  via `tart set --cpu/--memory` while stopped,
+                                  before it boots; a rejected value fails the
+                                  clone. Omitted ⇒ the golden's own sizing.
   --incus-profile <name>         Ordered Incus profile (repeatable), accepted
                                   only with run --ephemeral --backend incus.
                                   Include default explicitly to retain its
@@ -1168,6 +1173,8 @@ proc applyDefaults*(spec: var BaselineSpec, opts: CliOpts) =
   spec.sourceImage = opts.sourceImage
   spec.cpus = if opts.cpus > 0: opts.cpus else: 2
   spec.memoryMB = if opts.memoryMB > 0: opts.memoryMB else: 4096
+  spec.cpusDefaulted = opts.cpus <= 0
+  spec.memoryMBDefaulted = opts.memoryMB <= 0
   spec.diskGB = effectiveDiskGB(opts)
   spec.diskGBDefaulted = opts.diskGB <= 0
   if opts.guestSet:
