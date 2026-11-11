@@ -57,6 +57,13 @@ import gosti/serve/http as serveHttp
 # Auxiliary self-exec roles. Checked BEFORE the unittest runner so a re-exec
 # never re-enters the suite.
 
+proc fixtureWorkerPolicy(argv: seq[string]): string {.nimcall, gcsafe.} =
+  ## The daemon's worker here is this test's self-exec fixture, not the gosti
+  ## CLI, so the production argv policy (``gostiExecPolicy``) does not describe
+  ## it. Admit exactly the fixture's own verbs.
+  if argv.len > 0 and argv[0] in ["hang", "quick"]: ""
+  else: "not a fixture verb"
+
 when isMainModule:
   let params = commandLineParams()
   if params.len >= 2 and params[0] == "__work":
@@ -76,6 +83,7 @@ when isMainModule:
       token: readFile(params[3]).strip(),
       workerExe: getAppFilename(),
       workerArgPrefix: @["__work"],
+      execPolicy: fixtureWorkerPolicy,
       portFile: params[4],
       serveThreads: parseInt(params[5]),
       quiet: true)

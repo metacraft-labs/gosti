@@ -36,7 +36,7 @@ rejected with **401 before any work runs** (constant-time token comparison).
 | ------------------- | --------------------------------- | --------------------------------- |
 | `GET  /v1/info`     | —                                 | JSON: protocol, host, backends[]  |
 | `GET  /v1/manifest` | —                                 | signed identity + capability manifest |
-| `POST /v1/exec`     | `{v, argv[], stdin?, timeoutSec?}`| chunked NDJSON event stream       |
+| `POST /v1/exec`     | `{v, argv[], stdin?, timeoutSec?, userData?}`| chunked NDJSON event stream; `403` when the exec policy refuses the argv |
 | `POST /v1/shutdown` | `{}`                              | `{ok:true}`                       |
 
 `GET /v1/manifest` returns a **signed identity** wrapping a
@@ -52,14 +52,97 @@ label-derivation contract.
 daemon prepends its configured worker executable and runs it, so the executed
 backend code is byte-for-byte the local `gosti` path.
 
-The bearer token is therefore an **operator/controller credential**, not a
-per-workflow credential: an authenticated caller can invoke host-mutating
-operations, including the fixed `--incus-security-nesting` and
-`--incus-nested-kvm` ephemeral-run capabilities. Never place this token in
-guest user-data or workflow-visible state. The daemon must remain bound to the
-operator overlay, and only the central fleet controller/operator may construct
-those argv values. The nested-KVM flag has no arbitrary device/path/mode input;
-it always selects the audited `/dev/kvm` mapping.
+The bearer token is an **operator/controller credential**, not a
+per-workflow credential. Never place it in guest user-data or
+workflow-visible state. The daemon must remain bound to the operator overlay,
+and only the central fleet controller/operator may construct the argv it
+sends. The nested-KVM flag has no arbitrary device/path/mode input; it always
+selects the audited `/dev/kvm` mapping.
+
+### What the token authorises (the exec policy)
+
+The token proves who is calling; `src/gosti/serve/exec_policy.nim` bounds what
+that caller may run. Every `/v1/exec` argv is checked against an allowlist
+**before** user-data is staged or a worker is started. A refused argv is
+answered `403 {"error": "exec refused by serve policy: <reason>"}` and nothing
+runs. The allowlist is the argv the daemon's real clients send:
+
+| Subcommand | Options admitted | Notes |
+| --- | --- | --- |
+| `provision` | `--backend noop`, `--baseline`, `--log-format` | the provider's noop test recipe only |
+| `run --ephemeral` | `--keep`, `--backend`, `--baseline`, `--guest`, `--base-image`, `--source-image`, `--incus-profile`, `--incus-security-nesting`, `--incus-nested-kvm`, `--cpus`, `--memory-mb`, `--uefi-loader`, `--uefi-nvram-template`, `--ephemeral-prefix`, `--timeout-sec`, `--log-format`; a guest command after `--` | `--ephemeral` is required. UEFI paths must resolve, after symlinks and `..`, to a file under `/nix/store/` or `/usr/share/`. `--ephemeral-prefix` must be a plain name |
+| `ephemeral-destroy` | `--backend`, `--baseline`, `--log-format` | |
+| `ephemeral-label` | `--backend`, `--baseline`, `--label`, `--log-format` | |
+| `ephemeral-list` | `--backend`, `--name`, `--label`, `--log-format` | |
+| `crud <verb>` | `--backend`, `--baseline`, `--source-image`, `--guest`, `--cpus`, `--memory-mb`, `--disk-gb`, `--env`, `--ssh-user`, `--cwd`, `--run-as`, `--timeout`, `--lock-timeout-sec`, `--force`, `--log-format`; guest argv after `--` | every verb except `copy_to_vm` and `copy_from_vm` |
+
+Every admitted argv must also name a concrete `--backend`: any backend id
+except `wsl` and `auto`. A WSL distro is not an isolation boundary from its
+Windows host (the host's drives are mounted under `/mnt` and Windows
+executables run from inside it), and `auto` picks `wsl` for a Linux guest on a
+Windows host. `--baseline` and `--name` must be plain names (letters, digits,
+`.`, `_`, `-`; no `..`), because backends build host paths from them, such as
+libvirt's `<pool>/<name>.overlay.qcow2`. No option may take `--` as its value,
+and no argv element may contain a NUL byte.
+
+Everything else is refused, in particular:
+
+- any other subcommand (`serve`, `probe`, `prune`, `boot`, `layer`, …), and a
+  non-ephemeral `run`, which writes to a caller-chosen `--output-dir`;
+- every option that names a path on the daemon host: `--mount`, `--user-data`,
+  `--meta-data`, `--state-dir`, `--output-dir`, `--copy-to`/`--copy-from`,
+  `--golden-image`, `--kernel`/`--initrd`, `--ssh-private-key`, …, and the crud
+  `copy_to_vm`/`copy_from_vm` verbs;
+- `--remote`, `--auth-token` and `--auth-token-file` in **any** position,
+  even after `--`, because the worker's `runCli` lifts them out before parsing.
+
+The check walks the argv the way the worker's `parseCliOpts` does, so it is
+not a string match that a spelling can slip past: `argv[0]` is the subcommand
+exactly as written (no global options before it, case-sensitive), a value
+option consumes the next token, `--x=y` is an unknown option, and `crud`'s
+verb is the first positional whether or not it follows `--`.
+`t_serve_exec_policy` checks that against the parser itself: for 40 000
+seeded adversarial argvs, nothing the policy admits parses to an option that
+names a host path.
+
+**User-data** reaches a worker only as the request's inline `userData` bytes.
+The daemon writes them to a fresh `0600` file it names itself and inserts
+`--user-data <that path>` before the guest argv's `--`. A caller can no longer
+name a daemon-host file to be read into a guest.
+
+**Mounts** are not reachable through serve at all: no client of the daemon
+sends one. The local CLI (`gosti crud create_vm --mount …`) is the operator's
+own authority and is unchanged.
+
+**Blast radius (CRED-3).** The serve bearer token lets its holder create,
+label, list and destroy ephemeral guests and crud VMs on that one host, from
+images, Incus profiles and the fixed nesting/nested-KVM grants the host
+already has, and run commands inside those guests. It cannot run any other
+`gosti` subcommand, mount or copy a host path into a guest, have the daemon
+read a host file it names, or write a host file it names. An attacker who
+holds it gains control of the guests on that host and can use the host's
+guest capacity, not the host itself.
+
+Known limits of that sentence, outside what this policy decides:
+
+- **Image references.** For libvirt, Hyper-V and the gosti-run backends,
+  `--source-image`/`--base-image` name a golden image file on the host. A
+  caller can point them at another disk image the daemon user can read. A
+  host-side allowlist of image roots would close this; it needs the
+  deployments' image directories, which live in nixos-modules.
+- **Incus profiles.** `--incus-profile` attaches any profile that already
+  exists on the host, as the provider's configuration chooses. A profile the
+  operator defined for another purpose (a privileged one, say) is reachable
+  with the token. Only profiles that are safe for runner guests should exist
+  on a serve host.
+- **The daemon user's own groups.** The policy bounds what gosti does on the
+  caller's behalf. It does not bound what the daemon user could do itself:
+  `incus-admin` or `libvirtd` membership (granted by nixos-modules'
+  `gosti-serve` unit) remains root-equivalent if the daemon process itself is
+  compromised (SEC-1 G13, second half).
+- **Embedding.** `ServeConfig.execPolicy` replaces the policy for an embedding
+  whose worker is not the gosti CLI (the serve plumbing tests' fixture
+  workers). The `gosti serve` command never sets it.
 
 ### `/v1/exec` event stream (NDJSON, one JSON object per chunk)
 
@@ -212,12 +295,14 @@ stream. Gated by `t_gosti_serve_client_disconnect_no_spin`.
 
 ## Driving a remote host
 
-Any operational subcommand gains a `--remote <host:port>` flag that forwards
-it to a daemon and relays the streamed output + exit code:
+Any subcommand the daemon's exec policy admits (see "What the token
+authorises" above) can take a `--remote <host:port>` flag that forwards it to
+a daemon and relays the streamed output + exit code. Anything else is refused
+by the daemon and the client exits non-zero:
 
 ```sh
 export GOSTI_SERVE_TOKEN=$(cat /run/creds/gosti)
-gosti --remote 100.72.0.5:8873 probe
+gosti --remote 100.72.0.5:8873 ephemeral-list --backend incus
 gosti --remote 100.72.0.5:8873 run --ephemeral --backend incus \
   --baseline job-42 --base-image gosti-base \
   --incus-security-nesting --incus-nested-kvm -- true
@@ -240,11 +325,20 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
 
 - `tests/unit/t_serve_protocol.nim` — pure wire-contract checks (universal
   layer; in `just test` and the `repro test` catalog).
+- `tests/unit/t_serve_exec_policy.nim` — the exec policy: the provider's and
+  the crud façade's argv shapes are admitted; other subcommands, host-path
+  options, firmware paths escaping their roots (via `..` or a symlink) and
+  every bypass spelling are refused; and a seeded property ties the policy to
+  the worker's parser. Pure. In `just test`.
+- `tests/e2e/t_gosti_serve_exec_policy.nim` — the same through the HTTP
+  handler: a refused argv is a 403 and starts no worker (observed through a
+  spawn log), allowed argvs still run, and wire `userData` is staged by the
+  daemon ahead of the guest argv's `--`. In `just test`.
 - `tests/e2e/t_gosti_serve_roundtrip.nim` — the end-to-end gate. A remote
-  client drives provision → run(exec probe) → destroy against a real daemon
-  over the authenticated endpoint using the sanctioned **noop** backend;
-  asserts no residue, byte-equivalence to the local `run` path, and that an
-  unauthenticated / wrong-credential client is rejected (401). Its fake-Incus
+  client drives the provider's noop provision → destroy recipe against a real
+  daemon over the authenticated endpoint; asserts that a non-ephemeral `run`
+  is refused remotely (403) while the identical argv still runs locally, and
+  that an unauthenticated / wrong-credential client is rejected (401). Its fake-Incus
   leg also pins authenticated forwarding of the complete fixed capability
   argv, local pre-start ordering, and exact cleanup without requiring a host
   daemon. Hermetic via a no-threads self-exec topology (the test binary

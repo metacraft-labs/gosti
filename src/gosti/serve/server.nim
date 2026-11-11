@@ -35,7 +35,8 @@ when defined(windows):
   import std/winlean
 else:
   import std/posix
-import ./protocol, ./http, ./capability, ./enrollment, ./dispatch_queue
+import ./protocol, ./http, ./capability, ./enrollment, ./dispatch_queue,
+       ./exec_policy
 import ../types, ../auto, ../process_cleanup
 
 # Import the backend modules so ``registeredBackends`` / ``newBackend`` see
@@ -84,6 +85,15 @@ type
                                   ## hold a pool slot forever. See
                                   ## ``DefaultExecDeadlineSec`` for the default's
                                   ## derivation.
+    execPolicy*: ExecArgvPolicy   ## decides which forwarded argv may run; nil
+                                  ## ⇒ ``gostiExecPolicy``, the allowlist of
+                                  ## what the provider and the crud façade send
+                                  ## (``exec_policy.nim``). The ``serve`` CLI
+                                  ## never sets it. Only an embedding whose
+                                  ## worker is NOT the gosti CLI (the serve
+                                  ## plumbing tests' fixture workers) supplies
+                                  ## its own, since the gosti grammar does not
+                                  ## describe that worker.
 
   ServeContext = ref object
     ## Shared across the acceptor and every worker thread by reference. ``cfg``,
@@ -345,17 +355,22 @@ proc applyUserData*(argv: seq[string], userData: string,
   ## Bridge the wire ``userData`` bytes to the local ``--user-data <path>`` CLI
   ## contract without a new backend-specific code path:
   ##
-  ##   * When ``userData`` is empty, or ``argv`` ALREADY carries a
-  ##     ``--user-data`` flag (the caller pinned its own file), the argv is
-  ##     returned unchanged and ``path`` is "" (nothing to clean up).
+  ##   * When ``userData`` is empty the argv is returned unchanged and
+  ##     ``path`` is "" (nothing to clean up).
   ##   * Otherwise the bytes are written to a fresh ``0600`` file under ``dir``
-  ##     and ``--user-data <path>`` is appended. The returned ``path`` MUST be
-  ##     deleted by the caller once the worker has exited.
+  ##     and ``--user-data <path>`` is added just before the first ``--`` (so
+  ##     it is never mistaken for guest argv), or at the end when there is
+  ##     none. The returned ``path`` MUST be deleted by the caller once the
+  ##     worker has exited.
+  ##
+  ## User-data reaches a worker ONLY this way. A caller can no longer name a
+  ## daemon-host file of its own: ``gostiExecPolicy`` refuses a forwarded
+  ## ``--user-data`` (SEC-1 G13), and this proc no longer defers to one.
   ##
   ## The contents are treated as a secret (they may carry a runner registration
   ## token): the file is owner-only and the bytes are never logged. Only the
   ## resulting PATH ever appears in the argv (and therefore in the access log).
-  if userData.len == 0 or "--user-data" in argv:
+  if userData.len == 0:
     return (argv, "")
   createDir(dir)
   let (f, path) = createTempFile("seed-", ".userdata", dir)
@@ -374,7 +389,11 @@ proc applyUserData*(argv: seq[string], userData: string,
     # createTempFile already uses an owner-only mode on POSIX; assert it
     # explicitly so the contract holds regardless of the umask/stdlib version.
     setFilePermissions(path, {fpUserRead, fpUserWrite})
-  (argv & @["--user-data", path], path)
+  let dd = argv.find("--")
+  if dd < 0:
+    (argv & @["--user-data", path], path)
+  else:
+    (argv[0 ..< dd] & @["--user-data", path] & argv[dd .. ^1], path)
 
 # ---------------------------------------------------------------------------
 # Client-disconnect handling (docs/contributors/serve.md "Client disconnects: finish the
@@ -535,6 +554,17 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
   except ValueError as e:
     client.sendResponse(400, $(%*{"error": e.msg}))
     return
+  # What the token may run (SEC-1 G13): refuse anything outside the policy
+  # BEFORE user-data is staged or a worker is spawned. The bearer check above
+  # only established who is calling.
+  let policy = if ctx.cfg.execPolicy != nil: ctx.cfg.execPolicy
+               else: gostiExecPolicy
+  let refusal = policy(parsed.argv)
+  if refusal.len > 0:
+    daemonLog(ctx, "403 exec refused: " & refusal)
+    client.sendResponse(403, $(%*{"error": "exec refused by serve policy: " &
+                                            refusal}))
+    return
 
   let exe = if ctx.cfg.workerExe.len > 0: ctx.cfg.workerExe
             else: getAppFilename()
@@ -542,11 +572,14 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
   # bootstrap) to a per-request 0600 temp file and append ``--user-data
   # <path>`` so the worker reuses the local ``run --ephemeral --user-data``
   # path unchanged. ``userDataPath`` is "" when nothing was materialized.
+  # Staged on the CALLER's argv, before the prefix is added, so the flag lands
+  # ahead of the caller's ``--`` and never inside the prefix.
   var args = ctx.cfg.workerArgPrefix & parsed.argv
   var userDataPath = ""
   try:
-    let applied = applyUserData(args, parsed.userData, userDataTempDir())
-    args = applied.argv
+    let applied = applyUserData(parsed.argv, parsed.userData,
+                                userDataTempDir())
+    args = ctx.cfg.workerArgPrefix & applied.argv
     userDataPath = applied.path
   except CatchableError as e:
     client.beginChunked()

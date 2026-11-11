@@ -154,9 +154,11 @@ suite "t_gosti_serve_win_hyperv":
       # A real in-guest JIT probe runs only when a PowerShell-Direct
       # credential cache is provided; otherwise reaching a booted+destroyed
       # clone is itself the success signal (the host-lifecycle ops).
+      # The provider's remote recipe names the golden with the generic image
+      # flags; ``--golden-image`` is not in the serve exec policy (SEC-1 G13).
       var runArgv = @["run", "--ephemeral", "--backend", "hyperv",
-                      "--baseline", jobName, "--golden-image", golden,
-                      "--timeout-sec", "600"]
+                      "--baseline", jobName, "--base-image", golden,
+                      "--source-image", golden, "--timeout-sec", "600"]
       if getEnv("GOSTI_HYPERV_CRED_CACHE").len > 0:
         runArgv.add(@["--", "cmd.exe", "/c", "echo", "JIT-OK"])
 

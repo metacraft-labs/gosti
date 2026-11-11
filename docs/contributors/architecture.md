@@ -337,9 +337,12 @@ A **daemon-less direct-boot** backend (`backends/qemu_boot.nim`). It implements 
   Any failure force-deletes the half-created container.
 - **Trust boundary**: these fields and matching CLI flags are host-controller
   policy. They accept no arbitrary device path/type/mode and must never be
-  populated from guest user-data or workflow input. Over `serve`, possession
-  of the overlay-only bearer token already authorizes the complete host worker
-  CLI, including these flags; the token is an operator secret.
+  populated from guest user-data or workflow input. Over `serve`, the
+  overlay-only bearer token authorizes these flags on `run --ephemeral`, but
+  not the complete worker CLI: the serve exec policy admits only the argv the
+  provider and the crud façade send, and refuses host-path options such as
+  `--mount` and a caller `--user-data` path ([`serve.md`](serve.md), "What
+  the token authorises"). The token is an operator secret.
 - **Tests**: the deterministic subprocess contract pins default-off argv,
   pre-start ordering, implied nesting, every failure-stage cleanup, and the
   authenticated `serve` forwarding path. The separate host-gated roundtrip is
@@ -655,7 +658,12 @@ byte-for-byte identical.
 - **Local** (`gosti crud <verb> …` as a child process): stdout carries
   exactly one line, the envelope, and nothing else. Backend diagnostics, if
   any, go to stderr. The process exit code is the code in the table above.
-- **Remote** (`POST /v1/exec` with `argv = ["crud", "<verb>", …]`): serve
+- **Remote** (`POST /v1/exec` with `argv = ["crud", "<verb>", …]`): every
+  verb except `copy_to_vm`/`copy_from_vm` is reachable, without the options
+  that name a daemon-host path (`--mount`, `--user-data`, `--state-dir`);
+  user-data travels as the request's inline `userData` instead. The serve exec
+  policy answers anything else with `403` and runs nothing ([`serve.md`](serve.md),
+  "What the token authorises"). Serve
   merges the worker's stdout and stderr into NDJSON `log` events, followed by
   a terminal `exit` event that carries the same exit code. The envelope is
   the **last** `log` line, because the CLI prints it after the verb has
@@ -789,8 +797,9 @@ It mirrors the label store that `ephemeral-label` uses:
 6. `/var/lib/gosti/ephemeral/crud`
 
 A serve daemon's worker re-runs the CLI with the daemon's environment. So
-remote calls to one daemon share one store, and a `--state-dir` in the
-forwarded argv names a path on the **daemon** host.
+remote calls to one daemon share one store, which the daemon's environment
+chooses: the serve exec policy refuses a forwarded `--state-dir`, because it
+would name a path on the **daemon** host.
 
 **Records.** There is one JSON file per VM,
 `<store>/<backend-id>/<name>.json`, written with write-then-rename and mode

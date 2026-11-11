@@ -181,11 +181,13 @@ suite "t_gosti_serve_sequential_crud":
 
   test "the exit event is written only after the worker is cleaned up":
     const delayMs = 1500
+    # The daemon's workers take their crud store from the environment: a
+    # forwarded --state-dir is refused by the serve exec policy (SEC-1 G13).
+    putEnv("GOSTI_CRUD_STATE_DIR", work / "order-state")
     let d = startDaemon(work, tokenFile, threads = 2, delayMs = delayMs)
     try:
       let r = execUntilExit(d.port, token,
-        @["crud", "list_vms", "--backend", "mock",
-          "--state-dir", work / "order-state"])
+        @["crud", "list_vms", "--backend", "mock"])
       check r.errors.len == 0
       check r.code == 0
       check r.lines.len == 1
@@ -197,10 +199,10 @@ suite "t_gosti_serve_sequential_crud":
       stopDaemon(d, token)
 
   test "200 back-to-back CRUD requests: no worker stream error":
+    putEnv("GOSTI_CRUD_STATE_DIR", work / "hammer-state")
     let d = startDaemon(work, tokenFile, threads = 3, delayMs = 0)
     try:
-      let state = work / "hammer-state"
-      let base = @["--backend", "mock", "--state-dir", state]
+      let base = @["--backend", "mock"]
       let created = execUntilExit(d.port, token,
         @["crud", "create_vm", "vm1"] & base)
       check created.errors.len == 0

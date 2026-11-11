@@ -152,6 +152,13 @@ test all tests/unit/t_layer_gc.nim
 test all tests/unit/t_design_reprobuild_adapter_section.nim
 test all tests/unit/t_uefi_iso_validator.nim
 test all tests/unit/t_serve_protocol.nim
+# SEC-1 G13: what a serve bearer token may run. The /v1/exec argv allowlist
+# admits the provider's and the crud façade's real argv shapes and refuses
+# other subcommands, host-path options (--mount, --user-data, --state-dir,
+# --output-dir, copy_*), firmware paths outside the public roots, and every
+# bypass spelling; a seeded property ties it to the worker's own parser.
+# Pure, hermetic.
+test all tests/unit/t_serve_exec_policy.nim
 # RA6 enrollment/identity + capability manifest: pure crypto vectors, the
 # capability deciders against fixtures, and the sign/verify state machine.
 test all tests/unit/t_serve_enrollment.nim
@@ -170,6 +177,11 @@ test all tests/e2e/t_gosti_auto_backend_selection.nim
 # RA1 remoting: a remote client drives provision->run->destroy against a
 # `gosti serve` daemon over the authenticated endpoint (noop backend).
 test all tests/e2e/t_gosti_serve_roundtrip.nim
+# SEC-1 G13 end to end: a refused /v1/exec is a 403 with a reason and starts
+# no worker (observed by a spawn log), allowed provider/crud argvs still run,
+# and wire userData is staged by the daemon ahead of the guest argv's `--`.
+# Hermetic (noop / mock backends).
+test all tests/e2e/t_gosti_serve_exec_policy.nim
 # Command names (architecture §6.0): the real CLI installed by the shared
 # layout script is `bin/gosti` alone, its help names `gosti`, and a daemon
 # started as `gosti serve` serves execs. Hermetic (noop backend).
