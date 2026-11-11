@@ -488,7 +488,11 @@ ensure_build_egress
   set -e
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq --no-install-recommends git git-lfs xz-utils ca-certificates fuse3 gawk jq
+  # gcc + libc6-dev: reprobuild's repro exec provisions the C compiler that
+  # compiles a recipe from the system (the debian/12/cloud base does not ship
+  # one). Without it every reprobuild job on this runner fails with a
+  # could-not-provision-the-C-compiler error.
+  apt-get install -y -qq --no-install-recommends git git-lfs xz-utils ca-certificates fuse3 gawk jq gcc libc6-dev
   command -v git
   command -v git-lfs
   command -v gawk
