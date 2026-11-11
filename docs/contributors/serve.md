@@ -70,11 +70,11 @@ runs. The allowlist is the argv the daemon's real clients send:
 | Subcommand | Options admitted | Notes |
 | --- | --- | --- |
 | `provision` | `--backend noop`, `--baseline`, `--log-format` | the provider's noop test recipe only |
-| `run --ephemeral` | `--keep`, `--backend`, `--baseline`, `--guest`, `--base-image`, `--source-image`, `--incus-profile`, `--incus-security-nesting`, `--incus-nested-kvm`, `--cpus`, `--memory-mb`, `--uefi-loader`, `--uefi-nvram-template`, `--ephemeral-prefix`, `--timeout-sec`, `--log-format`; a guest command after `--` | `--ephemeral` is required. UEFI paths must resolve, after symlinks and `..`, to a file under `/nix/store/` or `/usr/share/`. `--ephemeral-prefix` must be a plain name |
+| `run --ephemeral` | `--keep`, `--backend`, `--baseline`, `--guest`, `--base-image`, `--source-image`, `--incus-profile`, `--incus-security-nesting`, `--incus-nested-kvm`, `--cpus`, `--memory-mb`, `--uefi-loader`, `--uefi-nvram-template`, `--ephemeral-prefix`, `--timeout-sec`, `--log-format`; a guest command after `--` | `--ephemeral` is required. UEFI paths must resolve, after symlinks, to a regular file under `/nix/store/` or `/usr/share/`. Images and profiles: see "Image roots and Incus profiles" below. `--ephemeral-prefix` must be a plain name |
 | `ephemeral-destroy` | `--backend`, `--baseline`, `--log-format` | |
 | `ephemeral-label` | `--backend`, `--baseline`, `--label`, `--log-format` | |
 | `ephemeral-list` | `--backend`, `--name`, `--label`, `--log-format` | |
-| `crud <verb>` | `--backend`, `--baseline`, `--source-image`, `--guest`, `--cpus`, `--memory-mb`, `--disk-gb`, `--env`, `--ssh-user`, `--cwd`, `--run-as`, `--timeout`, `--lock-timeout-sec`, `--force`, `--log-format`; guest argv after `--` | every verb except `copy_to_vm` and `copy_from_vm` |
+| `crud <verb>` | `--backend`, `--baseline`, `--source-image`, `--guest`, `--cpus`, `--memory-mb`, `--disk-gb`, `--env`, `--ssh-user`, `--cwd`, `--run-as`, `--timeout`, `--lock-timeout-sec`, `--force`, `--log-format`; guest argv after `--` | every verb except `copy_to_vm` and `copy_from_vm`. `--source-image`: see "Image roots and Incus profiles" below |
 
 Every admitted argv must also name a concrete `--backend`: any backend id
 except `wsl` and `auto`. A WSL distro is not an isolation boundary from its
@@ -101,9 +101,137 @@ not a string match that a spelling can slip past: `argv[0]` is the subcommand
 exactly as written (no global options before it, case-sensitive), a value
 option consumes the next token, `--x=y` is an unknown option, and `crud`'s
 verb is the first positional whether or not it follows `--`.
-`t_serve_exec_policy` checks that against the parser itself: for 40 000
+`t_serve_exec_policy` checks that against the parser itself. For 40 000
 seeded adversarial argvs, nothing the policy admits parses to an option that
-names a host path.
+names a host path, or to an image or Incus profile the host's configuration
+does not admit. This holds both with the default configuration and with
+image roots and a profile list set.
+
+#### Image roots and Incus profiles
+
+Two kinds of option name a resource on the daemon host that the caller would
+otherwise choose freely. Both are checked after the walk above, against what
+the operator configured on `gosti serve`, and refused with `403` before a
+worker starts.
+
+**Golden images** (`--source-image`, and `--base-image` on `run`). How the
+value is checked depends on how the named backend reads it. Every
+`--backend` in the argv is checked, not only the last one the worker keeps,
+so a value admitted for one backend cannot reach another.
+
+| Backend | The image is | Checked |
+| --- | --- | --- |
+| `incus`, `tart-macos`, `tart-linux-arm`, `utm-windows-arm` | a name the hypervisor resolves in its own store (an Incus alias or fingerprint, a Tart VM name or OCI reference, a UTM bundle) | not a path (no leading `/`, `\`, `~`, `.` or drive letter, no `..` component), not an option (no leading `-`: it reaches the `incus`/`tart` CLI as an argument), printable ASCII |
+| `qemu-windows-arm` | a golden directory on the host | the host-path rule below, as a directory, which must hold a qcow2 `windows.qcow2` that resolves inside it |
+| `hyperv` | a golden VHD(X) on the host | the host-path rule, as a VHDX or VHD file |
+| `lima`, `crud` | a Lima YAML template (`limactl create <template>`), whose `mounts:` can share any host directory with the guest | refused: no `--source-image` for `crud --backend lima` via serve |
+| every other backend (`lima` included), `run --ephemeral` | the libvirt clone's qcow2 backing file (`qemu-img create -b <golden> -F qcow2`; every other backend falls through to the libvirt path) | the host-path rule, as a qcow2 file |
+| every other backend, `crud` | `BaselineSpec.sourceImage` for `provisionBaseline` (a qcow2 golden, an installer ISO, a VHD(X)) | the host-path rule, as a qcow2, VHDX, VHD or ISO 9660 file |
+
+The host-path rule is one check, `hostPathReason` in `exec_policy.nim`,
+which UEFI firmware paths also go through. The path must be absolute, with no
+`..` component. A `..` is refused, not normalised, so the policy and the
+backend cannot disagree about which file it names. It must resolve,
+following every symlink, to an existing regular file or a directory, as the
+backend needs. A device node, FIFO or socket is refused, directly or through a
+link, and is never opened. The file's own bytes must carry the backend's disk
+format: `QFI\xfb` for qcow2, `vhdxfile` for VHDX, a `conectix` header or
+footer for VHD, and `CD001` at offset `0x8001` for ISO 9660. The extension is
+not checked. The path may not pass through `/proc`, directly or through any
+symlink on the way (`/dev/fd` and `/dev/stdin` link there): `/proc/<pid>/root`,
+`/proc/<pid>/cwd` and `/proc/self/fd/<n>` are magic links whose `realpath` is
+a string naming a different file in the daemon's namespace than the one the
+worker would open, such as a file inside a container's root filesystem. A
+trailing `/` on a file does not resolve and is refused.
+
+The magic bytes say what a file is, not what else opening it reads, so the
+check also follows what a hypervisor would open with the file
+(`qcow2Refs`, `vhdxParentReason`), whichever format the file sniffs as:
+
+- a qcow2 backing file must itself pass the host-path rule as a qcow2 file,
+  under the same roots, recursively (at most `MaxBackingDepth` = 16 links).
+  QEMU resolves a relative backing name against the directory of the path
+  it opened, as given, and so does the check. Within a backing name a `..`
+  is resolved the way the kernel resolves it, not refused, because the image
+  builder wrote it. A backing format other than `qcow2` (`backing_fmt=raw`
+  would hand the guest any file's bytes verbatim) is refused, as is a name
+  QEMU may parse as a protocol or JSON spec (any `:`). Without this, a
+  format-valid qcow2 whose header names `/etc/shadow` as a raw backing file
+  passes the magic check, and an overlay of it reads as the secret's bytes
+  (falsified with `qemu-img convert`).
+- A qcow2 that uses an external data file (incompatible-feature bit 2, or
+  the data-file header extension) is refused, as is one whose header QEMU
+  would not open (a version other than 2 or 3, a bad cluster size, header
+  extensions or a backing name outside the first cluster).
+- A differencing VHD (footer disk type 4) or VHDX (a parent-locator
+  metadata item) is refused, as is a VHDX whose region and metadata tables
+  cannot be read. Hyper-V goldens are full disks. Only the per-job clones
+  gosti makes from them are differencing disks.
+
+When the operator configured image roots, the resolved path must
+lie under one of them, matched by whole path components (`/srv/img` does not
+hold `/srv/img-old/x.qcow2`). A root that is itself a symlink admits what it
+points to. On Windows, where the path is not resolved through links, a path
+through any reparse point is refused, as is a `\\?\`, `\\.\` or UNC name.
+
+**Incus profiles** (`--incus-profile`). Each value must be an exact,
+case-sensitive match for a name on the profile allowlist, whatever the
+backend.
+
+Configuration (repeatable flags, or the environment when no flag is given;
+a flag replaces the variable, the two are never merged):
+
+| Flag | Environment | Default |
+| --- | --- | --- |
+| `--allow-image-root <dir>` | `GOSTI_SERVE_ALLOW_IMAGE_ROOTS` (a `PATH`-style list) | none: **the location is not bounded** (any readable file that passes the format and reference checks) |
+| `--allow-incus-profile <name>` | `GOSTI_SERVE_ALLOW_INCUS_PROFILES` (comma-separated) | `default` |
+
+A root must be absolute with no `..`. A profile name may not contain spaces,
+`,`, `/`, `\` or NUL. A malformed value stops the daemon at startup, with exit
+code 2. The daemon logs the effective allowlists once it is listening
+(`exec policy: image roots …; incus profiles …`). With no roots, the line says
+so explicitly (`image roots NOT SET …`), so an operator reading the journal
+sees that the location half is open.
+
+**Why these defaults.** They are what the deployed callers need, checked
+against metacraft-labs/nixos-modules at `be58b2e`:
+
+- *Profiles.* garm-provider-gosti (`packages/garm-provider-gosti/src/internal/backend/remote.go`,
+  `ephemeralRecipe`) sends `--incus-profile` only for a remote Incus target,
+  one flag per entry of the provider's `incus_profiles`. That list is rendered
+  from `services.garm.providers.<n>.remote.incusProfiles`
+  (`modules/garm/default.nix`), which defaults to `[ ]`. So a default
+  deployment sends no `--incus-profile` at all, and Incus attaches its own
+  `default` profile. Admitting `default` grants nothing beyond that. A
+  provider that sets `incusProfiles` needs those names on the serve host:
+  `--allow-incus-profile default --allow-incus-profile ci-store`, or, since
+  the `gosti-serve` module fixes `ExecStart`, through the unit's environment,
+  for example `systemd.services.gosti-serve.environment.GOSTI_SERVE_ALLOW_INCUS_PROFILES = "default,ci-store";`.
+  That is fail-closed. A profile nobody listed, including a privileged one
+  made for another purpose, is refused.
+- *Image roots.* The provider sends the pool's image, resolved through the
+  provider config's `images` map (`internal/config/config.go`
+  `ResolveImage`), as both `--base-image` and `--source-image` for every
+  non-noop target. For Incus that is an image alias. For libvirt it is a host
+  path chosen in the deployment, not in nixos-modules: nothing in
+  nixos-modules fixes where goldens live. The `gosti-serve` module has no
+  image directory option, only a free-form `readOnlyPaths`. The live remote
+  libvirt lane (`hms-libvirt`, the central GARM's provider driving `gosti
+  serve` on high-mem-server) clones `/storage/iso/golden-win11-cloudbase-…qcow2`.
+  The gosti-run backends' goldens live under the host's gosti state directory,
+  for example `/private/var/lib/gosti/qemu-windows-arm/golden/…` in
+  `checks/garm-multi-provider.nix`. So the provider's images are not
+  `/nix/store` paths, and no root gosti could ship as a default covers them.
+  A default root would refuse the Windows lane on the next deploy. The
+  default is therefore no location bound, and the format and reference
+  checks are what remain fail-closed: a caller can name a disk image of the
+  right format the daemon user can read, but not a secret, a key, a config
+  file or a device, nor an image whose backing chain or parent leads to one.
+  Setting `--allow-image-root` (or `GOSTI_SERVE_ALLOW_IMAGE_ROOTS`, which
+  needs no nixos-modules change) closes the rest. On high-mem-server that is
+  `/storage/iso`. nixos-modules' `checks/gosti-serve-win-libvirt.nix`, which
+  mirrors that host's wiring, already lists the golden directory in the serve
+  unit's `readOnlyPaths`.
 
 **User-data** reaches a worker only as the request's inline `userData` bytes.
 The daemon writes them to a fresh `0600` file it names itself and inserts
@@ -116,25 +244,49 @@ own authority and is unchanged.
 
 **Blast radius (CRED-3).** The serve bearer token lets its holder create,
 label, list and destroy ephemeral guests and crud VMs on that one host, from
-images, Incus profiles and the fixed nesting/nested-KVM grants the host
-already has, and run commands inside those guests. It cannot run any other
-`gosti` subcommand, mount or copy a host path into a guest, have the daemon
-read a host file it names, or write a host file it names. An attacker who
-holds it gains control of the guests on that host and can use the host's
-guest capacity, not the host itself.
+the golden images under the operator's image roots, the Incus profiles on the
+operator's allowlist and the fixed nesting/nested-KVM grants, and run
+commands inside those guests. It cannot run any other `gosti` subcommand,
+mount or copy a host path into a guest, have the daemon read a host file it
+names except a disk image under the image roots, attach an unlisted
+profile, or write a host file it names. An attacker who holds it gains control
+of the guests on that host and can use the host's guest capacity, not the
+host itself.
 
 Known limits of that sentence, outside what this policy decides:
 
-- **Image references.** For libvirt, Hyper-V and the gosti-run backends,
-  `--source-image`/`--base-image` name a golden image file on the host. A
-  caller can point them at another disk image the daemon user can read. A
-  host-side allowlist of image roots would close this; it needs the
-  deployments' image directories, which live in nixos-modules.
-- **Incus profiles.** `--incus-profile` attaches any profile that already
-  exists on the host, as the provider's configuration chooses. A profile the
-  operator defined for another purpose (a privileged one, say) is reachable
-  with the token. Only profiles that are safe for runner guests should exist
-  on a serve host.
+- **Image roots unset.** With no `--allow-image-root`, which is the default,
+  "under the operator's image roots" weakens to "any file of the backend's
+  disk format the daemon user can read, whose qcow2 backing chain is made of
+  such files". A caller can then boot another lane's golden, or another VM's
+  disk (a per-job qcow2 overlay, which carries that job's data) if the daemon
+  user can read it. That is the open half of G13's first residual, and only
+  image roots close it. Set them on every serve host that runs a path-based
+  backend (see "Why these defaults").
+- **Check, then open.** The policy judges the file when the request
+  arrives. The worker opens the path later. Nothing a caller sends can
+  write a host file. The staged `userData` seed is written by the daemon,
+  once, under a random `0600` name, and a seed shaped as a qcow2 with a
+  backing file is refused by the reference check like any other file. But a
+  file a guest controls can change in between: a raw guest disk (an Incus
+  VM's `root.img` on a `dir` pool, a Lima raw disk) or a file in an Incus
+  container's root filesystem, if the daemon user can reach it. Its bytes
+  could pass the check and then be rewritten into a qcow2 that names a
+  backing file. This is inherent in checking a path and handing the path
+  on. The image roots fix it, because such files are never under them.
+- **What a root holds.** The roots bound where an image and its backing
+  chain are. They do not bound which images in them a caller picks. Keep
+  only goldens in an image root, never a directory a guest or job writes.
+- **Differencing disks are refused, not followed.** A differencing VHD or
+  VHDX is refused outright rather than its parent checked, because Hyper-V
+  goldens are never differencing disks. Other files a backend reads beside
+  a golden (a qemu-windows-arm golden directory's manifest) belong to the
+  golden builder, sit inside the checked directory, and are not inspected.
+- **Image names.** Incus, Tart and UTM names resolve in the hypervisor's own
+  store, so a caller can pick any image already there, such as another
+  lane's Tart VM. The check stops a name from being a path or an option.
+- **Incus profiles** on the allowlist are trusted as a whole. The policy
+  matches names. It does not inspect what a listed profile grants.
 - **The daemon user's own groups.** The policy bounds what gosti does on the
   caller's behalf. It does not bound what the daemon user could do itself:
   `incus-admin` or `libvirtd` membership (granted by nixos-modules'

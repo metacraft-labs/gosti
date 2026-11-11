@@ -94,6 +94,19 @@ type
                                   ## plumbing tests' fixture workers) supplies
                                   ## its own, since the gosti grammar does not
                                   ## describe that worker.
+    allowImageRoots*: seq[string] ## ``serve --allow-image-root <dir>``: the
+                                  ## directories a host-path golden image
+                                  ## (``--source-image``/``--base-image`` for
+                                  ## libvirt, Hyper-V, qemu-windows-arm, crud
+                                  ## disk backends) must resolve under. Empty
+                                  ## ⇒ NO location bound: any regular file
+                                  ## of the backend's disk format whose
+                                  ## backing chain passes the same check
+                                  ## (``ExecPolicyConfig.imageRoots``).
+    allowIncusProfiles*: seq[string] ## ``serve --allow-incus-profile
+                                  ## <name>``: the exact ``--incus-profile``
+                                  ## names admitted. Empty ⇒
+                                  ## ``DefaultIncusProfiles`` (``default``).
 
   ServeContext = ref object
     ## Shared across the acceptor and every worker thread by reference. ``cfg``,
@@ -557,9 +570,11 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
   # What the token may run (SEC-1 G13): refuse anything outside the policy
   # BEFORE user-data is staged or a worker is spawned. The bearer check above
   # only established who is calling.
-  let policy = if ctx.cfg.execPolicy != nil: ctx.cfg.execPolicy
-               else: gostiExecPolicy
-  let refusal = policy(parsed.argv)
+  let refusal =
+    if ctx.cfg.execPolicy != nil: ctx.cfg.execPolicy(parsed.argv)
+    else: gostiExecPolicy(parsed.argv, ExecPolicyConfig(
+      imageRoots: ctx.cfg.allowImageRoots,
+      incusProfiles: ctx.cfg.allowIncusProfiles))
   if refusal.len > 0:
     daemonLog(ctx, "403 exec refused: " & refusal)
     client.sendResponse(403, $(%*{"error": "exec refused by serve policy: " &
@@ -1084,6 +1099,18 @@ proc runServe*(cfg: ServeConfig) =
   daemonLog(ctx, "listening on " & host & ":" & $(boundPort.int) &
             " (worker " &
             (if cfg.workerExe.len > 0: cfg.workerExe else: "self") & ")")
+  if cfg.execPolicy == nil:
+    # What the token may name on this host (the operator's allowlists), so a
+    # 403 for an image or profile can be read against the running config.
+    daemonLog(ctx, "exec policy: image roots " &
+      (if cfg.allowImageRoots.len > 0: cfg.allowImageRoots.join(", ")
+       else: "NOT SET (any location the daemon can read is admitted for a " &
+             "disk image of the backend's format with a checked backing " &
+             "chain; set --allow-image-root or " &
+             "GOSTI_SERVE_ALLOW_IMAGE_ROOTS to bound it)") &
+      "; incus profiles " &
+      (if cfg.allowIncusProfiles.len > 0: cfg.allowIncusProfiles.join(", ")
+       else: DefaultIncusProfiles.join(", ")))
   if ctx.keyId.len > 0:
     # The keyId is the non-secret identity to ENROLL centrally (operator step).
     daemonLog(ctx, "identity keyId " & ctx.keyId &

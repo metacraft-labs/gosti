@@ -342,7 +342,12 @@ A **daemon-less direct-boot** backend (`backends/qemu_boot.nim`). It implements 
   not the complete worker CLI: the serve exec policy admits only the argv the
   provider and the crud façade send, and refuses host-path options such as
   `--mount` and a caller `--user-data` path ([`serve.md`](serve.md), "What
-  the token authorises"). The token is an operator secret.
+  the token authorises"). `--incus-profile` is admitted only for names on the
+  daemon's allowlist (`serve --allow-incus-profile`, default `default`), and
+  `--source-image`/`--base-image` only as an image name (Incus, Tart, UTM) or
+  a disk image under the operator's `--allow-image-root` directories
+  ([`serve.md`](serve.md), "Image roots and Incus profiles"). The token is an
+  operator secret.
 - **Tests**: the deterministic subprocess contract pins default-off argv,
   pre-start ordering, implied nesting, every failure-stage cleanup, and the
   authenticated `serve` forwarding path. The separate host-gated roundtrip is
@@ -661,7 +666,9 @@ byte-for-byte identical.
 - **Remote** (`POST /v1/exec` with `argv = ["crud", "<verb>", …]`): every
   verb except `copy_to_vm`/`copy_from_vm` is reachable, without the options
   that name a daemon-host path (`--mount`, `--user-data`, `--state-dir`);
-  user-data travels as the request's inline `userData` instead. The serve exec
+  user-data travels as the request's inline `userData` instead. A
+  `--source-image` must be a disk image (or, for Incus, Tart and UTM, an image
+  name) that the daemon's image roots admit. The serve exec
   policy answers anything else with `403` and runs nothing ([`serve.md`](serve.md),
   "What the token authorises"). Serve
   merges the worker's stdout and stderr into NDJSON `log` events, followed by
