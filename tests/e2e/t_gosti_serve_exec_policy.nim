@@ -13,6 +13,11 @@
 ##     with a reason, and the worker log does not grow;
 ##   * wire ``userData`` still arrives, staged by the daemon at a path it
 ##     chose, ahead of the guest argv's ``--``;
+##   * with the operator's allowlists set (``ServeConfig.allowImageRoots`` /
+##     ``allowIncusProfiles``, i.e. ``serve --allow-image-root`` /
+##     ``--allow-incus-profile``), a golden image outside the roots, a
+##     device, a link out of a root and a profile off the list are ``403``
+##     with no worker; an image under the root and a listed profile run;
 ##   * ``gosti --remote`` surfaces the refusal as a failing exit.
 ##
 ## The pure policy, including the parser-agreement property, is
@@ -22,6 +27,7 @@
 import std/[json, net, os, osproc, strutils, tempfiles, times, unittest]
 import gosti
 import gosti/cli
+import ../disk_image_fixtures
 
 const SpawnLogEnv = "GOSTI_TEST_SPAWN_LOG"
 
@@ -36,7 +42,7 @@ when isMainModule:
       f.writeLine($(%params[1 .. ^1]))
       f.close()
     quit(runCli(params[1 .. ^1]))
-  elif params.len >= 5 and params[0] == "__serve":
+  elif params.len >= 6 and params[0] == "__serve":
     runServe(ServeConfig(
       listenHost: params[1],
       listenPort: parseInt(params[2]),
@@ -44,7 +50,12 @@ when isMainModule:
       workerExe: getAppFilename(),
       workerArgPrefix: @["__gosti_cli"],
       portFile: params[4],
-      quiet: true))
+      quiet: true,
+      # The operator's allowlists, as `gosti serve --allow-image-root
+      # <params[5]> --allow-incus-profile default --allow-incus-profile
+      # ci-store` sets them.
+      allowImageRoots: @[params[5]],
+      allowIncusProfiles: @["default", "ci-store"]))
     quit(0)
 
 proc waitForPort(portFile: string, timeoutSec = 10.0): int =
@@ -111,8 +122,23 @@ suite "t_gosti_serve_exec_policy":
   putEnv(SpawnLogEnv, spawnLog)
   putEnv("GOSTI_CRUD_STATE_DIR", work / "crud")
   putEnv("GOSTI_EPHEMERAL_STATE_DIR", work / "ephemeral")
+  # The image root, a golden in it, and goldens the caller may NOT name.
+  let imgRoot = work / "images"
+  let elsewhere = work / "elsewhere"
+  createDir(imgRoot)
+  createDir(elsewhere)
+  let golden = imgRoot / "golden.qcow2"
+  writeQcow2(golden)
+  let otherGolden = elsewhere / "other-lane.qcow2"
+  writeQcow2(otherGolden)
+  # Under the root, format-valid, but its backing file is the token: QEMU
+  # would serve the token's bytes as the guest's disk.
+  let backedByToken = imgRoot / "backed-by-token.qcow2"
+  writeQcow2(backedByToken, backing = tokenFile, backingFmt = "raw")
+  let linkOut = imgRoot / "escape.qcow2"
+  createSymlink(otherGolden, linkOut)
   let daemon = startProcess(getAppFilename(),
-    args = @["__serve", "127.0.0.1", "0", tokenFile, portFile],
+    args = @["__serve", "127.0.0.1", "0", tokenFile, portFile, imgRoot],
     options = {poParentStreams})
   let port = waitForPort(portFile)
 
@@ -242,6 +268,65 @@ suite "t_gosti_serve_exec_policy":
         check staged.startsWith(getTempDir() / "gosti-serve" / "userdata")
         check not fileExists(staged)    # removed once the worker exited
       check argv[dd + 1 .. ^1] == @["echo", "hi"]
+
+  test "a golden image outside the image roots is refused, no worker":
+    check checkRefused(@["run", "--ephemeral", "--backend", "libvirt",
+      "--baseline", "garm-img1", "--base-image", otherGolden, "--source-image",
+      otherGolden, "--keep", "--log-format", "json"],
+      "outside the image roots")
+    check checkRefused(@["run", "--ephemeral", "--backend", "libvirt",
+      "--baseline", "garm-img1", "--source-image", linkOut, "--keep"],
+      "outside the image roots")
+    check checkRefused(@["run", "--ephemeral", "--backend", "libvirt",
+      "--baseline", "garm-img1", "--source-image",
+      imgRoot & "/../elsewhere/other-lane.qcow2", "--keep"],
+      "has a '..' component")
+    check checkRefused(@["crud", "create_vm", "img1", "--backend", "mock",
+      "--source-image", "/dev/zero"], "not a regular file")
+    check checkRefused(@["crud", "create_vm", "img1", "--backend", "mock",
+      "--source-image", tokenFile], "outside the image roots")
+    check checkRefused(@["run", "--ephemeral", "--backend", "incus",
+      "--baseline", "garm-img1", "--base-image", "/etc/shadow", "--keep"],
+      "is not an image name")
+    check checkRefused(@["run", "--ephemeral", "--backend", "libvirt",
+      "--baseline", "garm-img1", "--source-image", backedByToken, "--keep"],
+      "'raw' backing file")
+    check checkRefused(@["run", "--ephemeral", "--backend", "libvirt",
+      "--baseline", "garm-img1", "--source-image", "/proc/self/root" & golden,
+      "--keep"], "resolves through /proc")
+
+  test "an Incus profile off the allowlist is refused, no worker":
+    check checkRefused(@["run", "--ephemeral", "--backend", "incus",
+      "--baseline", "garm-prof1", "--base-image", "runner-base",
+      "--incus-profile", "default", "--incus-profile", "privileged",
+      "--keep", "--log-format", "json"], "'privileged' is not allowed")
+
+  test "an image under the root and a listed profile are admitted":
+    let before = spawned(spawnLog).len
+    let create = post(port, token, @["crud", "create_vm", "img-ok",
+      "--backend", "mock", "--source-image", golden])
+    check create.status == 200
+    check create.code == 0
+    check create.lines.len == 1
+    if create.lines.len == 1:
+      check parseJson(create.lines[0])["ok"].getBool
+    let del = post(port, token, @["crud", "delete_vm", "img-ok", "--backend",
+                                  "mock", "--force"])
+    check del.status == 200
+    check del.code == 0
+    # A listed profile passes the policy and reaches the worker, which then
+    # refuses it itself (Incus options need --backend incus), so the test
+    # touches no Incus daemon and creates nothing.
+    let prof = post(port, token, @["run", "--ephemeral", "--backend", "noop",
+      "--incus-profile", "default", "--incus-profile", "ci-store", "--keep",
+      "--log-format", "json"])
+    check prof.status == 200
+    check prof.code != 0
+    let runs = spawned(spawnLog)
+    check runs.len == before + 3
+    if runs.len == before + 3:
+      check golden in runs[before]
+      check "ci-store" in runs[before + 2]
 
   test "gosti --remote reports the refusal as a failing exit":
     check runCli(@["--remote", "127.0.0.1:" & $port, "--auth-token-file",
