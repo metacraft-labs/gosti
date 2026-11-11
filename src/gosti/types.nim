@@ -73,6 +73,17 @@ type
     sourceImage*: string         ## backend-specific reference (OCI ref, ISO URL, VHDX path...)
     cpus*: int                   ## defaults to 2 when zero
     memoryMB*: int               ## defaults to 4096 when zero
+    cpusDefaulted*: bool         ## true when ``cpus`` was filled in by a
+                                 ## default rather than requested by the
+                                 ## caller (the CLI sets it when ``--cpus`` /
+                                 ## ``--vcpu`` is omitted). A backend that
+                                 ## clones an image whose own configuration
+                                 ## already carries a CPU count (Tart) then
+                                 ## keeps the image's count instead of
+                                 ## applying the default.
+    memoryMBDefaulted*: bool     ## Same as ``cpusDefaulted``, for
+                                 ## ``memoryMB`` (``--memory-mb`` /
+                                 ## ``--memory-gb``).
     diskGB*: int                 ## defaults to 50 when zero
     diskGBDefaulted*: bool       ## true when ``diskGB`` was filled in by a
                                  ## default rather than requested by the
