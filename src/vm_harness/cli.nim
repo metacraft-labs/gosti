@@ -492,6 +492,11 @@ Common flags:
                                   the container's limits.cpu (a CPU count)
                                   and limits.memory (MiB) before first start.
                                   Omitted ⇒ the container is uncapped.
+  --cpus/--memory-mb (Tart)       tart-macos / tart-linux-arm: every per-job
+                                  clone gets this CPU count and memory (MiB)
+                                  via `tart set --cpu/--memory` while stopped,
+                                  before it boots; a rejected value fails the
+                                  clone. Omitted ⇒ the golden's own sizing.
   --kernel <path>                 libvirt-only: optional direct-kernel-boot
                                   bzImage for --ephemeral (tiny Linux golden).
   --initrd <path>                 Initramfs for a direct-kernel boot: the
@@ -1121,6 +1126,8 @@ proc applyDefaults*(spec: var BaselineSpec, opts: CliOpts) =
   spec.sourceImage = opts.sourceImage
   spec.cpus = if opts.cpus > 0: opts.cpus else: 2
   spec.memoryMB = if opts.memoryMB > 0: opts.memoryMB else: 4096
+  spec.cpusDefaulted = opts.cpus <= 0
+  spec.memoryMBDefaulted = opts.memoryMB <= 0
   spec.diskGB = effectiveDiskGB(opts)
   spec.diskGBDefaulted = opts.diskGB <= 0
   if opts.guestSet:

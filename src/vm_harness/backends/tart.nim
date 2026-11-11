@@ -108,6 +108,20 @@ type
     diskGBDefaulted*: bool
       ## ``BaselineSpec.diskGBDefaulted``: whether ``requestedDiskGB`` came
       ## from a default rather than from the caller.
+    requestedCpus*: int
+      ## CPU count every per-job clone must have, from ``BaselineSpec.cpus``.
+      ## Applied only when ``cpusDefaulted`` is false; zero keeps the
+      ## golden's count. See ``ensureTartCpuMemory``.
+    cpusDefaulted*: bool
+      ## ``BaselineSpec.cpusDefaulted``: whether ``requestedCpus`` came from
+      ## a default rather than from the caller.
+    requestedMemoryMB*: int
+      ## Memory (MiB) every per-job clone must have, from
+      ## ``BaselineSpec.memoryMB``. Applied only when ``memoryMBDefaulted`` is
+      ## false; zero keeps the golden's size. See ``ensureTartCpuMemory``.
+    memoryMBDefaulted*: bool
+      ## ``BaselineSpec.memoryMBDefaulted``: whether ``requestedMemoryMB``
+      ## came from a default rather than from the caller.
 
 const
   CirrusLabsMacosGolden* = "ghcr.io/cirruslabs/macos-tahoe-base:latest"
@@ -505,6 +519,45 @@ proc ensureTartDiskSize*(b: TartBackend, name: string): bool =
         " failed: " & r.stdout & r.stderr)
     return true
 
+proc tartCpuMemorySetArgs*(b: TartBackend, name: string): seq[string] =
+  ## The ``tart set`` argv that gives clone ``name`` the explicitly
+  ## requested CPU count and memory size, or an empty seq when neither was
+  ## requested. A DEFAULTED value is not a request: the CLI fills in 2 CPUs /
+  ## 4096 MiB when ``--cpus`` / ``--memory-mb`` are omitted, and applying
+  ## those would shrink a golden configured larger (the cirruslabs Linux
+  ## golden ships 4 CPUs), so an omitted flag keeps the golden's sizing.
+  ##
+  ## Tart's ``--memory`` is in "megabytes" that it multiplies by 1024 * 1024
+  ## (``Sources/tart/Commands/Set.swift``,
+  ## https://github.com/cirruslabs/tart), i.e. MiB — the unit of
+  ## ``BaselineSpec.memoryMB``.
+  var flags: seq[string] = @[]
+  if not b.cpusDefaulted and b.requestedCpus > 0:
+    flags.add(@["--cpu", $b.requestedCpus])
+  if not b.memoryMBDefaulted and b.requestedMemoryMB > 0:
+    flags.add(@["--memory", $b.requestedMemoryMB])
+  if flags.len > 0:
+    result = @[b.tartCmd, "set", name] & flags
+
+proc ensureTartCpuMemory*(b: TartBackend, name: string): bool =
+  ## Give a STOPPED clone the explicitly requested CPU count and memory size
+  ## before it boots (``tart set`` edits ``config.json``, which ``tart run``
+  ## reads at start). Returns whether anything was changed. Raises when Tart
+  ## rejects the change — for example a count below the guest's minimum or
+  ## above the host's maximum — so that a clone never boots silently at the
+  ## golden's size; the caller owns the clone and must delete it.
+  ##
+  ## Applies to macOS and Linux guests alike: unlike a grown disk, a changed
+  ## CPU count or memory size needs nothing from the guest.
+  let argv = b.tartCpuMemorySetArgs(name)
+  if argv.len == 0:
+    return false
+  let r = runProcessCapture(argv, timeoutSec = 30)
+  if r.exitCode != 0:
+    raise newVmHarnessError($b.id, lpRevert,
+      argv[1 .. ^1].join(" ") & " failed: " & r.stdout & r.stderr)
+  true
+
 proc runTartVmInBackground*(b: TartBackend, name: string): int =
   ## Spawn ``tart run --no-graphics <name>`` as a detached background
   ## process and return the child's PID. The caller (revertToBaseline)
@@ -759,6 +812,10 @@ method provisionBaseline*(b: TartBackend, spec: BaselineSpec) =
     b.ephemeralPrefix = spec.backendOptions["ephemeralPrefix"]
   b.requestedDiskGB = spec.diskGB
   b.diskGBDefaulted = spec.diskGBDefaulted
+  b.requestedCpus = spec.cpus
+  b.cpusDefaulted = spec.cpusDefaulted
+  b.requestedMemoryMB = spec.memoryMB
+  b.memoryMBDefaulted = spec.memoryMBDefaulted
   if b.goldenImage.len == 0:
     raise newVmHarnessError($b.id, lpProvisioning,
       "TartBackend: no golden image configured. Pass --source-image " &
@@ -790,6 +847,7 @@ method revertToBaseline*(b: TartBackend, baselineName: string): VmHandle =
   b.cloneTartVm(b.goldenImage, ephemeral)
   var diskGrown = false
   try:
+    discard b.ensureTartCpuMemory(ephemeral)
     diskGrown = b.ensureTartDiskSize(ephemeral)
   except CatchableError:
     b.deleteTartVm(ephemeral)

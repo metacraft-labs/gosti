@@ -238,6 +238,7 @@ Cleanup *never raises* — `stopAndCleanup` swallows errors and logs them. Every
 - **File transfer**: `scp` over SSH for small payloads; `tart --dir <name>=<host-path>:<guest-path>` for larger shared folders.
 - **Provisioning**: `tart pull <golden-image-ref>` (cirruslabs golden or our own AH-branded golden). Stored in `~/.tart/cache/OCIs/`.
 - **Revert**: `tart stop <ephemeral> && tart delete <ephemeral> && tart clone <golden-image-ref> <ephemeral> && tart run --no-graphics <ephemeral> &` + SSH-ready poll. Tart's clone is CoW APFS — fast but not snapshot-fast.
+- **Sizing**: between `tart clone` and `tart run`, while the clone is stopped, an explicitly requested `BaselineSpec.cpus` / `memoryMB` (`--cpus`, `--memory-mb`) is applied with `tart set <ephemeral> --cpu <N> --memory <MiB>`, and a Linux clone's disk is grown with `tart set --disk-size` (see `--disk-gb`). A value that is only the CLI default (`cpusDefaulted` / `memoryMBDefaulted`) is not applied, so the clone keeps the golden's own CPU count and memory. A `tart set` that fails deletes the clone and fails the revert; the clone never boots at the golden's size in place of the requested one.
 - **Auth**: cirruslabs golden defaults to admin/admin password SSH. AH-branded goldens (M15-M17) may flip to key-only.
 - **Cleanup**: `tart stop <ephemeral> && tart delete <ephemeral>` in `finally`. Stale-ephemeral cleanup at session start: `tart list` and delete any `repro-vm-*` left from prior aborted runs.
 
