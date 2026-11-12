@@ -758,9 +758,13 @@ suite "t_serve_exec_policy: path spellings":
                     cfg)
       check refusedWith(runImg("libvirt", "/" & repeat("a/", 3000) & "x"),
                         "does not resolve", cfg)
-    let odd = imgRoot / "g\xff\xfe.qcow2"
-    writeQcow2(odd)
-    check allowed(runImg("libvirt", odd), hostPolicy)
+    # A name that is not valid UTF-8 must still be judged by its bytes. APFS
+    # refuses to create such a name at all (EILSEQ), so on macOS there is no
+    # such file for the policy to be asked about, and nothing to test.
+    when not defined(macosx):
+      let odd = imgRoot / "g\xff\xfe.qcow2"
+      writeQcow2(odd)
+      check allowed(runImg("libvirt", odd), hostPolicy)
 
   test "a file spelled as a directory is refused before resolution":
     # BSD ``realpath`` (macOS) resolves ``f/`` to ``f``; Linux's fails with

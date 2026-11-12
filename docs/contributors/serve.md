@@ -145,7 +145,7 @@ namespace than the one the worker would open, such as a file inside a
 container's root filesystem. `/dev/fd` is a symlink to `/proc/self/fd` on
 Linux and an `fdesc` mount on macOS, where `stat("/dev/fd/0")` reports the
 daemon's own stdin; either way it names the opening process's file. A file
-path ending in `/` or `/.` is refused as not resolving to a file
+path ending in `/`, `/.` or `/..` is refused as not resolving to a file
 before it is resolved: the backend's `open` fails with `ENOTDIR`, but macOS's
 `realpath` drops the trailing `/` and would accept it.
 
