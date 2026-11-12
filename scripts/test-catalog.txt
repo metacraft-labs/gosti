@@ -165,7 +165,7 @@ test all tests/unit/t_serve_protocol.nim
 # --output-dir, copy_*), firmware paths outside the public roots, and every
 # bypass spelling; a seeded property ties it to the worker's own parser.
 # Pure, hermetic.
-test all tests/unit/t_serve_exec_policy.nim
+test posix tests/unit/t_serve_exec_policy.nim
 # RA6 enrollment/identity + capability manifest: pure crypto vectors, the
 # capability deciders against fixtures, and the sign/verify state machine.
 test all tests/unit/t_serve_enrollment.nim
