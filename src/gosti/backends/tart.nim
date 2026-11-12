@@ -36,6 +36,7 @@
 import std/[json, os, osproc, options, streams, strtabs,
             strutils, tables, times]
 import ../types
+import ../ephemeral_names
 import ../auto
 import ../disk_growth
 export disk_growth
@@ -787,11 +788,20 @@ method provisionBaseline*(b: TartBackend, spec: BaselineSpec) =
   ##    ``--baseline`` does *not* reach this field — ``cli.nim`` routes it to
   ##    ``BaselineSpec.name`` — so a caller that means "use this image" must
   ##    pass ``--source-image``.
-  ## 2. Reap any stale ``repro-vm-tart-*`` ephemerals left over from
-  ##    prior aborted runs. The same cleanup is invoked by
+  ## 2. Reap any stale ephemerals THIS prefix minted
+  ##    (``<prefix>-<epoch-ms>-<pid>``, see ``ephemeral_names``) left over
+  ##    from prior aborted runs. The same cleanup is invoked by
   ##    ``stopAndCleanup`` so the matched-pair contract holds, but doing
   ##    it again here protects against the case where a previous run was
   ##    SIGKILL'd before the ``finally`` block could fire.
+  ##
+  ##    The match is ``ownsEphemeralName``, never a bare ``startsWith``: on a
+  ##    host shared by several controllers the default prefix
+  ##    ``repro-vm-tart-linux`` is a prefix of every other instance's
+  ##    ``repro-vm-tart-linux-garm-<id>-…``, and a ``startsWith`` reap from
+  ##    one central-GARM create deleted every running per-host CI guest on
+  ##    m3 (2026-11-12). ``run --ephemeral`` additionally scopes the prefix
+  ##    to its instance (``instanceEphemeralPrefix``).
   ##
   ##    This reap enumerates through ``tart list`` and therefore CANNOT see a
   ##    VM directory that has no ``disk.img`` — the residue of a clone that
@@ -824,7 +834,7 @@ method provisionBaseline*(b: TartBackend, spec: BaselineSpec) =
       "image can never be silently replaced by another one.")
   # Reap stale ephemerals.
   for v in b.listTartVms():
-    if v.startsWith(b.ephemeralPrefix):
+    if ownsEphemeralName(b.ephemeralPrefix, v):
       b.stopTartVm(v)
       b.deleteTartVm(v)
   # Pull the golden.
@@ -836,8 +846,8 @@ method revertToBaseline*(b: TartBackend, baselineName: string): VmHandle =
   ##
   ## The ephemeral name is ``<prefix>-<epoch-ms>-<pid>`` so concurrent
   ## sessions on the same host don't collide.
-  let ephemeral = b.ephemeralPrefix & "-" & $int(epochTime() * 1000) &
-                  "-" & $getCurrentProcessId()
+  let ephemeral = ephemeralName(b.ephemeralPrefix, int64(epochTime() * 1000),
+                                getCurrentProcessId())
   # Defensive: if a VM with this name somehow exists, nuke it first.
   let existing = b.listTartVms()
   if ephemeral in existing:

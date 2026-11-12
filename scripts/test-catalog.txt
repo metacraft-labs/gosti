@@ -129,6 +129,10 @@ test all tests/unit/t_tart_disk_resize.nim
 # --cpu/--memory` before boot; an omitted (defaulted) flag keeps the golden's
 # sizing, and a rejected value deletes the clone instead of booting it.
 test all tests/unit/t_tart_cpu_memory.nim
+# `run --ephemeral` on tart/utm reaps only its own instance's stale clones:
+# with no --ephemeral-prefix the prefix is scoped to --baseline, and the reap
+# matches only `<prefix>-<ms>-<pid>`, never another instance's running guest.
+test all tests/unit/t_ephemeral_reap_scope.nim
 # The same disk-size rules for libvirt (overlay + qcow2 import), UTM and
 # Hyper-V, and the shared in-guest growth (Resize-Partition / growpart),
 # with real qemu-img; then the Windows-ARM QEMU per-job path end to end.

@@ -17,6 +17,8 @@ when defined(posix):
 elif defined(windows):
   import std/winlean
 import ../types
+import ../ephemeral_names
+export ephemeralName
 import ../qmp
 export qmp
 import ../auto
@@ -438,9 +440,6 @@ proc requireWindowsArmGolden*(dir: string): string =
       "completion marker. Point at a directory a golden build finished " &
       "into, or rebuild.")
   absolutePath(base)
-
-proc ephemeralName*(prefix: string, epochMs: int64, pid: int): string =
-  prefix & "-" & $epochMs & "-" & $pid
 
 proc ephemeralDirFor*(stateDir, name: string): string =
   stateDir / "instances" / name
