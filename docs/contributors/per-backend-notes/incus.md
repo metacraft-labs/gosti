@@ -144,13 +144,33 @@ the policy is attached. If device attachment or access convergence fails, the
 half-created container is force-deleted. With both flags absent, the original
 `incus launch` command sequence is unchanged.
 
+### Operator-controlled shared build stores (PM2 / PM3)
+
+- `--incus-share-host-nix-store` attaches host `/nix/store` read-only
+  (device `nixstore`) and `/nix/var/nix/daemon-socket` (device `nixdaemon`)
+  before the first start. After the start, and before the runner bootstrap is
+  delivered, it writes `/usr/local/bin/nix*` wrappers (`exec <host nix bin
+  dir>/<tool>` with `NIX_REMOTE=daemon`) and runs `nix --version` through
+  them. The host client is `/run/current-system/sw/bin/nix` resolved into
+  `/nix/store`; a client that resolves elsewhere fails the create before
+  anything is made. The wrapper set and body are the ones nixos-modules'
+  local Incus provider writes (`shared_nix_client.sh`).
+- `--incus-reprobuild-store <dir>` attaches that host directory read-write
+  (device `reprostore`) at `--incus-reprobuild-store-guest-path` (default:
+  the same path).
+
+Both take the same stopped `init -> device -> start` path as the capability
+flags above, and a failure in any step force-deletes the container.
+
 These are **controller/operator privileges**, not workflow inputs. A local CLI
 caller already has access to the Incus administrative socket. A remote caller
 must possess the `gosti serve` bearer token and reach its overlay-only
 endpoint; that token already authorizes the full worker CLI, so it must be held
 only by the fleet controller/operator and never exposed to a guest, workflow,
-or user-data template. The flags do not accept a host path, device type, mode,
-or arbitrary Incus key. `user-data` remains guest content and cannot select
+or user-data template. The capability flags and `--incus-share-host-nix-store`
+do not accept a host path, device type, mode, or arbitrary Incus key; the one
+host path, `--incus-reprobuild-store`, must be on the serve daemon's
+`--allow-incus-reprobuild-store` list when it arrives over `gosti serve`. `user-data` remains guest content and cannot select
 host privileges.
 
 ## Linux runner image + cloud-init JIT injection

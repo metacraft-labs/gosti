@@ -70,7 +70,7 @@ runs. The allowlist is the argv the daemon's real clients send:
 | Subcommand | Options admitted | Notes |
 | --- | --- | --- |
 | `provision` | `--backend noop`, `--baseline`, `--log-format` | the provider's noop test recipe only |
-| `run --ephemeral` | `--keep`, `--backend`, `--baseline`, `--guest`, `--base-image`, `--source-image`, `--incus-profile`, `--incus-security-nesting`, `--incus-nested-kvm`, `--cpus`, `--memory-mb`, `--uefi-loader`, `--uefi-nvram-template`, `--ephemeral-prefix`, `--timeout-sec`, `--log-format`; a guest command after `--` | `--ephemeral` is required. UEFI paths must resolve, after symlinks, to a regular file under `/nix/store/` or `/usr/share/`. Images and profiles: see "Image roots and Incus profiles" below. `--ephemeral-prefix` must be a plain name |
+| `run --ephemeral` | `--keep`, `--backend`, `--baseline`, `--guest`, `--base-image`, `--source-image`, `--incus-profile`, `--incus-security-nesting`, `--incus-nested-kvm`, `--incus-share-host-nix-store`, `--incus-reprobuild-store`, `--incus-reprobuild-store-guest-path`, `--cpus`, `--memory-mb`, `--uefi-loader`, `--uefi-nvram-template`, `--ephemeral-prefix`, `--timeout-sec`, `--log-format`; a guest command after `--` | `--ephemeral` is required. UEFI paths must resolve, after symlinks, to a regular file under `/nix/store/` or `/usr/share/`. Images, profiles and the reprobuild store: see "Image roots and Incus profiles" below. `--ephemeral-prefix` must be a plain name |
 | `ephemeral-destroy` | `--backend`, `--baseline`, `--log-format` | |
 | `ephemeral-label` | `--backend`, `--baseline`, `--label`, `--log-format` | |
 | `ephemeral-list` | `--backend`, `--name`, `--label`, `--log-format` | |
@@ -190,8 +190,9 @@ a flag replaces the variable, the two are never merged):
 | --- | --- | --- |
 | `--allow-image-root <dir>` | `GOSTI_SERVE_ALLOW_IMAGE_ROOTS` (a `PATH`-style list) | none: **the location is not bounded** (any readable file that passes the format and reference checks) |
 | `--allow-incus-profile <name>` | `GOSTI_SERVE_ALLOW_INCUS_PROFILES` (comma-separated) | `default` |
+| `--allow-incus-reprobuild-store <dir>` | `GOSTI_SERVE_ALLOW_INCUS_REPROBUILD_STORES` (a `PATH`-style list) | `/var/lib/reprobuild/shared-store` |
 
-A root must be absolute with no `..`. A profile name may not contain spaces,
+A root or a reprobuild store must be absolute with no `..`. A profile name may not contain spaces,
 `,`, `/`, `\` or NUL. A malformed value stops the daemon at startup, with exit
 code 2. The daemon logs the effective allowlists once it is listening
 (`exec policy: image roots …; incus profiles …`). With no roots, the line says
@@ -214,6 +215,15 @@ against metacraft-labs/nixos-modules at `be58b2e`:
   for example `systemd.services.gosti-serve.environment.GOSTI_SERVE_ALLOW_INCUS_PROFILES = "default,ci-store";`.
   That is fail-closed. A profile nobody listed, including a privileged one
   made for another purpose, is refused.
+- *Reprobuild store.* `--incus-reprobuild-store <dir>` mounts a HOST
+  directory read-write into the guest, so its value is compared, verbatim,
+  against this list and a caller may never choose it. The default is the
+  conventional location of the host's shared reprobuild CAS (the PM3 dataset
+  infra materialises), which is the only value garm-provider-gosti sends
+  unless its operator sets `remote.incusReprobuildStore` to something else.
+  `--incus-share-host-nix-store` takes no value: the paths it shares
+  (`/nix/store` read-only, `/nix/var/nix/daemon-socket`) are fixed, like the
+  `/dev/kvm` device of `--incus-nested-kvm`.
 - *Image roots.* The provider sends the pool's image, resolved through the
   provider config's `images` map (`internal/config/config.go`
   `ResolveImage`), as both `--base-image` and `--source-image` for every

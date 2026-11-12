@@ -107,6 +107,11 @@ type
                                   ## <name>``: the exact ``--incus-profile``
                                   ## names admitted. Empty ⇒
                                   ## ``DefaultIncusProfiles`` (``default``).
+    allowIncusReprobuildStores*: seq[string] ## ``serve
+                                  ## --allow-incus-reprobuild-store <dir>``:
+                                  ## the exact ``--incus-reprobuild-store``
+                                  ## directories admitted. Empty ⇒
+                                  ## ``DefaultIncusReprobuildStores``.
 
   ServeContext = ref object
     ## Shared across the acceptor and every worker thread by reference. ``cfg``,
@@ -574,7 +579,8 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
     if ctx.cfg.execPolicy != nil: ctx.cfg.execPolicy(parsed.argv)
     else: gostiExecPolicy(parsed.argv, ExecPolicyConfig(
       imageRoots: ctx.cfg.allowImageRoots,
-      incusProfiles: ctx.cfg.allowIncusProfiles))
+      incusProfiles: ctx.cfg.allowIncusProfiles,
+      incusReprobuildStores: ctx.cfg.allowIncusReprobuildStores))
   if refusal.len > 0:
     daemonLog(ctx, "403 exec refused: " & refusal)
     client.sendResponse(403, $(%*{"error": "exec refused by serve policy: " &
@@ -1110,7 +1116,11 @@ proc runServe*(cfg: ServeConfig) =
              "GOSTI_SERVE_ALLOW_IMAGE_ROOTS to bound it)") &
       "; incus profiles " &
       (if cfg.allowIncusProfiles.len > 0: cfg.allowIncusProfiles.join(", ")
-       else: DefaultIncusProfiles.join(", ")))
+       else: DefaultIncusProfiles.join(", ")) &
+      "; incus reprobuild stores " &
+      (if cfg.allowIncusReprobuildStores.len > 0:
+         cfg.allowIncusReprobuildStores.join(", ")
+       else: DefaultIncusReprobuildStores.join(", ")))
   if ctx.keyId.len > 0:
     # The keyId is the non-secret identity to ENROLL centrally (operator step).
     daemonLog(ctx, "identity keyId " & ctx.keyId &

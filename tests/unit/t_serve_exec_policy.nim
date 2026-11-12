@@ -893,6 +893,57 @@ suite "t_serve_exec_policy: Incus profiles":
       "--baseline", "j", "--incus-profile", "--", "--", "true"],
       "may not take '--'")
 
+suite "t_serve_exec_policy: Incus shared build stores":
+  proc withStores(extra: varargs[string]): seq[string] =
+    result = @["run", "--ephemeral", "--backend", "incus", "--baseline",
+               "garm-a1", "--base-image", "runner-base",
+               "--incus-security-nesting", "--incus-nested-kvm"]
+    for e in extra: result.add(e)
+    result.add(@["--cpus", "6", "--memory-mb", "24576", "--keep",
+                 "--log-format", "json"])
+
+  test "the fixed Nix store share is a switch and is admitted":
+    check allowed(withStores("--incus-share-host-nix-store"))
+
+  test "the default reprobuild-store allowlist is exactly the PM3 location":
+    check DefaultIncusReprobuildStores == ["/var/lib/reprobuild/shared-store"]
+    check allowed(withStores("--incus-share-host-nix-store",
+      "--incus-reprobuild-store", "/var/lib/reprobuild/shared-store",
+      "--incus-reprobuild-store-guest-path", "/srv/repro-store"))
+    # Checked verbatim: the worker gets the same text the policy saw.
+    for bad in ["/", "/etc", "/var/lib/reprobuild",
+                "/var/lib/reprobuild/shared-store/",
+                "/var/lib/reprobuild//shared-store",
+                "/var/lib/reprobuild/shared-store/../..",
+                "/var/lib/reprobuild/shared-store/cas"]:
+      check refusedWith(withStores("--incus-reprobuild-store", bad),
+                        "is not allowed via serve")
+
+  test "a configured reprobuild-store allowlist replaces the default":
+    let only = ExecPolicyConfig(incusReprobuildStores: @["/srv/cas"])
+    check allowed(withStores("--incus-reprobuild-store", "/srv/cas"), only)
+    check refusedWith(withStores("--incus-reprobuild-store",
+      "/var/lib/reprobuild/shared-store"), "is not allowed", only)
+
+  test "--allow-incus-reprobuild-store parses, repeats and falls back to env":
+    let o = parseCliOpts(@["serve", "--allow-incus-reprobuild-store",
+      "/srv/cas/", "--allow-incus-reprobuild-store", "/var/lib/x"])
+    check o.allowIncusReprobuildStores == @["/srv/cas", "/var/lib/x"]
+    for bad in [@["serve", "--allow-incus-reprobuild-store", "rel"],
+                @["serve", "--allow-incus-reprobuild-store", "/a/../b"],
+                @["serve", "--allow-incus-reprobuild-store"]]:
+      expect ValueError:
+        discard parseCliOpts(bad)
+    putEnv("GOSTI_SERVE_ALLOW_INCUS_REPROBUILD_STORES", "/srv/a:/srv/b")
+    defer: delEnv("GOSTI_SERVE_ALLOW_INCUS_REPROBUILD_STORES")
+    var fromEnv = parseCliOpts(@["serve"])
+    serveAllowlistsFromEnv(fromEnv)
+    check fromEnv.allowIncusReprobuildStores == @["/srv/a", "/srv/b"]
+    var flagged = parseCliOpts(@["serve",
+      "--allow-incus-reprobuild-store", "/srv/c"])
+    serveAllowlistsFromEnv(flagged)
+    check flagged.allowIncusReprobuildStores == @["/srv/c"]
+
 suite "t_serve_exec_policy: serve allowlist configuration":
   test "--allow-image-root / --allow-incus-profile parse and repeat":
     let o = parseCliOpts(@["serve", "--listen", "127.0.0.1:0",
