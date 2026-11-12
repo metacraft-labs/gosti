@@ -14,7 +14,8 @@
 ## The vm-harness-run backends are not like that, and the difference is why
 ## remote driving never worked for them. `revertToBaseline` mints the per-job
 ## name itself — `ephemeralName(prefix, epochMs, pid)`, e.g.
-## `repro-vm-qemu-windows-arm-1789745025315-96801` — and the only way to stop
+## `repro-vm-qemu-windows-arm-garm-abc-1789745025315-96801` (the prefix is
+## scoped to the instance, see `ephemeral_names`) — and the only way to stop
 ## the guest is the live handle's `extra`: `qemuPid`, `swtpmPid`, `vmDir`.
 ## None of that is derivable from `--baseline`. The local-exec path never
 ## noticed because it keeps ONE supervising process alive for the instance's

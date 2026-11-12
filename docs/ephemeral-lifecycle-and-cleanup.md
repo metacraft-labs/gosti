@@ -108,6 +108,31 @@ vm-harness prune --ephemeral-prefix <p> [--backend all|tart|qemu-windows-arm]
 - **`--dry-run`** reports what would be reclaimed and deletes nothing.
 - Best-effort: individual failures are skipped, never raised.
 
+### 4.1 The provision-time stale reap is instance-scoped
+
+Unlike `prune`, the tart and utm backends' `provisionBaseline` stops and
+deletes stale clones **without** a liveness check, so its scope must name one
+owner:
+
+- Clones are named `<prefix>-<epoch-ms>-<pid>` (tart snapshots append
+  `-snap-<name>`). The reap matches only that exact shape for its prefix
+  (`ephemeral_names.ownsEphemeralName`), never a bare prefix match, so the
+  default prefix `repro-vm-tart-linux` does not claim
+  `repro-vm-tart-linux-garm-<id>-…`, and `…-garm-ab` does not claim
+  `…-garm-abc-…`.
+- `run --ephemeral` on a vm-harness-run backend (tart-macos, tart-linux-arm,
+  qemu-windows-arm, utm-windows-arm) without `--ephemeral-prefix` uses
+  `<backend prefix>-<--baseline>` (characters outside `[A-Za-z0-9_-]` become
+  `_`). For a GARM instance that is the same prefix the per-host provider
+  passes explicitly, so the reap only ever finds an earlier attempt of the
+  same instance. An explicit `--ephemeral-prefix` is used as given.
+
+Without both rules, on a host where two GARM controllers create guests side by
+side, a create from the controller that sends no prefix stopped and deleted
+every running guest of the other (measured on m3, 2026-11-12). `ephemeral-list`
+and `ephemeral-destroy` are unaffected: they key on `--baseline` and read the
+clone name from the saved handle.
+
 ## 5. Fleet integration (GARM provider)
 
 `garm-provider-vmharness` calls `vm-harness prune` opportunistically after each

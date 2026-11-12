@@ -42,6 +42,7 @@ import ./backends/mock
 {.pop.}
 import ./prune
 import ./ephemeral_handle
+import ./ephemeral_names
 import ./ephemeral_inventory
 import ./layer_gc
 import ./instances
@@ -505,6 +506,8 @@ Common flags:
   --kernel-cmdline <str>          Kernel cmdline for the same two paths.
   --output-dir <path>
   --ephemeral-prefix <prefix>     Backend-specific prefix for ephemeral VMs.
+                                  `run --ephemeral` on tart/utm/qemu-windows-arm
+                                  defaults it to <backend prefix>-<baseline>.
   --env KEY=VAL                   (repeatable)
   --copy-to host:guest            (repeatable)
   --copy-from guest:host          (repeatable)
@@ -1730,6 +1733,48 @@ proc guestOsFor*(id: BackendId): GuestOs =
   else: goLinux
 
 
+proc backendEphemeralPrefix(backend: VmBackend): string =
+  ## The clone-name prefix a vm-harness-run backend is currently configured with
+  ## (its built-in default, or the env override its factory read).
+  if backend of TartBackend: TartBackend(backend).ephemeralPrefix
+  elif backend of UtmBackend: UtmBackend(backend).ephemeralPrefix
+  elif backend of QemuWindowsArmBackend:
+    QemuWindowsArmBackend(backend).ephemeralPrefix
+  else: ""
+
+proc vmRunEphemeralPrefix*(opts: CliOpts, backend: VmBackend): string =
+  ## The clone-name prefix for one `run --ephemeral` instance of a vm-harness-run
+  ## backend. An explicit `--ephemeral-prefix` is used as given (the per-host
+  ## GARM provider passes `repro-vm-tart-<os>-<garm-instance>`). Without one,
+  ## the prefix is scoped to THIS instance:
+  ## `<backend prefix>-<instanceKey(--baseline)>`.
+  ##
+  ## WHY. The tart and utm backends reap, at provision, every existing clone
+  ## their prefix owns. The central GARM's remote provider sends no prefix, so
+  ## this path used to run with the backend default — shared by every
+  ## instance on the host. On m3 (2026-11-12) each central-pool create then
+  ## stopped and deleted every running per-host CI guest, and concurrent
+  ## central instances would have reaped each other. Scoped this way, the
+  ## reap can only find an earlier attempt of the same instance, which is the
+  ## leftover it exists to reclaim. See `ephemeral_names`.
+  if opts.ephemeralPrefix.len > 0:
+    return opts.ephemeralPrefix
+  let base = backendEphemeralPrefix(backend)
+  if base.len == 0:
+    raise newException(ValueError,
+      "run --ephemeral --backend " & opts.backend &
+      ": the backend has no ephemeral prefix to scope to --baseline")
+  instanceEphemeralPrefix(base, opts.baseline)
+
+proc vmRunEphemeralSpec*(opts: CliOpts, backend: VmBackend,
+                         golden: string): BaselineSpec =
+  ## The `BaselineSpec` `run --ephemeral` hands a vm-harness-run backend's
+  ## `provisionBaseline`. Pulled out so the provision → revert sequence the
+  ## command drives is testable against a fake backend command.
+  applyDefaults(result, opts)
+  result.sourceImage = golden
+  result.backendOptions["ephemeralPrefix"] = vmRunEphemeralPrefix(opts, backend)
+
 proc cmdRunEphemeralVmRun(opts: CliOpts): int =
   ## Per-job ephemeral instance for the vm-harness-run backends (tart-macos,
   ## tart-linux-arm, qemu-windows-arm, utm-windows-arm).
@@ -1776,13 +1821,10 @@ proc cmdRunEphemeralVmRun(opts: CliOpts): int =
 
   let backend = newBackend(id)
   let guest = guestOsFor(id)
-  var spec: BaselineSpec
-  applyDefaults(spec, opts)
-  spec.sourceImage = golden
-  if opts.ephemeralPrefix.len > 0:
-    spec.backendOptions["ephemeralPrefix"] = opts.ephemeralPrefix
+  let spec = vmRunEphemeralSpec(opts, backend, golden)
   logEvent(opts.logFormat, "info", "ephemeral vm: provision",
-           {"backend": $id, "name": opts.baseline, "golden": golden})
+           {"backend": $id, "name": opts.baseline, "golden": golden,
+            "ephemeral_prefix": spec.backendOptions["ephemeralPrefix"]})
   backend.provisionBaseline(spec)
   var vm = backend.revertToBaseline(opts.baseline)
   let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 600

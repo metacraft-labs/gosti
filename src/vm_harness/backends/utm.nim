@@ -40,6 +40,7 @@ import ../env_names
 import std/[options, os, osproc, streams, strtabs,
             strutils, tables, times]
 import ../types
+import ../ephemeral_names
 import ../auto
 import ../disk_growth
 export disk_growth
@@ -483,13 +484,22 @@ method provisionBaseline*(b: UtmBackend, spec: BaselineSpec) =
   ##    ``utmctl status``. The actual *build* of the golden is the
   ##    provisioning recipe's job; if the golden isn't present we raise
   ##    so the consumer can fall back to running the recipe.
-  ## 2. Reap any stale ``repro-vm-utm-windows-*`` ephemerals left over
-  ##    from prior aborted runs. Mirrors TartBackend's stale-reap.
+  ## 2. Reap any stale ephemerals THIS prefix minted
+  ##    (``<prefix>-<epoch-ms>-<pid>``) left over from prior aborted runs.
+  ##    Mirrors TartBackend's stale-reap, including its ownership rule
+  ##    (``ephemeral_names.ownsEphemeralName``): a bare ``startsWith`` on a
+  ##    shared default prefix deletes other instances' running guests.
+  ##
+  ## ``BaselineSpec.backendOptions["ephemeralPrefix"]``, when present,
+  ## replaces the backend's prefix, exactly as for TartBackend — that is how
+  ## ``run --ephemeral`` scopes the reap to its own instance.
   ##
   ## ``BaselineSpec.sourceImage``, when non-empty, overrides the
   ## backend's default ``goldenBundleName`` for the rest of the session.
   if spec.sourceImage.len > 0:
     b.goldenBundleName = spec.sourceImage
+  if "ephemeralPrefix" in spec.backendOptions:
+    b.ephemeralPrefix = spec.backendOptions["ephemeralPrefix"]
   b.requestedDiskGB = spec.diskGB
   b.diskGBDefaulted = spec.diskGBDefaulted
   if b.goldenBundleName.len == 0:
@@ -506,7 +516,7 @@ method provisionBaseline*(b: UtmBackend, spec: BaselineSpec) =
       "drag onto the UTM app).")
   # Reap stale ephemerals from prior runs.
   for v in b.listUtmVms():
-    if v.name.startsWith(b.ephemeralPrefix):
+    if ownsEphemeralName(b.ephemeralPrefix, v.name):
       b.stopUtmVm(v.uuid)
       b.deleteUtmVm(v.uuid)
 
@@ -516,8 +526,8 @@ method revertToBaseline*(b: UtmBackend, baselineName: string): VmHandle =
   ##
   ## The ephemeral name is ``<prefix>-<epoch-ms>-<pid>`` so concurrent
   ## sessions on the same host don't collide.
-  let ephemeral = b.ephemeralPrefix & "-" & $int(epochTime() * 1000) &
-                  "-" & $getCurrentProcessId()
+  let ephemeral = ephemeralName(b.ephemeralPrefix, int64(epochTime() * 1000),
+                                getCurrentProcessId())
   # Defensive: if an ephemeral with this exact name already exists
   # (shouldn't, given the timestamp+pid suffix), nuke it first.
   for v in b.listUtmVms():
