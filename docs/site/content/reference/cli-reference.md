@@ -291,5 +291,17 @@ Beyond flags, several backends and recipes read `GOSTI_*` environment variables
 The two Incus capability flags are accepted only with
 `run --ephemeral --backend incus`. They are host privileges selected by a local
 Incus administrator or by the authenticated `gosti serve` fleet controller.
+Through `gosti serve` (and `--remote`), only the subcommands and options in the
+daemon's exec policy are accepted; host-path options such as `--mount`,
+`--user-data` and `--state-dir` are refused there. `--incus-profile` must be
+on the daemon's `--allow-incus-profile` list (default: `default` only), and a
+`--source-image`/`--base-image` file path must be a disk image of the
+backend's format, with no backing file, data file or parent outside the same
+check, under one of the daemon's `--allow-image-root` directories. When none
+is set the location is not bounded, so set the roots on every daemon host
+that serves a path-based backend. The daemon reads the same lists from
+`GOSTI_SERVE_ALLOW_INCUS_PROFILES` (comma-separated) and
+`GOSTI_SERVE_ALLOW_IMAGE_ROOTS` (a `PATH`-style list) when the flags are
+absent.
 They must never be derived from workflow or guest user-data. Their device
 path, type, and mode are intentionally not parameterized.

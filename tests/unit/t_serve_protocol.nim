@@ -128,8 +128,33 @@ suite "unit_serve_protocol":
     check argv == baseArgv
     check path == ""
 
-  test "applyUserData does not double-append when argv already has --user-data":
-    let baseArgv = @["run", "--ephemeral", "--user-data", "/pinned/path"]
-    let (argv, path) = applyUserData(baseArgv, "some bytes", getTempDir())
-    check argv == baseArgv     # untouched — caller pinned its own file
-    check path == ""           # nothing materialized ⇒ nothing to clean up
+  test "applyUserData never defers to a caller-named --user-data path":
+    # SEC-1 G13: the daemon used to keep a caller's own ``--user-data <path>``
+    # and skip staging, so any file the daemon user could read was delivered
+    # into a guest. The wire bytes are now always what the worker gets: a
+    # fresh daemon-staged file, whatever the argv already says (the exec
+    # policy refuses such an argv before this point anyway).
+    let dir = getTempDir() / "gosti-serve-userdata-pinned"
+    let baseArgv = @["run", "--ephemeral", "--user-data", "/etc/shadow"]
+    let (argv, path) = applyUserData(baseArgv, "wire bytes", dir)
+    defer:
+      removeFile(path)
+      try: removeDir(dir) except CatchableError: discard
+    check path.len > 0
+    check path.startsWith(dir)
+    check readFile(path) == "wire bytes"
+    check argv[^2] == "--user-data"
+    check argv[^1] == path
+
+  test "applyUserData stages --user-data before the guest argv's '--'":
+    # Appending after ``--`` would hand the flag to the guest command and the
+    # payload would never reach the worker's own parser.
+    let dir = getTempDir() / "gosti-serve-userdata-dashdash"
+    let baseArgv = @["run", "--ephemeral", "--backend", "incus",
+                     "--baseline", "job-2", "--", "true"]
+    let (argv, path) = applyUserData(baseArgv, "payload", dir)
+    defer:
+      removeFile(path)
+      try: removeDir(dir) except CatchableError: discard
+    check argv == @["run", "--ephemeral", "--backend", "incus",
+                    "--baseline", "job-2", "--user-data", path, "--", "true"]

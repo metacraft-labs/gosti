@@ -42,6 +42,7 @@ import ./backends/mock
 {.pop.}
 import ./prune
 import ./ephemeral_handle
+import ./ephemeral_names
 import ./ephemeral_inventory
 import ./layer_gc
 import ./instances
@@ -266,6 +267,15 @@ type
     execDeadlineSec*: int        ## ``serve --exec-deadline-sec <n>`` — wall
                                  ## clock budget for one ``/v1/exec``; 0 ⇒
                                  ## ``DefaultExecDeadlineSec``.
+    allowImageRoots*: seq[string] ## ``serve --allow-image-root <dir>``
+                                 ## (repeatable): where a host-path golden
+                                 ## image sent over ``/v1/exec`` must resolve.
+                                 ## Else ``$GOSTI_SERVE_ALLOW_IMAGE_ROOTS``.
+    allowIncusProfiles*: seq[string] ## ``serve --allow-incus-profile
+                                 ## <name>`` (repeatable): the
+                                 ## ``--incus-profile`` names ``/v1/exec``
+                                 ## admits. Else
+                                 ## ``$GOSTI_SERVE_ALLOW_INCUS_PROFILES``.
 
 const HelpText = """
 gosti <subcommand> [flags]
@@ -531,6 +541,8 @@ Common flags:
   --kernel-cmdline <str>          Kernel cmdline for the same two paths.
   --output-dir <path>
   --ephemeral-prefix <prefix>     Backend-specific prefix for ephemeral VMs.
+                                  `run --ephemeral` on tart/utm/qemu-windows-arm
+                                  defaults it to <backend prefix>-<baseline>.
   --env KEY=VAL                   (repeatable)
   --copy-to host:guest            (repeatable)
   --copy-from guest:host          (repeatable)
@@ -564,6 +576,7 @@ serve daemon (RA1 remoting — the authenticated network access point):
   gosti serve --listen <host:port> [--auth-token-file <f> | --auth-token <t>]
                    [--worker-exe <path>] [--port-file <f>] [--quiet]
                    [--serve-threads <n>] [--exec-deadline-sec <n>]
+                   [--allow-image-root <dir>]... [--allow-incus-profile <name>]...
                    [--enroll-secret-file <f>] [--identity-ttl-sec <n>]
                    [--host-id <name>]
     Expose the gosti CLI backend ops over a versioned HTTP/JSON RPC
@@ -578,6 +591,22 @@ serve daemon (RA1 remoting — the authenticated network access point):
     bounds ONE exec (default 46800 = 13h, sized above the 12h runner lifetime
     the GARM provider forwards) so a hung guest op cannot hold a slot forever.
     See docs/contributors/serve.md.
+
+  What the token may name on this host (/v1/exec policy):
+  --allow-image-root <dir>        Repeatable. A host-path golden image
+                                  (--source-image/--base-image for libvirt,
+                                  hyperv, qemu-windows-arm and crud disk
+                                  backends) must resolve, after symlinks, under
+                                  one of these, as must every file in a qcow2
+                                  backing chain. Default: NOT SET, so any
+                                  location is admitted (the file must still be
+                                  a disk image of the backend's format whose
+                                  backing chain passes the same check). Also
+                                  $GOSTI_SERVE_ALLOW_IMAGE_ROOTS (path-list).
+  --allow-incus-profile <name>    Repeatable. The exact --incus-profile names
+                                  admitted (replaces the default, `default`).
+                                  Also $GOSTI_SERVE_ALLOW_INCUS_PROFILES
+                                  (comma-separated).
 
   RA6 enrollment / signed capability manifest (GET /v1/manifest):
   --enroll-secret-file <path>     Per-host enrollment secret (prefer over
@@ -657,6 +686,52 @@ proc resolveRecipeDir*(recipeId: string): string =
   raise newException(ValueError,
     &"--recipe '{recipeId}': directory not found. Searched: " &
     candidates.join(", "))
+
+proc checkedImageRoot*(source, root: string): string =
+  ## A ``serve --allow-image-root`` value: absolute, no ``..`` component. A
+  ## relative root would move with the daemon's cwd, and ``..`` would make
+  ## the configured text differ from the directory actually admitted.
+  if root.len == 0 or not root.isAbsolute:
+    raise newException(ValueError,
+      source & " '" & root & "' must be an absolute directory")
+  for part in root.split({'/', '\\'}):
+    if part == "..":
+      raise newException(ValueError,
+        source & " '" & root & "' may not contain a '..' component")
+  if '\0' in root:
+    raise newException(ValueError, source & " contains a NUL byte")
+  root
+
+proc checkedIncusProfile*(source, name: string): string =
+  ## A ``serve --allow-incus-profile`` value: a non-empty name with no
+  ## whitespace, separator or NUL (Incus's own profile-name rule is
+  ## narrower; this only keeps the allowlist unambiguous).
+  if name.len == 0:
+    raise newException(ValueError, source & " requires a non-empty profile name")
+  for c in name:
+    if c in Whitespace or c in {'\0', ',', '/', '\\'}:
+      raise newException(ValueError,
+        source & " '" & name & "' is not a plain profile name")
+  name
+
+proc serveAllowlistsFromEnv*(opts: var CliOpts) =
+  ## Fill the serve allowlists from the environment when no flag set them:
+  ## ``GOSTI_SERVE_ALLOW_IMAGE_ROOTS`` (a ``PATH``-style list) and
+  ## ``GOSTI_SERVE_ALLOW_INCUS_PROFILES`` (comma-separated). A flag replaces
+  ## the variable entirely; the two are never merged. This is how a
+  ## deployment whose unit fixes ``ExecStart`` (nixos-modules
+  ## ``modules/gosti-serve``) can still configure them, through the unit's
+  ## environment. Raises ``ValueError`` on a malformed entry.
+  if opts.allowImageRoots.len == 0:
+    for root in getEnv("GOSTI_SERVE_ALLOW_IMAGE_ROOTS").split(PathSep):
+      if root.strip.len > 0:
+        opts.allowImageRoots.add(
+          checkedImageRoot("GOSTI_SERVE_ALLOW_IMAGE_ROOTS", root.strip))
+  if opts.allowIncusProfiles.len == 0:
+    for name in getEnv("GOSTI_SERVE_ALLOW_INCUS_PROFILES").split(','):
+      if name.strip.len > 0:
+        opts.allowIncusProfiles.add(
+          checkedIncusProfile("GOSTI_SERVE_ALLOW_INCUS_PROFILES", name.strip))
 
 proc parseCliOpts*(args: seq[string]): CliOpts =
   ## Minimal hand-rolled parser. Keeps the binary dependency-free.
@@ -979,6 +1054,19 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       inc i; result.execDeadlineSec = parseInt(args[i]); inc i
       if result.execDeadlineSec < 0:
         raise newException(ValueError, "--exec-deadline-sec must be >= 0")
+    of "--allow-image-root":
+      inc i
+      if i >= args.len:
+        raise newException(ValueError, "--allow-image-root requires a directory")
+      result.allowImageRoots.add(checkedImageRoot("--allow-image-root", args[i]))
+      inc i
+    of "--allow-incus-profile":
+      inc i
+      if i >= args.len:
+        raise newException(ValueError, "--allow-incus-profile requires a profile name")
+      result.allowIncusProfiles.add(
+        checkedIncusProfile("--allow-incus-profile", args[i]))
+      inc i
     of "-h", "--help":
       result.subcommand = "help"
       inc i
@@ -1778,6 +1866,48 @@ proc guestOsFor*(id: BackendId): GuestOs =
   else: goLinux
 
 
+proc backendEphemeralPrefix(backend: VmBackend): string =
+  ## The clone-name prefix a gosti-run backend is currently configured with
+  ## (its built-in default, or the env override its factory read).
+  if backend of TartBackend: TartBackend(backend).ephemeralPrefix
+  elif backend of UtmBackend: UtmBackend(backend).ephemeralPrefix
+  elif backend of QemuWindowsArmBackend:
+    QemuWindowsArmBackend(backend).ephemeralPrefix
+  else: ""
+
+proc vmRunEphemeralPrefix*(opts: CliOpts, backend: VmBackend): string =
+  ## The clone-name prefix for one `run --ephemeral` instance of a gosti-run
+  ## backend. An explicit `--ephemeral-prefix` is used as given (the per-host
+  ## GARM provider passes `repro-vm-tart-<os>-<garm-instance>`). Without one,
+  ## the prefix is scoped to THIS instance:
+  ## `<backend prefix>-<instanceKey(--baseline)>`.
+  ##
+  ## WHY. The tart and utm backends reap, at provision, every existing clone
+  ## their prefix owns. The central GARM's remote provider sends no prefix, so
+  ## this path used to run with the backend default — shared by every
+  ## instance on the host. On m3 (2026-11-12) each central-pool create then
+  ## stopped and deleted every running per-host CI guest, and concurrent
+  ## central instances would have reaped each other. Scoped this way, the
+  ## reap can only find an earlier attempt of the same instance, which is the
+  ## leftover it exists to reclaim. See `ephemeral_names`.
+  if opts.ephemeralPrefix.len > 0:
+    return opts.ephemeralPrefix
+  let base = backendEphemeralPrefix(backend)
+  if base.len == 0:
+    raise newException(ValueError,
+      "run --ephemeral --backend " & opts.backend &
+      ": the backend has no ephemeral prefix to scope to --baseline")
+  instanceEphemeralPrefix(base, opts.baseline)
+
+proc vmRunEphemeralSpec*(opts: CliOpts, backend: VmBackend,
+                         golden: string): BaselineSpec =
+  ## The `BaselineSpec` `run --ephemeral` hands a gosti-run backend's
+  ## `provisionBaseline`. Pulled out so the provision → revert sequence the
+  ## command drives is testable against a fake backend command.
+  applyDefaults(result, opts)
+  result.sourceImage = golden
+  result.backendOptions["ephemeralPrefix"] = vmRunEphemeralPrefix(opts, backend)
+
 proc cmdRunEphemeralVmRun(opts: CliOpts): int =
   ## Per-job ephemeral instance for the gosti-run backends (tart-macos,
   ## tart-linux-arm, qemu-windows-arm, utm-windows-arm).
@@ -1824,13 +1954,10 @@ proc cmdRunEphemeralVmRun(opts: CliOpts): int =
 
   let backend = newBackend(id)
   let guest = guestOsFor(id)
-  var spec: BaselineSpec
-  applyDefaults(spec, opts)
-  spec.sourceImage = golden
-  if opts.ephemeralPrefix.len > 0:
-    spec.backendOptions["ephemeralPrefix"] = opts.ephemeralPrefix
+  let spec = vmRunEphemeralSpec(opts, backend, golden)
   logEvent(opts.logFormat, "info", "ephemeral vm: provision",
-           {"backend": $id, "name": opts.baseline, "golden": golden})
+           {"backend": $id, "name": opts.baseline, "golden": golden,
+            "ephemeral_prefix": spec.backendOptions["ephemeralPrefix"]})
   backend.provisionBaseline(spec)
   var vm = backend.revertToBaseline(opts.baseline)
   let readyTimeout = if opts.timeoutSec > 0: opts.timeoutSec else: 600
@@ -3004,6 +3131,35 @@ proc resolveAuthToken(authToken, authTokenFile: string): string =
     return readFile(authTokenFile).strip()
   getEnv("GOSTI_SERVE_TOKEN").strip()
 
+proc serveConfigFor*(cliOpts: CliOpts, token, host: string,
+                     port: int): ServeConfig =
+  ## The ``ServeConfig`` ``gosti serve`` runs with, from its parsed options:
+  ## everything but the token and the listen address, which ``cmdServe``
+  ## resolves first. The exec-policy allowlists come from the flags, else
+  ## from ``GOSTI_SERVE_ALLOW_IMAGE_ROOTS`` / ``_INCUS_PROFILES``
+  ## (``serveAllowlistsFromEnv``; raises ``ValueError`` on a bad entry).
+  var opts = cliOpts
+  serveAllowlistsFromEnv(opts)
+  ServeConfig(
+    listenHost: host,
+    listenPort: port,
+    token: token,
+    workerExe: opts.workerExe,
+    workerArgPrefix: @[],
+    portFile: opts.portFile,
+    tlsCertFile: opts.tlsCert,
+    tlsKeyFile: opts.tlsKey,
+    quiet: opts.quiet,
+    enrollSecret: opts.enrollSecret,
+    enrollSecretFile: opts.enrollSecretFile,
+    stateDir: opts.stateDir,
+    identityTtlSec: opts.identityTtlSec,
+    hostId: opts.hostId,
+    serveThreads: opts.serveThreads,
+    execDeadlineSec: opts.execDeadlineSec,
+    allowImageRoots: opts.allowImageRoots,
+    allowIncusProfiles: opts.allowIncusProfiles)
+
 proc cmdServe(opts: CliOpts): int =
   ## Run the remoting daemon. Binds an authenticated HTTP/JSON endpoint and
   ## front-ends the local gosti CLI over it (see serve/server.nim).
@@ -3027,23 +3183,11 @@ proc cmdServe(opts: CliOpts): int =
              except ValueError:
                stderr.writeLine("serve: --listen expects host:port")
                return 2
-  let cfg = ServeConfig(
-    listenHost: host,
-    listenPort: port,
-    token: token,
-    workerExe: opts.workerExe,
-    workerArgPrefix: @[],
-    portFile: opts.portFile,
-    tlsCertFile: opts.tlsCert,
-    tlsKeyFile: opts.tlsKey,
-    quiet: opts.quiet,
-    enrollSecret: opts.enrollSecret,
-    enrollSecretFile: opts.enrollSecretFile,
-    stateDir: opts.stateDir,
-    identityTtlSec: opts.identityTtlSec,
-    hostId: opts.hostId,
-    serveThreads: opts.serveThreads,
-    execDeadlineSec: opts.execDeadlineSec)
+  let cfg =
+    try: serveConfigFor(opts, token, host, port)
+    except ValueError as e:
+      stderr.writeLine("gosti serve: " & e.msg)
+      return 2
   try:
     runServe(cfg)
   except CatchableError as e:

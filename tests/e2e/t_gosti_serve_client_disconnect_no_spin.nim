@@ -51,6 +51,13 @@ const
     ## A single spinning handler burns ~1.5 s in the window; three burn ~4.5 s.
   Abandoned = 3
 
+proc fixtureWorkerPolicy(argv: seq[string]): string {.nimcall, gcsafe.} =
+  ## The daemon's worker here is this test's self-exec fixture, not the gosti
+  ## CLI, so the production argv policy (``gostiExecPolicy``) does not describe
+  ## it. Admit exactly the fixture's own verbs.
+  if argv.len > 0 and argv[0] in ["chatty", "quick"]: ""
+  else: "not a fixture verb"
+
 when isMainModule:
   let params = commandLineParams()
   if params.len >= 2 and params[0] == "__work":
@@ -75,6 +82,7 @@ when isMainModule:
       listenHost: params[1], listenPort: parseInt(params[2]),
       token: readFile(params[3]).strip(), workerExe: getAppFilename(),
       workerArgPrefix: @["__work"], portFile: params[4],
+      execPolicy: fixtureWorkerPolicy,
       serveThreads: parseInt(params[5]), quiet: true))
     quit(0)
   elif params.len >= 4 and params[0] == "__abandon":

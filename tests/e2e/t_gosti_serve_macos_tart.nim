@@ -11,10 +11,11 @@
 ## The remote path clones the tart golden into a uniquely-prefixed
 ## ephemeral, boots it, runs an in-guest probe, and tears it down, leaving
 ## NO residual tart VM (``tart list`` no longer reports the prefix). The
-## argv mirrors what ``garm-provider-gosti`` actually sends for a tart
-## instance (``run --backend <tart> --guest linux --baseline <image>
-## --ephemeral-prefix <p> …``), so the serve-driven path is byte-equivalent
-## to the local GARM-driven one.
+## argv follows the remote provider's recipe (``run --ephemeral --backend
+## <tart> --baseline <job> --base-image <image> --source-image <image>``),
+## plus a per-run ``--ephemeral-prefix`` that scopes the residue check, and a
+## guest probe in place of ``--keep``. It is the shape the serve exec policy
+## admits (SEC-1 G13): no ``--output-dir`` and no non-ephemeral ``run``.
 ##
 ## Host-gated (``just test-host``): needs a macOS/Apple-silicon host with a
 ## usable ``tart`` + ``sshpass`` (i.e. m3 — the campaign's macOS/tart host).
@@ -98,7 +99,6 @@ suite "t_gosti_serve_macos_tart":
     let work = createTempDir("gosti-serve-tart-", "")
     let tokenFile = work / "token"
     let portFile = work / "port"
-    let outDir = work / "out"
     let token = "tart-serve-bearer-91ce"
     writeFile(tokenFile, token)
     # A per-run ephemeral prefix so the residue check is scoped to THIS job.
@@ -116,18 +116,18 @@ suite "t_gosti_serve_macos_tart":
 
     test "remote ephemeral tart run: clone -> boot -> probe -> destroy, no residue":
       var logs: seq[string]
-      # Mirror the provider's tart argv: the golden (--source-image) and the
-      # ephemeral-prefix drive the per-job clone; the in-guest probe stands in
-      # for the JIT runner bootstrap. --baseline only names the baseline: a
-      # registry-built tart backend has no default golden and refuses a run
-      # that does not name its image. The macOS golden pull is slow on first
-      # run, so the timeout is generous.
+      # The provider's remote tart recipe: the golden as --base-image /
+      # --source-image, the job as --baseline; ephemeral-prefix scopes the
+      # per-job clone; the in-guest probe stands in for the JIT runner
+      # bootstrap. A registry-built tart backend has no default golden and
+      # refuses a run that does not name its image. The macOS golden pull is
+      # slow on first run, so the timeout is generous.
       let code = client.execStream(
-        @["run", "--backend", backendId, "--guest",
+        @["run", "--ephemeral", "--backend", backendId, "--guest",
           (if useMacos: "macos" else: "linux"),
-          "--baseline", sourceImage, "--source-image", sourceImage,
+          "--baseline", prefix & "-job",
+          "--base-image", sourceImage, "--source-image", sourceImage,
           "--ephemeral-prefix", prefix,
-          "--output-dir", outDir,
           "--timeout-sec", "900", "--", "true"],
         proc(ev: ExecEvent) =
           if ev.kind == ekLog: logs.add(ev.line))

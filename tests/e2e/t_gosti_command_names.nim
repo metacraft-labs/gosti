@@ -79,6 +79,9 @@ suite "t_gosti_command_names":
     let portFile = work / "port"
     let token = "gosti-names-bearer-51d2"
     writeFile(tokenFile, token)
+    # A forwarded --state-dir is refused by the serve exec policy (SEC-1
+    # G13); the daemon's workers take their crud store from the environment.
+    putEnv("GOSTI_CRUD_STATE_DIR", work / "crud")
     let daemon = startProcess(gosti,
       args = @["serve", "--listen", "127.0.0.1:0", "--auth-token-file",
                tokenFile, "--port-file", portFile, "--quiet"],
@@ -86,8 +89,7 @@ suite "t_gosti_command_names":
     try:
       let cl = newServeClient("127.0.0.1:" & $waitForPort(portFile), token)
       var lines: seq[string]
-      let code = cl.execStream(@["crud", "list_vms", "--backend", "noop",
-                                 "--state-dir", work / "crud"],
+      let code = cl.execStream(@["crud", "list_vms", "--backend", "noop"],
         proc(ev: ExecEvent) =
           if ev.kind == ekLog: lines.add(ev.line))
       check code == 0

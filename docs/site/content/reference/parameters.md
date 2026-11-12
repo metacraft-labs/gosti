@@ -129,7 +129,9 @@ cleans up the half-created instance rather than returning a degraded runner.
 
 The caller is part of the trusted host control plane. Locally it already needs
 the Incus administrative socket; remotely it must possess the overlay-only
-`gosti serve` bearer token, which authorizes the complete worker CLI.
+`gosti serve` bearer token. Serve admits only the argv its clients send, and
+only the `--incus-profile` names on the daemon's `--allow-incus-profile` list
+(default: `default`).
 Never expose that token to guests or workflows, and never derive these flags
 from user-data. Device attachment/access failure deletes the half-created
 ephemeral container rather than returning a degraded runner.

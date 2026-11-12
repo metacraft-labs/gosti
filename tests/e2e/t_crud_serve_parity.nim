@@ -96,6 +96,15 @@ suite "t_crud_serve_parity":
     commandFixture(work / "incus", config)
   let fakeIncus = incusAnswers(incusOk)
   putEnv("GOSTI_INCUS_CMD", fakeIncus)
+  # The daemon's crud store. A forwarded ``--state-dir`` names a daemon-host
+  # path, which the serve exec policy refuses (SEC-1 G13), so the daemon's
+  # workers resolve their store from the environment they inherit (§8.6
+  # location chain, step 2). Local runs still pass ``--state-dir``, which
+  # resolves to ``<dir>/crud``; the env var names the store itself, so the
+  # daemon's store is ``remoteStore/crud`` and ``--state-dir remoteStore``
+  # addresses the same one.
+  let remoteStore = work / "remote-store"
+  putEnv("GOSTI_CRUD_STATE_DIR", remoteStore / "crud")
   let daemon = startProcess(
     getAppFilename(),
     args = @["__serve", "127.0.0.1", "0", tokenFile, portFile],
@@ -114,16 +123,15 @@ suite "t_crud_serve_parity":
   proc checkParity(argv: seq[string], wantCode: int,
                    sharedDir = ""): JsonNode =
     ## Run ``crud <argv>`` both ways, assert the contract, return the
-    ## parsed envelope for per-verb shape checks. Each path gets its own
-    ## fresh crud store (design doc §8.6) so a mutating verb starts from the
-    ## same empty state on both sides — unless ``sharedDir`` is given, in
-    ## which case both paths address the same store (a read-only verb then
-    ## proves the two paths SEE the same VMs).
+    ## parsed envelope for per-verb shape checks. Each local run gets its own
+    ## fresh crud store (design doc §8.6); the daemon has its one store
+    ## (``remoteStore``), so the cases are ordered to need no remote reset.
+    ## With ``sharedDir`` (which must be ``remoteStore``) the local run
+    ## addresses the daemon's store, and a read-only verb then proves the two
+    ## paths SEE the same VMs.
     inc caseNo
     let localDir = if sharedDir.len > 0: sharedDir
                    else: work / ("local-" & $caseNo)
-    let remoteDir = if sharedDir.len > 0: sharedDir
-                    else: work / ("remote-" & $caseNo)
     let local = runLocal(@["crud"] & withState(argv, localDir))
     check local.code == wantCode
     check local.stderr == ""
@@ -132,7 +140,7 @@ suite "t_crud_serve_parity":
 
     var remoteLines: seq[string]
     var sawError = false
-    let remoteCode = client.execStream(@["crud"] & withState(argv, remoteDir),
+    let remoteCode = client.execStream(@["crud"] & argv,
       proc(ev: ExecEvent) =
         case ev.kind
         of ekLog: remoteLines.add(ev.line)
@@ -171,16 +179,32 @@ suite "t_crud_serve_parity":
       @["exec", "nope", "--backend", "noop", "--", "echo", "hi"], 3)
     check env["verb"].getStr == "exec"
 
-  test "unknown verb: bad-args (2)":
-    let env = checkParity(@["frob", "--backend", "noop"], 2)
-    check env["error"]["kind"].getStr == "bad-args"
+  proc checkRefusedRemotely(argv: seq[string], fragment: string) =
+    ## A verb the serve exec policy does not admit: the local CLI still
+    ## answers ``bad-args`` (2), while the daemon refuses it with 403 before
+    ## any worker runs — so there is no remote envelope to compare.
+    inc caseNo
+    let local = runLocal(@["crud"] & withState(argv, work / ("local-" & $caseNo)))
+    check local.code == 2
+    check parseJson(local.stdout.strip())["error"]["kind"].getStr == "bad-args"
+    var refusal = ""
+    try:
+      discard client.execStream(@["crud"] & argv, proc(ev: ExecEvent) = discard)
+    except ServeError as e:
+      refusal = e.msg
+    check "unexpected status 403" in refusal
+    check fragment in refusal
 
-  test "unknown backend: bad-args (2)":
-    let env = checkParity(@["list_vms", "--backend", "no-such-backend"], 2)
-    check env["error"]["kind"].getStr == "bad-args"
+  test "unknown verb: bad-args locally, refused by serve":
+    checkRefusedRemotely(@["frob", "--backend", "noop"], "crud verb 'frob'")
 
-  test "missing verb: bad-args (2)":
-    discard checkParity(@[], 2)
+  test "unknown backend: bad-args locally, refused by serve":
+    # The serve exec policy admits only concrete backend ids (SEC-1 G13).
+    checkRefusedRemotely(@["list_vms", "--backend", "no-such-backend"],
+                         "--backend 'no-such-backend' is not allowed")
+
+  test "missing verb: bad-args locally, refused by serve":
+    checkRefusedRemotely(@[], "requires a verb")
 
   test "list_images (incus): ok, byte-identical over serve":
     let env = checkParity(@["list_images", "--backend", "incus"], 0)
@@ -209,12 +233,13 @@ suite "t_crud_serve_parity":
 
   test "multi-invocation: local and serve calls share one crud store":
     # §8.6: a VM created by one call is visible to later calls, whichever
-    # path each call takes. Both paths resolve the same --state-dir here
-    # (loopback: the daemon host is this host).
-    let shared = work / "shared"
+    # path each call takes. Local calls name the daemon's own store with
+    # --state-dir (loopback: the daemon host is this host); serve calls use
+    # the store the daemon resolves for itself.
+    let shared = remoteStore
     proc remote(argv: seq[string]): (int, JsonNode) =
       var lines: seq[string]
-      let code = client.execStream(@["crud"] & withState(argv, shared),
+      let code = client.execStream(@["crud"] & argv,
         proc(ev: ExecEvent) =
           if ev.kind == ekLog: lines.add(ev.line))
       (code, parseJson(lines[^1]))

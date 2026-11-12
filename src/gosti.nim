@@ -49,6 +49,7 @@ import ./gosti/backends/incus
 import ./gosti/serve/protocol
 import ./gosti/serve/http
 import ./gosti/serve/server
+import ./gosti/serve/exec_policy
 import ./gosti/serve/client
 import ./gosti/serve/hmac
 import ./gosti/serve/capability
@@ -81,6 +82,7 @@ export incus
 export protocol
 export http
 export server
+export exec_policy
 export client
 export hmac
 export capability

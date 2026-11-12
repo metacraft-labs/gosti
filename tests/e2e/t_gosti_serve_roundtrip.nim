@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 ## t_gosti_serve_roundtrip — RA1 gate.
 ##
-## A REMOTE ``gosti`` client drives a full provision → run(exec probe)
-## → destroy cycle against a ``gosti serve`` daemon over the
-## authenticated HTTP/JSON endpoint, and:
+## A REMOTE ``gosti`` client drives the provider's noop provision →
+## destroy recipe against a ``gosti serve`` daemon over the authenticated
+## HTTP/JSON endpoint, and:
 ##
-##   (a) the run leaves NO residue and is byte-equivalent to the local
-##       ``gosti run`` path (the envelope the daemon writes is compared,
-##       normalized for timings, against a locally-produced one for the
-##       identical argv);
+##   (a) the streamed remote cycle succeeds, and a non-ephemeral ``run`` —
+##       which writes its envelope to a caller-chosen ``--output-dir`` on the
+##       daemon host — is REFUSED by the exec policy (HTTP 403, SEC-1 G13)
+##       while the identical argv still runs on the local CLI;
 ##   (b) an unauthenticated / wrong-credential client is REJECTED (HTTP 401,
 ##       surfaced as ``ServeAuthError``) before any work runs.
 ##
@@ -50,22 +50,6 @@ when isMainModule:
       quiet: false)
     runServe(cfg)
     quit(0)
-
-proc normalizeEnvelope(s: string): string =
-  ## Strip the non-deterministic parts of an output-envelope file (per-step
-  ## ``elapsed_ms`` values and ISO-8601 log timestamps) so two runs of the
-  ## identical argv can be compared for byte-equivalence.
-  for line in s.splitLines():
-    var l = line
-    let ei = l.find("elapsed_ms:")
-    if ei >= 0:
-      l = l[0 ..< ei] & "elapsed_ms: N"
-    if l.len >= 20 and l[4] == '-' and l[7] == '-' and l[10] == 'T' and
-       l[19] == 'Z':
-      let sp = l.find(' ')
-      if sp > 0:
-        l = "TS" & l[sp .. ^1]
-    result.add(l & "\n")
 
 proc waitForPort(portFile: string, timeoutSec = 10.0): int =
   ## Poll the daemon's port-file until it reports its bound port.
@@ -152,56 +136,44 @@ suite "t_gosti_serve_roundtrip":
         check b["available"].getBool
     check sawNoop
 
-  test "remote provision -> run(exec probe) -> destroy, no residue, " &
-       "byte-equivalent to local":
+  test "remote provision -> destroy (the provider's noop recipe) streams":
+    var provLog: seq[string]
+    let provCode = client.execStream(
+      @["provision", "--backend", "noop", "--baseline", "rt",
+        "--log-format", "json"],
+      proc(ev: ExecEvent) =
+        if ev.kind == ekLog: provLog.add(ev.line))
+    check provCode == 0
+    # The stream actually carried live log lines from the daemon worker.
+    check provLog.len > 0
+    let destroyCode = client.execStream(
+      @["ephemeral-destroy", "--backend", "noop", "--baseline", "rt",
+        "--log-format", "json"],
+      proc(ev: ExecEvent) = discard)
+    check destroyCode == 0
+
+  test "a non-ephemeral run is refused remotely and still runs locally":
+    # ``run`` without ``--ephemeral`` requires ``--output-dir``, a directory
+    # on the DAEMON host that the caller would choose. The exec policy refuses
+    # it (403) before a worker starts; the local CLI is unchanged.
     let remoteOut = work / "remote-out"
     let localOut = work / "local-out"
     let runArgv = @["run", "--backend", "noop", "--baseline", "rt",
                     "--output-dir", remoteOut, "--", "/bin/echo", "hello"]
+    var refusal = ""
+    try:
+      discard client.execStream(runArgv, proc(ev: ExecEvent) = discard)
+    except ServeError as e:
+      refusal = e.msg
+    check "unexpected status 403" in refusal
+    check "exec refused by serve policy" in refusal
+    check not dirExists(remoteOut)
 
-    # 1. provision over RPC.
-    var provLog: seq[string]
-    let provCode = client.execStream(
-      @["provision", "--backend", "noop", "--baseline", "rt"],
-      proc(ev: ExecEvent) =
-        if ev.kind == ekLog: provLog.add(ev.line))
-    check provCode == 0
-
-    # 2. run (revert -> exec probe -> cleanup/destroy) over RPC, streaming.
-    var runLog: seq[string]
-    let runCode = client.execStream(runArgv, proc(ev: ExecEvent) =
-      if ev.kind == ekLog: runLog.add(ev.line))
-    check runCode == 0
-    # The stream actually carried live log lines from the daemon worker.
-    check runLog.len > 0
-
-    # 3. The daemon wrote a complete envelope (shared FS on loopback).
-    check fileExists(remoteOut / "DONE")
-    check readFile(remoteOut / "DONE").strip == "PASS"
-    let remoteResult = readFile(remoteOut / "RESULT.txt")
-    check "verdict: PASS" in remoteResult
-    # "destroy / no residue" evidence: the per-gate cleanup step ran ok.
-    check "step: cleanup  status: ok" in remoteResult
-
-    # 4. Byte-equivalence: run the identical argv LOCALLY and compare the
-    #    envelope (normalized for timings). Same binary, same backend code.
     var localArgv = runArgv
     localArgv[localArgv.find(remoteOut)] = localOut
     check runCli(localArgv) == 0
-
-    check normalizeEnvelope(readFile(remoteOut / "RESULT.txt")) ==
-          normalizeEnvelope(readFile(localOut / "RESULT.txt"))
-    check readFile(remoteOut / "DONE") == readFile(localOut / "DONE")
-    # The per-command artifact (02-echo-run.txt) is identical too.
-    proc runArtifact(dir: string): string =
-      for kind, path in walkDir(dir):
-        if kind == pcFile and "02-echo" in extractFilename(path):
-          return readFile(path)
-      ""
-    let remoteArt = runArtifact(remoteOut)
-    let localArt = runArtifact(localOut)
-    check remoteArt.len > 0
-    check normalizeEnvelope(remoteArt) == normalizeEnvelope(localArt)
+    check readFile(localOut / "DONE").strip == "PASS"
+    check "step: cleanup  status: ok" in readFile(localOut / "RESULT.txt")
 
   test "authenticated remote Incus capability argv reaches fixed local policy":
     # The incus backend's lifecycle methods (startAndAwaitReady / execInGuest /
