@@ -183,6 +183,15 @@ type
                                  ## nesting/intercept configuration.
     incusNestedKvm*: bool        ## ``--incus-nested-kvm`` — trusted controller
                                  ## opt-in for the fixed /dev/kvm device.
+    incusShareHostNixStore*: bool ## ``--incus-share-host-nix-store`` —
+                                 ## trusted controller opt-in for the fixed
+                                 ## shared host Nix store (PM2).
+    incusReprobuildStore*: string ## ``--incus-reprobuild-store <dir>`` —
+                                 ## host reprobuild CAS shared read-write
+                                 ## (PM3); empty ⇒ none.
+    incusReprobuildStoreGuestPath*: string ## ``--incus-reprobuild-store-
+                                 ## guest-path <dir>`` — its in-guest mount
+                                 ## point; empty ⇒ the host path.
     kernel*: string              ## ``--kernel <path>`` — optional direct-kernel
                                  ## boot bzImage for the ephemeral clone (the
                                  ## tiny Linux golden). Omit for a disk-bootable
@@ -489,6 +498,19 @@ Common flags:
                                   security.nesting and attach a fixed
                                   read/write /dev/kvm device before first
                                   start. Requires host nested KVM support.
+  --incus-share-host-nix-store   Incus run --ephemeral only: before first
+                                  start, share the host /nix/store read-only
+                                  and the nix-daemon socket directory; after
+                                  it, install /usr/local/bin/nix* wrappers
+                                  that run the host's Nix client against the
+                                  host daemon (the guest is an untrusted
+                                  daemon client).
+  --incus-reprobuild-store <dir>  Incus run --ephemeral only: before first
+                                  start, share this host reprobuild CAS
+                                  directory read-write (content-addressed).
+  --incus-reprobuild-store-guest-path <dir>
+                                  Its in-guest mount point (default: the host
+                                  path). Requires --incus-reprobuild-store.
   --cpus/--memory-mb (Incus)      With run --ephemeral --backend incus, set
                                   the container's limits.cpu (a CPU count)
                                   and limits.memory (MiB) before first start.
@@ -624,6 +646,25 @@ proc resolveRecipeDir*(recipeId: string): string =
   raise newException(ValueError,
     &"--recipe '{recipeId}': directory not found. Searched: " &
     candidates.join(", "))
+
+proc checkedAbsoluteDir*(source, dir: string): string =
+  ## An absolute directory with no ``..`` component, no NUL and no
+  ## ``key=value`` separator ambiguity: the value lands verbatim in an
+  ## ``incus config device add … source=<dir>`` / ``path=<dir>`` argument, and
+  ## a relative path would move with the worker's cwd. Returned normalized
+  ## (``/a//b/`` → ``/a/b``) so an allowlist compares one spelling.
+  if dir.len == 0 or not dir.isAbsolute:
+    raise newException(ValueError,
+      source & " '" & dir & "' must be an absolute directory")
+  if '\0' in dir:
+    raise newException(ValueError, source & " contains a NUL byte")
+  for part in dir.split({'/', '\\'}):
+    if part == "..":
+      raise newException(ValueError,
+        source & " '" & dir & "' may not contain a '..' component")
+  result = dir.normalizedPath
+  if result.len > 1 and result.endsWith("/"):
+    result.setLen(result.len - 1)
 
 proc parseCliOpts*(args: seq[string]): CliOpts =
   ## Minimal hand-rolled parser. Keeps the binary dependency-free.
@@ -788,6 +829,24 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       inc i
     of "--incus-nested-kvm":
       result.incusNestedKvm = true
+      inc i
+    of "--incus-share-host-nix-store":
+      result.incusShareHostNixStore = true
+      inc i
+    of "--incus-reprobuild-store":
+      inc i
+      if i >= args.len:
+        raise newException(ValueError, "--incus-reprobuild-store requires a directory")
+      result.incusReprobuildStore =
+        checkedAbsoluteDir("--incus-reprobuild-store", args[i])
+      inc i
+    of "--incus-reprobuild-store-guest-path":
+      inc i
+      if i >= args.len:
+        raise newException(ValueError,
+          "--incus-reprobuild-store-guest-path requires a directory")
+      result.incusReprobuildStoreGuestPath =
+        checkedAbsoluteDir("--incus-reprobuild-store-guest-path", args[i])
       inc i
     of "--kernel":
       inc i; result.kernel = args[i]; inc i
@@ -992,12 +1051,19 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
   if result.sshHostKeyAlias.anyIt(it.isSpaceAscii or ord(it) < 32):
     raise newException(ValueError,
       "--ssh-host-key-alias must not contain whitespace or control characters")
-  if result.incusSecurityNesting or result.incusNestedKvm:
+  if result.incusSecurityNesting or result.incusNestedKvm or
+      result.incusShareHostNixStore or result.incusReprobuildStore.len > 0 or
+      result.incusReprobuildStoreGuestPath.len > 0:
     if result.subcommand != "run" or not result.ephemeral or
        result.backend.toLowerAscii() != $biIncus:
       raise newException(ValueError,
-        "--incus-security-nesting/--incus-nested-kvm require " &
+        "--incus-security-nesting/--incus-nested-kvm/" &
+        "--incus-share-host-nix-store/--incus-reprobuild-store* require " &
         "run --ephemeral --backend incus")
+  if result.incusReprobuildStoreGuestPath.len > 0 and
+      result.incusReprobuildStore.len == 0:
+    raise newException(ValueError,
+      "--incus-reprobuild-store-guest-path requires --incus-reprobuild-store")
 
 proc logEvent*(format: LogFormat, level: string, msg: string,
               fields: openArray[(string, string)] = []) =
@@ -1530,7 +1596,10 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
     userData: userData,
     config: incusEphemeralLimits(opts.cpus, opts.memoryMB),
     securityNesting: opts.incusSecurityNesting,
-    nestedKvm: opts.incusNestedKvm)
+    nestedKvm: opts.incusNestedKvm,
+    shareHostNixStore: opts.incusShareHostNixStore,
+    reprobuildStore: opts.incusReprobuildStore,
+    reprobuildStoreGuestPath: opts.incusReprobuildStoreGuestPath)
   logEvent(opts.logFormat, "info", "ephemeral container: launch",
            {"backend": $biIncus, "name": opts.baseline,
             "base": (if opts.baseImage.len > 0: opts.baseImage else: ib.baseImage)})

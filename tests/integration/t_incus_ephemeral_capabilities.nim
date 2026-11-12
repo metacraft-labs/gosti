@@ -319,3 +319,146 @@ suite "Incus ephemeral operator capabilities":
       let lines = readFile(logPath).strip().splitLines()
       check "exec wrong-mode -- stat -c %a /dev/kvm" in lines
       check lines[^1] == "delete --force wrong-mode"
+
+proc storeNixClient(work: string): string =
+  ## A host "Nix client" that resolves into /nix/store, the way NixOS's
+  ## /run/current-system/sw/bin/nix does: a symlink to a real store file.
+  ## Empty when this host has no /nix/store (the shared-store success path
+  ## is then not exercisable here; the refusal paths still are).
+  let real = findExe("nix")
+  if real.len == 0: return ""
+  let resolved = expandFilename(real)
+  if not resolved.startsWith("/nix/store/"): return ""
+  result = work / "current-system-nix"
+  createSymlink(resolved, result)
+
+suite "Incus ephemeral shared host build stores (PM2/PM3)":
+  test "shared stores attach before first start and the Nix client is installed before return":
+    let work = createTempDir("gosti-incus-shared-stores", "")
+    defer: removeDir(work)
+    let client = storeNixClient(work)
+    if client.len == 0:
+      skip()
+    else:
+      let logPath = work / "argv.log"
+      let shim = work / IncusFixtureName
+      let cas = work / "cas"
+      createDir(cas)
+      writeIncusShim(shim, logPath)
+      let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base",
+                              hostNixClient = client)
+      discard b.provisionEphemeralClone(EphemeralIncusSpec(
+        name: "shared", nestedKvm: true, shareHostNixStore: true,
+        reprobuildStore: cas, reprobuildStoreGuestPath: "/srv/repro-store"))
+      let lines = readFile(logPath).strip().splitLines()
+      let initPos = lines.lineIndex("init runner-base shared")
+      let storePos = lines.lineIndex(
+        "config device add shared nixstore disk source=/nix/store " &
+        "path=/nix/store readonly=true")
+      let daemonPos = lines.lineIndex(
+        "config device add shared nixdaemon disk " &
+        "source=/nix/var/nix/daemon-socket path=/nix/var/nix/daemon-socket")
+      let casPos = lines.lineIndex(
+        "config device add shared reprostore disk source=" & cas &
+        " path=/srv/repro-store")
+      let startPos = lines.lineIndex("start shared")
+      let kvmPos = lines.lineIndex("exec shared -- sh -c exec 3<>/dev/kvm")
+      var setupPos = -1
+      for i, line in lines:
+        if line.startsWith("exec shared -- sh -c set -eu"):
+          setupPos = i
+      let probePos = lines.lineIndex("exec shared -- /usr/local/bin/nix --version")
+      check initPos >= 0
+      check initPos < storePos
+      check storePos < daemonPos
+      check daemonPos < casPos
+      check casPos < startPos
+      check startPos < kvmPos
+      check kvmPos < setupPos
+      check setupPos < probePos
+      # The wrapper renderer gets the resolved store bin dir, the fixed
+      # wrapper dir and the tool list as arguments, never interpolated.
+      let joined = lines.join("\n")
+      check (" gosti-shared-nix-client " & expandFilename(client).parentDir &
+        " /usr/local/bin nix nix-build") in joined
+      check "launch runner-base shared" notin joined
+
+  test "the reprobuild store alone mirrors the host path and installs no Nix client":
+    let work = createTempDir("gosti-incus-cas-only", "")
+    defer: removeDir(work)
+    let logPath = work / "argv.log"
+    let shim = work / IncusFixtureName
+    let cas = work / "cas"
+    createDir(cas)
+    writeIncusShim(shim, logPath)
+    let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base",
+                            hostNixClient = work / "no-such-nix")
+    discard b.provisionEphemeralClone(EphemeralIncusSpec(
+      name: "cas-only", reprobuildStore: cas))
+    check readFile(logPath).strip().splitLines() == @[
+      "info cas-only",
+      "init runner-base cas-only",
+      "config device add cas-only reprostore disk source=" & cas &
+        " path=" & cas,
+      "start cas-only",
+    ]
+
+  test "a host Nix client outside /nix/store is refused before anything is created":
+    let work = createTempDir("gosti-incus-nix-outside-store", "")
+    defer: removeDir(work)
+    let logPath = work / "argv.log"
+    let shim = work / IncusFixtureName
+    writeIncusShim(shim, logPath)
+    let fakeNix = work / "nix"
+    writeFile(fakeNix, "#!/bin/sh\n")
+    let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base",
+                            hostNixClient = fakeNix)
+    expect VmHarnessError:
+      discard b.provisionEphemeralClone(EphemeralIncusSpec(
+        name: "outside", shareHostNixStore: true))
+    check readFile(logPath).strip().splitLines() == @["info outside"]
+
+  test "a missing reprobuild store is refused before anything is created":
+    let work = createTempDir("gosti-incus-cas-missing", "")
+    defer: removeDir(work)
+    let logPath = work / "argv.log"
+    let shim = work / IncusFixtureName
+    writeIncusShim(shim, logPath)
+    let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base")
+    expect ValueError:
+      discard b.provisionEphemeralClone(EphemeralIncusSpec(
+        name: "no-cas", reprobuildStore: work / "absent"))
+    check readFile(logPath).strip().splitLines() == @["info no-cas"]
+
+  test "a failed store attachment or Nix client setup cleans the exact container":
+    let work0 = createTempDir("gosti-incus-shared-fail", "")
+    defer: removeDir(work0)
+    let client = storeNixClient(work0)
+    var failures = @[
+      (suffix: "cas", nix: false, command:
+        "config device add fail-cas reprostore disk source=" & work0 &
+        " path=/srv/repro-store"),
+    ]
+    if client.len > 0:
+      failures.add((suffix: "store", nix: true, command:
+        "config device add fail-store nixstore disk source=/nix/store " &
+        "path=/nix/store readonly=true"))
+      failures.add((suffix: "probe", nix: true, command:
+        "exec fail-probe -- /usr/local/bin/nix --version"))
+    for failure in failures:
+      let work = createTempDir("gosti-incus-shared-fail-" & failure.suffix, "")
+      let logPath = work / "argv.log"
+      let shim = work / IncusFixtureName
+      writeIncusShim(shim, logPath, failExact = failure.command)
+      let b = newIncusBackend(incusCmd = @[shim], baseImage = "runner-base",
+                              hostNixClient = client)
+      let name = "fail-" & failure.suffix
+      expect VmHarnessError:
+        discard b.provisionEphemeralClone(EphemeralIncusSpec(
+          name: name, shareHostNixStore: failure.nix,
+          reprobuildStore: (if failure.nix: "" else: work0),
+          reprobuildStoreGuestPath: (if failure.nix: "" else: "/srv/repro-store")))
+      let lines = readFile(logPath).strip().splitLines()
+      check failure.command in lines
+      check lines[^1] == "delete --force " & name
+      removeDir(work)
