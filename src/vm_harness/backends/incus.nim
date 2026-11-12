@@ -73,6 +73,12 @@ type
       ## User the in-guest ``incus exec`` runs as. Empty ⇒ incus default
       ## (root). Kept for parity with the SSH-user seam on other backends.
     readyTimeoutSec*: int
+    hostNixClient*: string
+      ## The HOST's Nix client, resolved (through every symlink) into the
+      ## store directory whose tools the shared-store guests execute (see
+      ## ``EphemeralIncusSpec.shareHostNixStore``). Defaults to
+      ## ``DefaultIncusHostNixClient``, the NixOS system profile's ``nix``.
+
       ## How long ``startAndAwaitReady`` polls for ``incus exec -- true``.
 
   EphemeralIncusSpec* = object
@@ -113,6 +119,38 @@ type
       ## container is initialised STOPPED, security.nesting is enabled, and a
       ## fixed /dev/kvm unix-char device is attached before its first start.
       ## The device path/type/mode are not caller-selectable.
+    shareHostNixStore*: bool
+      ## Operator-controlled shared Nix store (PM2). When true, the container
+      ## is initialised STOPPED and receives, before its first start, the host
+      ## ``/nix/store`` READ-ONLY and the host nix-daemon socket directory
+      ## (``/nix/var/nix/daemon-socket``) read-write, under the fixed device
+      ## names ``nixstore`` / ``nixdaemon``. After start, small wrappers in
+      ## ``/usr/local/bin`` execute the host's own Nix client through the
+      ## store mount with ``NIX_REMOTE=daemon``, so every guest build goes
+      ## through the host daemon. Neither path is caller-selectable.
+      ##
+      ## Safe by design: the store bytes are immutable from the guest, and
+      ## Incus's default idmap makes guest root an unprivileged host uid that
+      ## is not in Nix's ``trusted-users``, so the daemon serves it as an
+      ## UNTRUSTED client (``Trusted: 0``): it can build and add
+      ## content-addressed paths but cannot change substituters or trusted
+      ## keys. The residual risk is disk exhaustion, which the host bounds
+      ## (``min-free`` / ``max-free``).
+    reprobuildStore*: string
+      ## Operator-controlled shared reprobuild CAS (PM3): when non-empty, this
+      ## HOST directory is attached READ-WRITE before the first start under
+      ## the fixed device name ``reprostore``. The CAS is content-addressed
+      ## (BLAKE3), so a guest can add entries but cannot corrupt an existing
+      ## one: a tampered blob hashes to a different digest. Must be an
+      ## absolute, existing directory.
+    reprobuildStoreGuestPath*: string
+      ## In-guest mount point for ``reprobuildStore``. Empty ⇒ the host path.
+
+  IncusDiskMount* = object
+    ## One host->guest share (an incus ``disk`` device).
+    hostPath*: string
+    guestPath*: string
+    readOnly*: bool
 
 const
   DefaultIncusBaseImage* = "vmh-base"
@@ -120,6 +158,47 @@ const
   DefaultIncusReadyTimeoutSec* = 60
   IncusBootstrapGuestPath* = "/root/garm-bootstrap.sh"
     ## In-guest path the bootstrap payload is delivered to (root-only, 0700).
+  IncusHostNixStorePath* = "/nix/store"
+    ## The host store shared read-only by ``shareHostNixStore``.
+  IncusHostNixDaemonSocketDir* = "/nix/var/nix/daemon-socket"
+    ## The host nix-daemon socket directory shared by ``shareHostNixStore``.
+    ## Shared read-write because a guest must be able to ``connect()`` to the
+    ## socket inside it; the daemon owns the Nix database and validates every
+    ## path a guest adds.
+  DefaultIncusHostNixClient* = "/run/current-system/sw/bin/nix"
+    ## The host Nix client a shared-store guest executes (NixOS).
+    ## ``/run/current-system`` is not shared into the guest, so the client is
+    ## resolved to its ``/nix/store`` directory on the host first.
+  IncusSharedNixClientDir* = "/usr/local/bin"
+    ## Where the shared-store guest's Nix client wrappers are written. It is
+    ## on the default ``PATH`` of every Debian/Ubuntu user and service,
+    ## including the runner's systemd unit, which does not inherit the
+    ## container's ``environment.*`` keys.
+  IncusSharedNixClientTools* = ["nix", "nix-build", "nix-channel",
+    "nix-collect-garbage", "nix-copy-closure", "nix-env", "nix-hash",
+    "nix-instantiate", "nix-prefetch-url", "nix-shell", "nix-store"]
+    ## The Nix entry points wrapped when the host client provides them. The
+    ## same set, and the same wrapper body, as nixos-modules'
+    ## ``garm-provider-gosti`` local Incus backend
+    ## (``internal/backend/shared_nix_client.sh``), so a guest sees one
+    ## contract whichever controller created it.
+  IncusSharedNixClientScript* = """set -eu
+nix_bin_dir="$1"
+wrapper_dir="$2"
+shift 2
+mkdir -p "$wrapper_dir"
+for tool in "$@"; do
+  target="$nix_bin_dir/$tool"
+  [ -x "$target" ] || continue
+  rm -f "$wrapper_dir/$tool"
+  printf '#!/bin/sh\nexport NIX_REMOTE=daemon\nexec "%s" "$@"\n' "$target" > "$wrapper_dir/$tool"
+  chmod 0755 "$wrapper_dir/$tool"
+done
+test -x "$wrapper_dir/nix"
+"""
+    ## Runs IN the guest (``sh -c``) with the resolved host Nix bin dir, the
+    ## wrapper dir and the tool names as positional arguments, so no
+    ## caller-chosen text is ever interpolated into the script.
   IncusBootstrapLogPath* = "/var/log/garm-bootstrap.log"
     ## In-guest log the detached bootstrap's stdout/stderr is redirected to;
     ## deliberately NOT streamed back (the runner foregrounds and never ends).
@@ -141,7 +220,9 @@ proc newIncusBackend*(incusCmd: seq[string] = @["incus"],
                       storagePool: string = DefaultIncusStoragePool,
                       execUser: string = "",
                       readyTimeoutSec: int =
-                        DefaultIncusReadyTimeoutSec): IncusBackend =
+                        DefaultIncusReadyTimeoutSec,
+                      hostNixClient: string =
+                        DefaultIncusHostNixClient): IncusBackend =
   ## Construct an IncusBackend. Defaults match the host layout: the
   ## ``vmh-base`` Debian image, the ``default`` storage pool, ``incus`` on
   ## PATH (overridable via ``VMH_INCUS_CMD``).
@@ -153,7 +234,8 @@ proc newIncusBackend*(incusCmd: seq[string] = @["incus"],
     baseImage: baseImage,
     storagePool: storagePool,
     execUser: execUser,
-    readyTimeoutSec: readyTimeoutSec)
+    readyTimeoutSec: readyTimeoutSec,
+    hostNixClient: hostNixClient)
 
 # ---------------------------------------------------------------------------
 # Process invocation helper. Mirrors ``runProcessCapture`` in the other
@@ -802,6 +884,104 @@ proc applyOperatorCapabilities(b: IncusBackend, name: string,
         "incus config device add kvm failed (exit " & $r.exitCode & "): " &
         r.stdout)
 
+proc awaitExecReady(b: IncusBackend, name, purpose: string) =
+  ## Poll ``incus exec <name> -- true`` for up to ``readyTimeoutSec``; raise
+  ## a ``GostiError`` naming ``purpose`` when the container never answers.
+  let deadline = epochTime() + b.readyTimeoutSec.float
+  while epochTime() < deadline:
+    let r = b.runIncus(@["exec", name, "--", "true"], timeoutSec = 15)
+    if r.exitCode == 0:
+      return
+    sleep(200)
+  raise newVmHarnessError($b.id, lpStartup,
+    "incus container " & name & " did not become exec-ready for " & purpose)
+
+proc hasSharedStores(spec: EphemeralIncusSpec): bool =
+  spec.shareHostNixStore or spec.reprobuildStore.len > 0
+
+proc sharedStoreDevices*(spec: EphemeralIncusSpec):
+    seq[tuple[device: string, mount: IncusDiskMount]] =
+  ## The fixed ``disk`` devices the PM2/PM3 shared stores attach, in order.
+  ## The device names match nixos-modules' ``garm-provider-gosti`` local
+  ## Incus backend, so ``incus config show`` reads the same on every host.
+  if spec.shareHostNixStore:
+    result.add((device: "nixstore", mount: IncusDiskMount(
+      hostPath: IncusHostNixStorePath, guestPath: IncusHostNixStorePath,
+      readOnly: true)))
+    result.add((device: "nixdaemon", mount: IncusDiskMount(
+      hostPath: IncusHostNixDaemonSocketDir,
+      guestPath: IncusHostNixDaemonSocketDir)))
+  if spec.reprobuildStore.len > 0:
+    let guest =
+      if spec.reprobuildStoreGuestPath.len > 0: spec.reprobuildStoreGuestPath
+      else: spec.reprobuildStore
+    result.add((device: "reprostore", mount: IncusDiskMount(
+      hostPath: spec.reprobuildStore, guestPath: guest)))
+
+proc diskDeviceArgs(container, device: string, m: IncusDiskMount):
+    seq[string] =
+  result = @["config", "device", "add", container, device, "disk",
+             "source=" & m.hostPath, "path=" & m.guestPath]
+  if m.readOnly: result.add("readonly=true")
+
+proc attachSharedStores(b: IncusBackend, name: string,
+                        spec: EphemeralIncusSpec) =
+  ## Attach the PM2/PM3 shared stores while the container is still stopped,
+  ## so they are present before cloud-init or the runner bootstrap runs.
+  for d in sharedStoreDevices(spec):
+    let r = b.runIncus(diskDeviceArgs(name, d.device, d.mount),
+                       timeoutSec = incusConfigTimeoutSec())
+    if r.exitCode != 0:
+      raise newVmHarnessError($b.id, lpProvisioning,
+        "incus config device add " & d.device & " (" & d.mount.hostPath &
+        " -> " & d.mount.guestPath & ", readonly=" & $d.mount.readOnly &
+        ") failed (exit " & $r.exitCode & "): " & r.stdout)
+
+proc resolveHostNixBinDir*(client: string): string =
+  ## Resolve the host Nix client into the ``/nix/store`` directory that holds
+  ## it. A shared-store guest reaches the host's tools only through the
+  ## read-only store mount, so a client that resolves anywhere else (or not
+  ## at all) cannot be executed there: refuse rather than hand the controller
+  ## a runner without a usable ``nix``.
+  let path = if client.len > 0: client else: DefaultIncusHostNixClient
+  var resolved: string
+  try:
+    resolved = expandFilename(path)
+  except OSError as e:
+    raise newVmHarnessError($biIncus, lpProvisioning,
+      "cannot resolve the host Nix client " & path & ": " & e.msg)
+  if not resolved.startsWith(IncusHostNixStorePath & "/"):
+    raise newVmHarnessError($biIncus, lpProvisioning,
+      "the host Nix client " & path & " resolves outside " &
+      IncusHostNixStorePath & " (" & resolved & "), so a shared-store " &
+      "guest could not execute it")
+  resolved.parentDir
+
+proc installSharedNixClient(b: IncusBackend, name, nixBinDir: string) =
+  ## Write the guest's Nix client wrappers (``IncusSharedNixClientScript``)
+  ## and prove one runs. Mounting the store and the daemon socket is not
+  ## enough on an image with no Nix of its own: a job's Nix installer would
+  ## otherwise attempt a single-user install, which fails moving files into
+  ## the separately mounted ``/nix/store`` (EXDEV). This runs before the
+  ## caller delivers the runner bootstrap, so no job can see the guest
+  ## without a usable ``nix``.
+  b.awaitExecReady(name, "shared Nix client setup")
+  var argv = @["exec", name, "--", "sh", "-c", IncusSharedNixClientScript,
+               "gosti-shared-nix-client", nixBinDir, IncusSharedNixClientDir]
+  for tool in IncusSharedNixClientTools: argv.add(tool)
+  let r = b.runIncus(argv, timeoutSec = 60)
+  if r.exitCode != 0:
+    raise newVmHarnessError($b.id, lpStartup,
+      "shared Nix client setup on " & name & " failed (exit " &
+      $r.exitCode & "): " & r.stdout)
+  let probe = b.runIncus(@["exec", name, "--",
+                           IncusSharedNixClientDir / "nix", "--version"],
+                         timeoutSec = 60)
+  if probe.exitCode != 0:
+    raise newVmHarnessError($b.id, lpStartup,
+      "the shared Nix client in " & name & " does not run (exit " &
+      $probe.exitCode & "): " & probe.stdout)
+
 proc convergeNestedKvmAccess(b: IncusBackend, name: string) =
   ## Incus requests mode=0666 on the unix-char device, but host udev state and
   ## cloud-init group convergence can still leave the guest node at 0660.
@@ -809,18 +989,7 @@ proc convergeNestedKvmAccess(b: IncusBackend, name: string) =
   ## converge the guest-local mode, verify the exact mode, and actually open
   ## the character device read/write so a cgroup/device-policy denial cannot
   ## masquerade as usable KVM.
-  let deadline = epochTime() + b.readyTimeoutSec.float
-  var ready = false
-  while epochTime() < deadline:
-    let r = b.runIncus(@["exec", name, "--", "true"], timeoutSec = 15)
-    if r.exitCode == 0:
-      ready = true
-      break
-    sleep(200)
-  if not ready:
-    raise newVmHarnessError($b.id, lpStartup,
-      "incus container " & name &
-      " did not become exec-ready for nested KVM setup")
+  b.awaitExecReady(name, "nested KVM setup")
 
   let chmodRes = b.runIncus(@["exec", name, "--", "chmod", "0666", "/dev/kvm"],
                             timeoutSec = 30)
@@ -864,6 +1033,11 @@ proc provisionEphemeralClone*(b: IncusBackend,
   ## capability policy is attached. Defaults remain false and preserve the
   ## launch path byte-for-byte.
   ##
+  ## The PM2/PM3 shared stores (``shareHostNixStore``, ``reprobuildStore``)
+  ## take the same pre-start path: their ``disk`` devices are attached before
+  ## the first start, and with ``shareHostNixStore`` the guest's Nix client
+  ## wrappers are written and probed after it, before this proc returns.
+  ##
   ## The returned handle is marked ``ephemeral=true`` so ``stopAndCleanup``
   ## (the DeleteInstance path) force-deletes the container AND its storage
   ## volume, leaving no residue.
@@ -879,13 +1053,30 @@ proc provisionEphemeralClone*(b: IncusBackend,
     raise newVmHarnessError($b.id, lpProvisioning,
       "provisionEphemeralClone: container '" & spec.name &
       "' already exists; per-job clones require a fresh name")
+  if spec.reprobuildStore.len > 0 and
+      (not spec.reprobuildStore.isAbsolute or
+       not dirExists(spec.reprobuildStore)):
+    raise newException(ValueError,
+      "provisionEphemeralClone: the shared reprobuild store '" &
+        spec.reprobuildStore & "' is not an existing absolute directory " &
+        "on this host")
+  if spec.reprobuildStoreGuestPath.len > 0 and spec.reprobuildStore.len == 0:
+    raise newException(ValueError,
+      "provisionEphemeralClone: reprobuildStoreGuestPath is set " &
+        "without reprobuildStore")
+  # Resolved before anything is created, so a host whose Nix client cannot be
+  # shared fails the create without leaving a half-built container.
+  let nixBinDir =
+    if spec.shareHostNixStore: resolveHostNixBinDir(b.hostNixClient)
+    else: ""
 
   # Resource limits also take the pre-start path: a cap applied after
   # `incus launch` would leave the guest's first seconds (cloud-init, the
   # runner bootstrap) running uncapped, and would let the guest observe the
   # host's full CPU count at boot.
   let needsPreStartCapabilities =
-    spec.securityNesting or spec.nestedKvm or spec.hasResourceLimits
+    spec.securityNesting or spec.nestedKvm or spec.hasResourceLimits or
+    spec.hasSharedStores
   var launchArgs = @[
     (if needsPreStartCapabilities: "init" else: "launch"), base, spec.name]
   if spec.ephemeral:
@@ -913,6 +1104,7 @@ proc provisionEphemeralClone*(b: IncusBackend,
     if needsPreStartCapabilities:
       if spec.securityNesting or spec.nestedKvm:
         b.applyOperatorCapabilities(spec.name, spec)
+      b.attachSharedStores(spec.name, spec)
       let startRes = b.runIncus(@["start", spec.name],
                                 timeoutSec = incusStartTimeoutSec())
       if startRes.exitCode != 0:
@@ -921,6 +1113,8 @@ proc provisionEphemeralClone*(b: IncusBackend,
           $startRes.exitCode & "): " & startRes.stdout)
       if spec.nestedKvm:
         b.convergeNestedKvmAccess(spec.name)
+      if spec.shareHostNixStore:
+        b.installSharedNixClient(spec.name, nixBinDir)
   except CatchableError as e:
     discard b.deleteContainer(spec.name)
     raise e
