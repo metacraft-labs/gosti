@@ -37,7 +37,8 @@
 ##                                        dir). MA4 points this at
 ##                                        /private/var/lib/gosti/
 ##                                        qemu-windows-arm/golden.
-##   GOSTI_WINDOWS_ARM_GOLDEN_DEADLINE=<s>  overall deadline (default 5400)
+##   GOSTI_WINDOWS_ARM_GOLDEN_DEADLINE=<s>  overall deadline (default
+##                                        QwaDefaultGoldenDeadlineSec)
 ##   GOSTI_WINDOWS_ARM_GOLDEN_DISK_GB=<n>   requested qcow2 size (default 64)
 ##
 ## The build directory is deliberately NOT removed on success: this gate
@@ -130,7 +131,8 @@ suite "t_qemu_windows_arm_golden_build (host tier)":
         recipeDir = recipeDir(),
         diskGB = parseInt(getEnv("GOSTI_WINDOWS_ARM_GOLDEN_DISK_GB", "64")),
         deadlineSec = parseInt(
-          getEnv("GOSTI_WINDOWS_ARM_GOLDEN_DEADLINE", "5400"))))
+          getEnv("GOSTI_WINDOWS_ARM_GOLDEN_DEADLINE",
+                 $QwaDefaultGoldenDeadlineSec))))
 
       # The consuming path must accept it unchanged.
       check golden == absolutePath(buildDir)

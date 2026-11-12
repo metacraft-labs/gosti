@@ -27,6 +27,7 @@ and that is on purpose").
 | Admit an existing golden | `requireWindowsArmGolden` | Requires `windows.qcow2` **and** `golden-manifest.json`; see "Two traps the runs left behind". |
 | Headless install boot — argument vector | `buildQemuWindowsArmInstallArgs` | |
 | Headless install boot — orchestration | `buildWindowsArmGolden` | UEFI staged by `stageGoldenFirmware`. |
+| Capture gates before sysprep | `runCaptureGates` | Git, pwsh and VS Build Tools; a refusal fails the build with the gate's output. |
 | Install-completion detection | `waitForInstallSentinelWatched` | Polls the `repro-install-done` sentinel, with the freeze watchdog around it. |
 | Frozen-guest recovery | `GuestProgressWatch` | A power cycle of QEMU **and** swtpm. See "Closed: the guest freeze on a firmware boot". |
 | Per-job instance from a generalized golden | `buildQemuWindowsArmArgs` + `revertToBaseline` | Starts with `-action reboot=reset` plus a QMP socket; `revertToBaseline` restores one-shot semantics with `set-action reboot=shutdown` once SSH is first reached. See "Closed: the per-job boot could not boot a generalized golden". |
@@ -121,15 +122,25 @@ to `qemu-img create`.
 4. Wait for install completion: the `C:\Windows\Temp\repro-install-done`
    sentinel that `autounattend.xml` writes from its last `FirstLogonCommand`,
    once `sshd` is confirmed running, with the freeze watchdog around the wait.
-5. Invoke
+5. Run the capture gates (`runCaptureGates`, list `QwaCaptureGates`):
+   `assert-git-provisioned.ps1`, `assert-pwsh-provisioned.ps1` and
+   `assert-vs-buildtools.ps1`, staged on `C:\Windows\Temp` by the
+   specialize pass. Each pairs with a FirstLogonCommand that exits 0 on
+   failure so the chain cannot wedge; a gate that does not exit 0 **and**
+   print `This image is fit to capture.` fails the build before anything is
+   generalized. Until 2026-11-12 the headless build ran none of them, and the
+   2026-09-15 golden was promoted without the VS Build Tools: every MSVC link
+   on `eph-win-arm64` failed with ``linker `link.exe` not found``.
+6. Invoke
    `sysprep /generalize /oobe /shutdown /mode:vm /unattend:C:\repro-sysprep.xml`
    over SSH, detached from the session (`buildSysprepRemoteCommand`).
-6. Wait for the guest to power off, observed on the monitor socket rather
+7. Wait for the guest to power off, observed on the monitor socket rather
    than SSH, since SSH dies with the guest.
-7. Kill `swtpm`, drop the CD-ROM drives, and finalize: `finalizeGoldenDir`,
+8. Kill `swtpm`, drop the CD-ROM drives, and finalize: `finalizeGoldenDir`,
    then `writeGoldenManifest` last, so the manifest is a completion marker.
 
-The overall deadline defaults to 90 minutes. The answer file does all the
+The overall deadline defaults to 150 minutes (90 before the VS Build Tools
+install, which adds 20-40 minutes, joined the chain). The answer file does all the
 real Windows-side work.
 
 Sysprep `/generalize` is load-bearing and must not be skipped: without it

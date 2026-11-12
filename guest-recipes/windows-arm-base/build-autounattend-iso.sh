@@ -181,6 +181,12 @@ if [[ ! -f "${LIB_DIR}/assert-pwsh-provisioned.ps1" ]]; then
   echo "build-autounattend-iso: missing assert-pwsh-provisioned.ps1 in ${LIB_DIR}" >&2
   exit 1
 fi
+for vs_file in provision-vs-buildtools.ps1 vs-buildtools.pins assert-vs-buildtools.ps1; do
+  if [[ ! -f "${LIB_DIR}/${vs_file}" ]]; then
+    echo "build-autounattend-iso: missing ${vs_file} in ${LIB_DIR}" >&2
+    exit 1
+  fi
+done
 # Default the PowerShell 7 ZIP to whatever ../lib/fetch-powershell.sh left in
 # ./build. Resolved by glob so the recipe does not have to repeat the pinned
 # version (provision-pwsh.ps1 owns it).
@@ -219,6 +225,14 @@ cp "${LIB_DIR}/provision-pwsh.ps1" "${STAGE_DIR}/provision-pwsh.ps1"
 # The gate that makes provision-pwsh.ps1's exit-0-on-failure safe, carried for
 # the same reason as the Git one above.
 cp "${LIB_DIR}/assert-pwsh-provisioned.ps1" "${STAGE_DIR}/assert-pwsh-provisioned.ps1"
+# Visual Studio 2022 Build Tools: the installer, the pins it reads (shared
+# with infra's persistent x64 runner) and the capture gate the headless build
+# runs before sysprep. The bootstrapper is NOT staged: the guest downloads it
+# from the pinned URL and verifies digest + signature, and the component
+# payloads need the network regardless.
+cp "${LIB_DIR}/provision-vs-buildtools.ps1" "${STAGE_DIR}/provision-vs-buildtools.ps1"
+cp "${LIB_DIR}/vs-buildtools.pins" "${STAGE_DIR}/vs-buildtools.pins"
+cp "${LIB_DIR}/assert-vs-buildtools.ps1" "${STAGE_DIR}/assert-vs-buildtools.ps1"
 if [[ -n "${OPENSSH_ZIP_SRC}" ]]; then
   mkdir -p "${STAGE_DIR}/openssh"
   cp "${OPENSSH_ZIP_SRC}" "${STAGE_DIR}/openssh/OpenSSH-ARM64.zip"

@@ -13,7 +13,8 @@
 
   Installs / sets, from the pins in ci-toolchain.pins (staged alongside):
     1. Visual Studio 2022 Build Tools with VS_COMPONENTS (+ recommended),
-       which brings the MSVC x64 toolset and the Windows SDK.
+       which brings the MSVC x64 toolset and the Windows SDK. Delegated to
+       ../lib/provision-vs-buildtools.ps1, staged into StageDir.
     1b. The SDK's Debugging Tools for Windows (cdb.exe), from the
        digest-pinned standalone SDK bootstrapper, debugger feature only.
     2. WinFsp (MSI, digest-checked).
@@ -83,40 +84,19 @@ foreach ($k in 'ACTIONS_RUNNER_VERSION', 'ACTIONS_RUNNER_SHA256_WIN_X64', 'WINFS
 $pf86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
 
 # ---- 1. Visual Studio 2022 Build Tools ---------------------------------------
-$vswhere = Join-Path $pf86 'Microsoft Visual Studio\Installer\vswhere.exe'
+# The install itself is ../lib/provision-vs-buildtools.ps1, the one
+# implementation the Windows goldens share (the host driver stages it next to
+# this script): vswhere no-op probe, Authenticode check, install, and a
+# post-install vswhere query that must see every component. This golden hands
+# it the EVERGREEN bootstrapper the host fetched, so -SignatureOnly: that
+# link has no stable digest (see ci-toolchain-golden.md). It throws on
+# failure, which fails this script.
 $components = @($pins['VS_COMPONENTS'] -split '\s+' | Where-Object { $_ })
-$haveVs = $false
-if (Test-Path -LiteralPath $vswhere) {
-    $reqArgs = @('-products', '*', '-format', 'json')
-    foreach ($c in $components) { $reqArgs += @('-requires', $c) }
-    $found = & $vswhere @reqArgs | Out-String | ConvertFrom-Json
-    if ($found) { $haveVs = $true; Log "VS Build Tools already carry every component: $($found[0].installationPath)" }
-}
-if (-not $haveVs) {
-    $boot = Join-Path $StageDir 'vs_buildtools.exe'
-    if (-not (Test-Path -LiteralPath $boot)) { throw "vs_buildtools.exe not staged in $StageDir" }
-    # The evergreen bootstrapper has no stable digest; trust is its Microsoft
-    # Authenticode signature, which Windows verifies against its own roots.
-    $sig = Get-AuthenticodeSignature -LiteralPath $boot
-    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
-        throw "vs_buildtools.exe signature not valid Microsoft: $($sig.Status) $($sig.SignerCertificate.Subject)"
-    }
-    Log "vs_buildtools.exe signature OK ($($sig.SignerCertificate.Subject))"
-    $vsArgs = @('--quiet', '--wait', '--norestart', '--nocache',
-        '--installPath', "`"$($pins['VS_INSTALL_PATH'])`"")
-    foreach ($c in $components) { $vsArgs += @('--add', $c) }
-    $vsArgs += '--includeRecommended'
-    Log "installing VS Build Tools: $($vsArgs -join ' ')"
-    $p = Start-Process -FilePath $boot -ArgumentList $vsArgs -Wait -PassThru -NoNewWindow
-    # 3010 = success, reboot required. The host driver reboots before the gate.
-    if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
-        Get-ChildItem -Path $env:TEMP -Filter 'dd_*.log' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 2 |
-            ForEach-Object { Log "---- tail $($_.Name)"; Get-Content $_.FullName -Tail 40 }
-        throw "VS Build Tools install failed, exit $($p.ExitCode)"
-    }
-    Log "VS Build Tools installer exit $($p.ExitCode)"
-}
+$vsProvision = Join-Path $StageDir 'provision-vs-buildtools.ps1'
+if (-not (Test-Path -LiteralPath $vsProvision)) { throw "provision-vs-buildtools.ps1 not staged in $StageDir" }
+& $vsProvision -Bootstrapper (Join-Path $StageDir 'vs_buildtools.exe') -Components $components `
+    -InstallPath $pins['VS_INSTALL_PATH'] -SignatureOnly
+# 3010 = success, reboot required. The host driver reboots before the gate.
 
 # ---- 1b. Debugging Tools for Windows (cdb.exe) --------------------------------
 # VS's Windows11SDK component installs headers, libs and tools but never the

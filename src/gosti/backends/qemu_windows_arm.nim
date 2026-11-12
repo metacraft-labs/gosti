@@ -148,16 +148,41 @@ const
     ## Where ``autounattend.xml`` copies ``repro-sysprep.xml`` to, from the
     ## answer-file ISO, in its ``FirstLogonCommands``. Sysprep is invoked
     ## with ``/unattend:`` pointing here, so the two must agree.
+  QwaCaptureGateDir* = "C:\\Windows\\Temp"
+    ## Where ``autounattend.xml``'s specialize pass stages the capture gates.
+  QwaCaptureGates* = ["assert-git-provisioned.ps1",
+                      "assert-pwsh-provisioned.ps1",
+                      "assert-vs-buildtools.ps1"]
+    ## The gates that must pass in the guest BEFORE sysprep, or the build is
+    ## refused. Each pairs with a FirstLogonCommand that deliberately exits 0
+    ## on failure (a non-zero exit there can wedge the sentinel step), which
+    ## is safe only if something refuses to capture the result. The recipe
+    ## README asked an operator to run them by hand before a MANUAL sysprep;
+    ## the headless build had no operator and ran none of them, so a golden
+    ## missing Git, PowerShell 7 or the VS Build Tools sailed straight
+    ## through. The VS one is why this list exists: the promoted
+    ## ``win-arm-runner-20260915T154742Z`` carried no Build Tools, and every
+    ## MSVC link on ``eph-win-arm64`` failed with "linker `link.exe` not
+    ## found".
+  QwaCaptureGatePassedMarker* = "This image is fit to capture."
+    ## The line every capture gate prints last on success. Required IN
+    ## ADDITION to a zero exit, and it never appears in the command itself, so
+    ## an ssh wrapper that echoes its argument cannot pass a gate.
+  QwaCaptureGateTimeoutSec* = 300
   QwaGoldenManifestName* = "golden-manifest.json"
   QwaGoldenManifestSchema* = "gosti/qemu-windows-arm-golden/1"
   QwaGostiVersion* = "0.1.2"
     ## Recorded in each golden's manifest. Kept in step with the ``version``
     ## field of ``gosti.nimble``, which the unit gate compares against.
-  QwaDefaultGoldenDeadlineSec* = 90 * 60
+  QwaDefaultGoldenDeadlineSec* = 150 * 60
     ## One deadline for the whole run. The recipe README budgets 15-30 min
-    ## for the install, 1-3 for OpenSSH and 10-20 for sysprep/generalize, so
-    ## 90 minutes is generous; the point of the bound is that a guest stuck
-    ## at an OOBE prompt has no SSH and no console and would otherwise wait
+    ## for the install, 1-3 for OpenSSH and 10-20 for sysprep/generalize; the
+    ## measured 2026-09-15 run took 35 min, ~20 of them lost to one freeze.
+    ## Visual Studio Build Tools (FirstLogonCommand 6) add 20-40 min of
+    ## download and install on top, and the bootstrapper is an x64 binary
+    ## running under emulation, so 90 minutes no longer left room for a
+    ## freeze recovery. The point of the bound is unchanged: a guest stuck at
+    ## an OOBE prompt has no SSH and no console and would otherwise wait
     ## forever.
   QwaSentinelPollMs* = 15_000
   QwaPowerOffPollMs* = 2_000
@@ -1920,6 +1945,51 @@ proc sysprepTookHold*(b: QemuWindowsArmBackend, port: int,
     if not sleepUntilNextPoll(windowEnd, pollMs):
       return false
 
+proc buildCaptureGateCommand*(gate: string): string =
+  ## The remote command that runs one capture gate staged in the guest.
+  ##
+  ## ``-File``, not ``-Command``, and no ``$`` anywhere, for the reason
+  ## ``buildSysprepRemoteCommand`` documents: sshd's ``DefaultShell`` is
+  ## powershell.exe, so an OUTER PowerShell parses this before the inner one
+  ## runs, and it would expand any ``$`` in it. Success is judged by the exit
+  ## status AND ``QwaCaptureGatePassedMarker`` on stdout, which this string
+  ## does not contain.
+  "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File " &
+    QwaCaptureGateDir & "\\" & gate
+
+type
+  CaptureGateResult* = object
+    ok*: bool
+    gate*: string
+      ## The first gate that refused the image; empty when all passed.
+    exitCode*: int
+    output*: string
+      ## The refusing gate's output, which names what is missing.
+
+proc runCaptureGates*(b: QemuWindowsArmBackend, port: int,
+                      gates: seq[string] = @QwaCaptureGates):
+                      CaptureGateResult =
+  ## Run every capture gate in the guest, in order, and stop at the first
+  ## refusal. Called after the install sentinel and BEFORE sysprep, so a
+  ## refused image is never generalized, let alone given a manifest.
+  let pwdFile = writePasswordFile(b.sshPassword)
+  defer:
+    try: removeFile(pwdFile)
+    except CatchableError: discard
+  for gate in gates:
+    let cmd = b.buildSshpassSshArgs(pwdFile, port,
+                                    buildCaptureGateCommand(gate))
+    var r = ExecResult(exitCode: -1)
+    for attempt in 1 .. QemuSshAttempts:
+      r = runProcessCapture(cmd, timeoutSec = QwaCaptureGateTimeoutSec)
+      if not transientSshFailure(r) or attempt == QemuSshAttempts:
+        break
+      sleep(QemuSshRetryDelayMs)
+    if r.exitCode != 0 or QwaCaptureGatePassedMarker notin r.stdout:
+      return CaptureGateResult(ok: false, gate: gate, exitCode: r.exitCode,
+                               output: r.stdout & r.stderr)
+  CaptureGateResult(ok: true)
+
 proc machineSidFromUserSid*(sid: string): string =
   ## The machine SID is an account SID with its trailing RID removed.
   ##
@@ -2459,6 +2529,20 @@ proc buildWindowsArmGolden*(b: QemuWindowsArmBackend,
         "Windows Setup never ran at all because cdboot.efi's keypress " &
         "prompt went unanswered (" & $keysSent & " keypresses were " &
         "delivered), not because the answer file is wrong.")
+
+    # The install chain is done; refuse to capture an image it left short of
+    # what a CI job needs. Before sysprep, so nothing broken is generalized.
+    let gates = b.runCaptureGates(started.sshPort)
+    if not gates.ok:
+      var tail = gates.output.strip().splitLines()
+      if tail.len > 60:
+        tail = tail[^60 .. ^1]
+      raise goldenBuildFailure(buildDir,
+        "the capture gate " & gates.gate & " refused the installed image " &
+        "(exit " & $gates.exitCode & "), so it was NOT sysprepped. Its " &
+        "FirstLogonCommand exits 0 on failure so the chain cannot wedge; " &
+        "this gate is what keeps such an image from becoming a golden. " &
+        "Gate output:\n" & tail.join("\n"))
 
     let sysprep = b.runGuestSysprep(started.sshPort, spec.sysprepModeVm)
     if sysprep.exitCode != 0 and not transientSshFailure(sysprep):
