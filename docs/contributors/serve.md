@@ -137,12 +137,17 @@ backend needs. A device node, FIFO or socket is refused, directly or through a
 link, and is never opened. The file's own bytes must carry the backend's disk
 format: `QFI\xfb` for qcow2, `vhdxfile` for VHDX, a `conectix` header or
 footer for VHD, and `CD001` at offset `0x8001` for ISO 9660. The extension is
-not checked. The path may not pass through `/proc`, directly or through any
-symlink on the way (`/dev/fd` and `/dev/stdin` link there): `/proc/<pid>/root`,
-`/proc/<pid>/cwd` and `/proc/self/fd/<n>` are magic links whose `realpath` is
-a string naming a different file in the daemon's namespace than the one the
-worker would open, such as a file inside a container's root filesystem. A
-trailing `/` on a file does not resolve and is refused.
+not checked. The path may not pass through `/proc` or `/dev/fd`, directly or
+through any symlink on the way (`/dev/stdin` links into one of them):
+`/proc/<pid>/root`, `/proc/<pid>/cwd` and `/proc/self/fd/<n>` are magic links
+whose `realpath` is a string naming a different file in the daemon's
+namespace than the one the worker would open, such as a file inside a
+container's root filesystem. `/dev/fd` is a symlink to `/proc/self/fd` on
+Linux and an `fdesc` mount on macOS, where `stat("/dev/fd/0")` reports the
+daemon's own stdin; either way it names the opening process's file. A file
+path ending in `/` or `/.` is refused as not resolving to a file
+before it is resolved: the backend's `open` fails with `ENOTDIR`, but macOS's
+`realpath` drops the trailing `/` and would accept it.
 
 The magic bytes say what a file is, not what else opening it reads, so the
 check also follows what a hypervisor would open with the file

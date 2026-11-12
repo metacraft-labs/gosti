@@ -7,8 +7,12 @@
 ## real argv shapes are admitted, and every way found to reach a host path or
 ## another subcommand is refused — global options before the subcommand,
 ## ``--`` tricks, ``=``-joined options, repeated subcommands and flags, case
-## and whitespace variants, the client-only ``--remote`` family, and firmware
-## paths that escape their roots through ``..`` or a symlink.
+## and whitespace variants, the client-only ``--remote`` family, firmware
+## paths that escape their roots through ``..`` or a symlink, paths through
+## the magic ``/proc`` and ``/dev/fd`` directories (whose reason names the
+## directory the host's ``/dev/stdin`` actually reaches: ``/proc`` on Linux,
+## ``/dev/fd`` elsewhere), and a file spelled ``f/`` or ``f/.``, refused
+## before resolution because BSD ``realpath`` would accept it.
 ##
 ## The last suite ties the policy to the WORKER's parser: for a large,
 ## seeded set of adversarial argvs, everything the policy admits must parse
@@ -723,11 +727,19 @@ suite "t_serve_exec_policy: path spellings":
     let linkToProc = imgRoot / "via-proc.qcow2"
     createSymlink("/proc/self/root" & goldenQcow2, linkToProc)
     defer: removeFile(linkToProc)
+    # ``/dev/fd`` is magic on every POSIX host: a symlink to /proc/self/fd
+    # on Linux, an ``fdesc`` mount on macOS. ``/dev/stdin`` reaches it
+    # through ``/proc/self/fd/0`` on Linux and through ``fd/0`` on macOS.
+    let stdinVia = when defined(linux): "/proc" else: "/dev/fd"
     for cfg in [ExecPolicyConfig(), hostPolicy]:
       for p in ["/proc/self/root" & goldenQcow2, "/proc/1/root" & goldenQcow2,
-                "/proc/self/cwd/x.qcow2", "/proc/self/fd/0", "/dev/fd/0",
-                "/dev/stdin", linkToProc]:
+                "/proc/self/cwd/x.qcow2", "/proc/self/fd/0", linkToProc]:
         check refusedWith(runImg("libvirt", p), "resolves through /proc", cfg)
+      for p in ["/dev/fd/0", "/dev//fd/./0", "/dev/fd"]:
+        check refusedWith(runImg("libvirt", p), "resolves through /dev/fd",
+                          cfg)
+      check refusedWith(runImg("libvirt", "/dev/stdin"),
+                        "resolves through " & stdinVia, cfg)
       check refusedWith(runImg("qemu-windows-arm", "/proc/self/root" &
                         goldenDir), "resolves through /proc", cfg)
     let fw = publicFirmwareFile()
@@ -738,8 +750,9 @@ suite "t_serve_exec_policy: path spellings":
 
   test "trailing slash, doubled slashes, long and non-UTF-8 names":
     for cfg in [ExecPolicyConfig(), hostPolicy]:
-      check refusedWith(runImg("libvirt", goldenQcow2 & "/"),
-                        "does not resolve", cfg)
+      for suffix in ["/", "/.", "//", "/./"]:
+        check refusedWith(runImg("libvirt", goldenQcow2 & suffix),
+                          "does not resolve", cfg)
       check allowed(runImg("libvirt", "/" & goldenQcow2), cfg)
       check allowed(runImg("libvirt", imgRoot & "//./golden-win11.qcow2"),
                     cfg)
@@ -748,6 +761,27 @@ suite "t_serve_exec_policy: path spellings":
     let odd = imgRoot / "g\xff\xfe.qcow2"
     writeQcow2(odd)
     check allowed(runImg("libvirt", odd), hostPolicy)
+
+  test "a file spelled as a directory is refused before resolution":
+    # BSD ``realpath`` (macOS) resolves ``f/`` to ``f``; Linux's fails with
+    # ENOTDIR. The backend's ``open`` fails either way, so the policy must
+    # refuse the spelling without consulting the host's ``realpath``. A
+    # symlink ``f/`` cannot be built through the file system, so this
+    # proves the order: a ``/``-terminated path that DOES resolve (a
+    # directory with a valid image's name) is still refused as a file.
+    let dirNamedImage = imgRoot / "dir-named.qcow2"
+    createDir(dirNamedImage)
+    defer: removeDir(dirNamedImage)
+    for cfg in [ExecPolicyConfig(), hostPolicy]:
+      check refusedWith(runImg("libvirt", dirNamedImage & "/"),
+                        "does not resolve to an existing file", cfg)
+      check refusedWith(runImg("libvirt", dirNamedImage & "/."),
+                        "does not resolve to an existing file", cfg)
+      # Without the trailing spelling it is the resolve step's refusal.
+      check refusedWith(runImg("libvirt", dirNamedImage),
+                        "which is not a regular file", cfg)
+    # A golden DIRECTORY may still be spelled with a trailing '/'.
+    check allowed(runImg("qemu-windows-arm", goldenDir & "/"), hostPolicy)
 
   test "hardlinks are judged by their bytes":
     let hardSecret = imgRoot / "hard-secret.qcow2"

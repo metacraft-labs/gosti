@@ -17,7 +17,10 @@
 ##     ``allowIncusProfiles``, i.e. ``serve --allow-image-root`` /
 ##     ``--allow-incus-profile``), a golden image outside the roots, a
 ##     device, a link out of a root and a profile off the list are ``403``
-##     with no worker; an image under the root and a listed profile run;
+##     with no worker (with the Windows branch's own reasons where the
+##     policy refuses there for a different cause: any link, and POSIX-only
+##     paths that do not exist); an image under the root and a listed
+##     profile run;
 ##   * ``gosti --remote`` surfaces the refusal as a failing exit.
 ##
 ## The pure policy, including the parser-agreement property, is
@@ -270,19 +273,31 @@ suite "t_gosti_serve_exec_policy":
       check argv[dd + 1 .. ^1] == @["echo", "hi"]
 
   test "a golden image outside the image roots is refused, no worker":
+    # Each input is refused on every host; the REASON is per platform where
+    # ``hostPathReason``'s Windows branch differs: it refuses any link on the
+    # way instead of resolving it, and ``/dev/zero`` and ``/proc`` do not
+    # exist there, so those POSIX-only paths do not resolve at all.
+    const
+      winMissing = "does not resolve to an existing file"
+      linkReason = when defined(windows): "passes through a link"
+                   else: "outside the image roots"
+      deviceReason = when defined(windows): winMissing
+                     else: "not a regular file"
+      procReason = when defined(windows): winMissing
+                   else: "resolves through /proc"
     check checkRefused(@["run", "--ephemeral", "--backend", "libvirt",
       "--baseline", "garm-img1", "--base-image", otherGolden, "--source-image",
       otherGolden, "--keep", "--log-format", "json"],
       "outside the image roots")
     check checkRefused(@["run", "--ephemeral", "--backend", "libvirt",
       "--baseline", "garm-img1", "--source-image", linkOut, "--keep"],
-      "outside the image roots")
+      linkReason)
     check checkRefused(@["run", "--ephemeral", "--backend", "libvirt",
       "--baseline", "garm-img1", "--source-image",
       imgRoot & "/../elsewhere/other-lane.qcow2", "--keep"],
       "has a '..' component")
     check checkRefused(@["crud", "create_vm", "img1", "--backend", "mock",
-      "--source-image", "/dev/zero"], "not a regular file")
+      "--source-image", "/dev/zero"], deviceReason)
     check checkRefused(@["crud", "create_vm", "img1", "--backend", "mock",
       "--source-image", tokenFile], "outside the image roots")
     check checkRefused(@["run", "--ephemeral", "--backend", "incus",
@@ -293,7 +308,7 @@ suite "t_gosti_serve_exec_policy":
       "'raw' backing file")
     check checkRefused(@["run", "--ephemeral", "--backend", "libvirt",
       "--baseline", "garm-img1", "--source-image", "/proc/self/root" & golden,
-      "--keep"], "resolves through /proc")
+      "--keep"], procReason)
 
   test "an Incus profile off the allowlist is refused, no worker":
     check checkRefused(@["run", "--ephemeral", "--backend", "incus",

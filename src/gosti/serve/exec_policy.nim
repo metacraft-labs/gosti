@@ -439,15 +439,28 @@ type
     dir: bool                  ## a directory (else a regular file)
     formats: set[DiskFormat]   ## for a file: {} ⇒ any regular file
 
-proc throughProc(path: string): bool =
-  ## Whether resolving ``path`` would pass through ``/proc`` (directly or via
-  ## any symlink on the way). ``/proc/<pid>/root``, ``/proc/<pid>/cwd`` and
-  ## ``/proc/self/fd/<n>`` (``/dev/fd`` links there) are MAGIC links:
-  ## ``realpath`` reports a string that names a different file in the
-  ## daemon's mount namespace than the one the worker later opens (a
-  ## container's rootfs, another process's fd), so the policy would judge
-  ## one file and the backend read another. Walks the components itself,
-  ## with ``lstat``/``readlink``, so the check sees every hop.
+const MagicLinkDirs = ["/proc", "/dev/fd"]
+  ## Directories whose entries are MAGIC links. ``/proc/<pid>/root``,
+  ## ``/proc/<pid>/cwd`` and ``/proc/self/fd/<n>`` (Linux; ``/dev/fd`` and
+  ## ``/dev/stdin`` are symlinks into ``/proc/self/fd``), and the ``fdesc``
+  ## file system mounted on ``/dev/fd`` (macOS, the BSDs; ``/dev/stdin`` is a
+  ## symlink to ``fd/0``). Either way the name means "the file the OPENING
+  ## process holds", so the daemon judging it and the worker opening it see
+  ## different files. On macOS ``stat("/dev/fd/0")`` even reports the
+  ## attributes of the daemon's own stdin (``fdesc_attr`` in XNU's
+  ## ``bsd/miscfs/devfs/devfs_fdesc_support.c``), which the resolve step
+  ## alone would accept as a regular file when stdin is one.
+
+proc magicLinkReason(path: string): string =
+  ## "" unless resolving ``path`` would pass through one of
+  ## ``MagicLinkDirs`` (directly or via any symlink on the way), else the
+  ## refusal reason. Their entries name a different file in the daemon than
+  ## the one the worker later opens (a container's rootfs, another
+  ## process's fd), so the policy would judge one file and the backend read
+  ## another. Walks the components itself, with ``lstat``/``readlink``, so
+  ## the check sees every hop; a name is matched BEFORE it is ``lstat``-ed,
+  ## so a magic directory is refused whatever kind of node the host has
+  ## there (a symlink on Linux, an ``fdesc`` mount on macOS).
   when defined(posix):
     var pending = path.split('/')
     var cur = ""
@@ -461,21 +474,35 @@ proc throughProc(path: string): bool =
         cur = if i <= 0: "" else: cur[0 ..< i]
         continue
       let next = cur & "/" & c
-      if next == "/proc" or next.startsWith("/proc/"): return true
+      for m in MagicLinkDirs:
+        if next == m or next.startsWith(m & "/"):
+          return "resolves through " & m
       var st: Stat
       if lstat(next.cstring, st) != 0:
-        return false        # does not exist: the resolve step refuses it
+        return ""          # does not exist: the resolve step refuses it
       if S_ISLNK(st.st_mode):
         inc hops
-        if hops > 40: return true
-        let target = try: expandSymlink(next) except OSError: return true
+        if hops > 40: return "has more than 40 symlinks on the way"
+        let target = try: expandSymlink(next)
+                     except OSError: return "has an unreadable symlink on the way"
         if target.startsWith("/"): cur = ""
         pending = target.split('/') & pending
       else:
         cur = next
-    false
+    ""
   else:
-    false
+    ""
+
+proc namesDirectory(path: string): bool =
+  ## Whether ``path``'s last component is empty, ``.`` or ``..`` (``f/``,
+  ## ``f/.``, ``f/..``): a spelling that only a directory can satisfy. The
+  ## kernel's ``open`` fails with ``ENOTDIR`` when ``f`` is a file, so the
+  ## backend can never open it as one; but BSD ``realpath`` (macOS) drops
+  ## the trailing ``/`` and resolves ``f/`` to ``f``. Refusing the spelling
+  ## itself keeps the policy and the backend in agreement on every host.
+  let i = path.rfind({DirSep, AltSep})
+  let last = if i < 0: path else: path[i + 1 .. ^1]
+  last.len == 0 or last == "." or last == ".."
 
 proc hostPathReason(flag, path: string, roots: openArray[string],
                     rootsLabel: string, want: HostPathWant,
@@ -495,7 +522,12 @@ proc hostPathReason(flag, path: string, roots: openArray[string],
   ##   * names no other file a hypervisor would open with it (``refsReason``:
   ##     a qcow2 backing chain is followed, each link through this same
   ##     check; external data files and differencing VHD/VHDX are refused);
-  ##   * does not pass through ``/proc`` (``throughProc``).
+  ##   * for a file, does not end in ``/``, ``/.`` or ``/..``
+  ##     (``namesDirectory``) — refused before resolution, because BSD
+  ##     ``realpath`` resolves ``f/`` to ``f`` while the backend's ``open``
+  ##     fails with ``ENOTDIR``;
+  ##   * does not pass through ``/proc`` or ``/dev/fd``
+  ##     (``magicLinkReason``).
   ##
   ## ``depth`` > 0 is a qcow2 backing link: its name was written by whoever
   ## built the image and QEMU resolves it with the kernel, ``..`` included,
@@ -508,9 +540,12 @@ proc hostPathReason(flag, path: string, roots: openArray[string],
     return flag & " must be an absolute path"
   if depth == 0 and path.hasDotDot:
     return flag & " '" & path & "' has a '..' component"
-  if path.throughProc:
-    return flag & " '" & path & "' resolves through /proc"
+  let magic = path.magicLinkReason
+  if magic.len > 0:
+    return flag & " '" & path & "' " & magic
   let what = if want.dir: "directory" else: "file"
+  if not want.dir and path.namesDirectory:
+    return flag & " '" & path & "' does not resolve to an existing " & what
   when defined(windows):
     # GetFullPathName does not follow links, so refuse any reparse point on
     # the way instead of resolving it; and no ``\\?\`` / ``\\.\`` device or
