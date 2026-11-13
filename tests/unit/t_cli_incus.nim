@@ -30,16 +30,17 @@ suite "CLI Incus lifecycle":
       expect ValueError:
         discard parseCliOpts(invalid)
 
-  test "Incus store and guest paths are POSIX paths on every host":
-    # They name directories on the Incus server or inside its Linux
-    # containers, so a Windows host must not rewrite them with its own
-    # separators (CI on self-hosted-windows-x64 once saw
-    # path=\\srv\\repro-store reach `incus config device add`).
-    check checkedAbsoluteDir("g", "/srv//repro-store/") == "/srv/repro-store"
-    check checkedAbsoluteDir("g", "/") == "/"
+  test "the reprobuild guest path is a POSIX path on every host":
+    # It names a directory inside a Linux container, so a Windows host must
+    # not rewrite it with its own separators (CI on self-hosted-windows-x64
+    # once saw path=\\srv\\repro-store reach `incus config device add`).
+    # The host-side store path is a path on the host gosti runs on, and keeps
+    # that host's semantics (checkedAbsoluteDir).
+    check checkedGuestAbsoluteDir("g", "/srv//repro-store/") == "/srv/repro-store"
+    check checkedGuestAbsoluteDir("g", "/") == "/"
     for bad in ["", "srv", "/srv/../etc", "C:\\srv", "/srv\\x", "/srv\0"]:
       expect ValueError:
-        discard checkedAbsoluteDir("g", bad)
+        discard checkedGuestAbsoluteDir("g", bad)
 
   test "nested capability flags parse only for ephemeral Incus runs":
     let both = parseCliOpts(@[
@@ -78,7 +79,8 @@ suite "CLI Incus lifecycle":
     ])
     check o.incusShareHostNixStore
     # Normalized, so the serve allowlist and the device argv see one spelling.
-    check o.incusReprobuildStore == "/var/lib/reprobuild/shared-store"
+    # (with the host's own separators: it is a path on the host gosti runs on)
+    check o.incusReprobuildStore == "/var/lib/reprobuild/shared-store".normalizedPath
     check o.incusReprobuildStoreGuestPath == "/srv/repro-store"
     let none = parseCliOpts(@["run", "--ephemeral", "--backend", "incus",
                               "--baseline", "plain", "--", "true"])

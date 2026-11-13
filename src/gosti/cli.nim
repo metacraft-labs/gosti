@@ -739,25 +739,38 @@ proc checkedImageRoot*(source, root: string): string =
   root
 
 proc checkedAbsoluteDir*(source, dir: string): string =
-  ## An absolute directory on the Incus server or inside one of its Linux
-  ## containers, with no ``..`` component, no NUL and no ``key=value``
-  ## separator ambiguity: the value lands verbatim in an ``incus config device
-  ## add … source=<dir>`` / ``path=<dir>`` argument, and a relative path would
-  ## move with the worker's cwd. Returned normalized (``/a//b/`` → ``/a/b``) so
-  ## an allowlist compares one spelling.
-  ##
-  ## Every caller names an Incus path, which is a POSIX path whatever host the
-  ## CLI runs on, so this is checked and normalized with ``/`` semantics.
-  ## ``os.normalizedPath`` would rewrite ``/srv/repro-store`` to
-  ## ``\srv\repro-store`` on a Windows host, which no Linux container mounts.
+  ## An absolute directory with no ``..`` component, no NUL and no
+  ## ``key=value`` separator ambiguity: the value lands verbatim in an
+  ## ``incus config device add … source=<dir>`` / ``path=<dir>`` argument, and
+  ## a relative path would move with the worker's cwd. Returned normalized
+  ## (``/a//b/`` → ``/a/b``) so an allowlist compares one spelling.
+  if dir.len == 0 or not dir.isAbsolute:
+    raise newException(ValueError,
+      source & " '" & dir & "' must be an absolute directory")
+  if '\0' in dir:
+    raise newException(ValueError, source & " contains a NUL byte")
+  for part in dir.split({'/', '\\'}):
+    if part == "..":
+      raise newException(ValueError,
+        source & " '" & dir & "' may not contain a '..' component")
+  result = dir.normalizedPath
+  if result.len > 1 and result.endsWith("/"):
+    result.setLen(result.len - 1)
+
+proc checkedGuestAbsoluteDir*(source, dir: string): string =
+  ## Like ``checkedAbsoluteDir``, for a directory INSIDE a Linux guest. The
+  ## value is a POSIX path whatever the host is, so it is checked and
+  ## normalized with ``/`` semantics: ``normalizedPath`` would rewrite
+  ## ``/srv/repro-store`` to ``\srv\repro-store`` on a Windows host, which no
+  ## Linux container can mount.
   if dir.len == 0 or not dir.startsWith('/'):
     raise newException(ValueError,
-      source & " '" & dir & "' must be an absolute directory (starting with '/')")
+      source & " '" & dir & "' must be an absolute guest directory (starting with '/')")
   if '\0' in dir:
     raise newException(ValueError, source & " contains a NUL byte")
   if '\\' in dir:
     raise newException(ValueError,
-      source & " '" & dir & "' is an Incus path and may not contain '\\'")
+      source & " '" & dir & "' is a guest path and may not contain '\\'")
   for part in dir.split('/'):
     if part == "..":
       raise newException(ValueError,
@@ -982,7 +995,7 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
         raise newException(ValueError,
           "--incus-reprobuild-store-guest-path requires a directory")
       result.incusReprobuildStoreGuestPath =
-        checkedAbsoluteDir("--incus-reprobuild-store-guest-path", args[i])
+        checkedGuestAbsoluteDir("--incus-reprobuild-store-guest-path", args[i])
       inc i
     of "--incus-profile":
       inc i
