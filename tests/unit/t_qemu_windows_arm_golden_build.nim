@@ -943,6 +943,47 @@ exit 1
     check fileExists(tmp / "ssh" / "sysprep-launched")
     check epochTime() - start < 120.0
 
+  test "a capture gate's refusal fails the build BEFORE sysprep":
+    ## The Windows-ARM golden promoted 2026-09-15 had no VS Build Tools and
+    ## nothing noticed: the FirstLogonCommands that provision Git, pwsh and
+    ## the Build Tools exit 0 on failure, and the headless build ran none of
+    ## the gates that make that safe. A refusing gate must stop the build
+    ## with the gate's own words, and the guest must never be generalized.
+    let tmp = createTempDir("gosti-qwa-run-gate-", "")
+    defer: removeDir(tmp)
+    let b = goldenBackend(tmp)
+    writeFile(tmp / "win.iso", "iso")
+    writeFile(tmp / "unattend.iso", "iso")
+    writeFile(tmp / "code.fd", "efi code")
+    writeFile(tmp / "vars.fd", "efi vars")
+    putEnv("GOSTI_QEMU_EFI_CODE_TEMPLATE", tmp / "code.fd")
+    putEnv("GOSTI_QEMU_EFI_VARS_TEMPLATE", tmp / "vars.fd")
+    createDir(tmp / "ssh")
+    writeFile(tmp / "ssh" / "sentinel", "")
+    writeFile(tmp / "ssh" / "refuse-assert-vs-buildtools.ps1", "")
+    putEnv(FakeSshDirEnv, tmp / "ssh")
+    putEnv(FakeQemuEnv, "1")
+    let golden = tmp / "win-arm-runner-0600"
+    putEnv("GOSTI_GOLDEN_FAKE_SSH_VMDIR", golden)
+    var raised = false
+    try:
+      discard b.buildWindowsArmGolden(newGoldenBuildSpec(
+        buildDir = golden, windowsIso = tmp / "win.iso",
+        autounattendIso = tmp / "unattend.iso", diskGB = 1, cpus = 1,
+        memoryMB = 64, deadlineSec = 60, keyPressWindowSec = 1))
+    except GostiError as e:
+      raised = true
+      check "assert-vs-buildtools.ps1" in e.msg
+      check "NOT sysprepped" in e.msg
+      # The gate's own diagnosis is carried through, not paraphrased.
+      check "vswhere.exe missing" in e.msg
+    check raised
+    check not fileExists(tmp / "ssh" / "sysprep-launched")
+    check not fileExists(golden / QwaGoldenManifestName)
+    # The gates before it ran and passed; the refusing one was the last.
+    let ran = readFile(tmp / "ssh" / "capture-gates").strip().splitLines()
+    check ran == @QwaCaptureGates
+
   test "a missing UEFI firmware template fails with the fix in the message":
     # Without firmware QEMU boots nothing at all, and an install that never
     # starts looks exactly like one that is merely slow.
@@ -1050,6 +1091,9 @@ exit 1
     # could not pass here either.
     check validateWindowsArmVmDir(produced) == absolutePath(golden)
     check requireWindowsArmGolden(produced) == absolutePath(golden)
+    # ...every capture gate ran, in order, before sysprep...
+    check readFile(tmp / "ssh" / "capture-gates").strip().splitLines() ==
+      @QwaCaptureGates
     # ...sysprep really was issued, with the real command...
     check fileExists(tmp / "ssh" / "sysprep-launched")
     let issued = readFile(tmp / "ssh" / "sysprep-command")

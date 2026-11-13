@@ -45,6 +45,9 @@
 ##     its own store (Incus, Tart, UTM) may not be a path or an option;
 ##   * ``--incus-profile`` must be on the profile allowlist
 ##     (``DefaultIncusProfiles`` unless configured).
+##   * ``--incus-reprobuild-store`` must name, verbatim, a directory on the
+##     reprobuild-store allowlist (``DefaultIncusReprobuildStores`` unless
+##     configured): it is mounted read-write into the guest.
 ##
 ## All host paths go through one check, ``hostPathReason``.
 ##
@@ -101,7 +104,10 @@ const
     ("--backend", fkValue), ("--baseline", fkValue), ("--guest", fkValue),
     ("--base-image", fkValue), ("--source-image", fkValue),
     ("--incus-profile", fkValue), ("--incus-security-nesting", fkSwitch),
-    ("--incus-nested-kvm", fkSwitch), ("--cpus", fkValue),
+    ("--incus-nested-kvm", fkSwitch),
+    ("--incus-share-host-nix-store", fkSwitch),
+    ("--incus-reprobuild-store", fkValue),
+    ("--incus-reprobuild-store-guest-path", fkValue), ("--cpus", fkValue),
     ("--memory-mb", fkValue), ("--uefi-loader", fkValue),
     ("--uefi-nvram-template", fkValue), ("--ephemeral-prefix", fkValue),
     ("--timeout-sec", fkValue), ("--log-format", fkValue)]
@@ -667,6 +673,9 @@ type
     incusProfiles*: seq[string]
       ## Exact names ``--incus-profile`` may take. EMPTY ⇒
       ## ``DefaultIncusProfiles``.
+    incusReprobuildStores*: seq[string]
+      ## Exact host directories ``--incus-reprobuild-store`` may name. EMPTY
+      ## ⇒ ``DefaultIncusReprobuildStores``.
 
   ImageKind* = enum
     ## How a backend reads ``--source-image`` / ``--base-image``.
@@ -688,6 +697,14 @@ const
     ## garm-provider-gosti sends unless its operator sets
     ## ``remote.incusProfiles`` (nixos-modules ``modules/garm``, default
     ## ``[ ]``, i.e. no flag at all).
+
+  DefaultIncusReprobuildStores* = ["/var/lib/reprobuild/shared-store"]
+    ## What ``--incus-reprobuild-store`` may name when the operator configured
+    ## nothing: the conventional location of the host's shared reprobuild CAS
+    ## (infra's PM3 dataset). The value is a host directory mounted
+    ## READ-WRITE into a guest, so a caller may never choose it freely; a host
+    ## whose CAS lives elsewhere names it with
+    ## ``--allow-incus-reprobuild-store``.
 
   ImageFlags* = ["--base-image", "--source-image"]
 
@@ -784,6 +801,19 @@ proc profileReason*(profile: string, pc: ExecPolicyConfig): string =
   "--incus-profile '" & profile & "' is not allowed via serve (allowed " &
     "on this host: " & allowed.join(", ") & "; see serve " &
     "--allow-incus-profile)"
+
+proc reprobuildStoreReason*(dir: string, pc: ExecPolicyConfig): string =
+  ## "" when ``--incus-reprobuild-store dir`` names, verbatim, a directory on
+  ## the operator's allowlist. No normalisation and no symlink resolution:
+  ## the worker hands the same text to ``incus config device add``, so the
+  ## text checked is the text used.
+  let allowed =
+    if pc.incusReprobuildStores.len > 0: pc.incusReprobuildStores
+    else: @DefaultIncusReprobuildStores
+  if dir in allowed: return ""
+  "--incus-reprobuild-store '" & dir & "' is not allowed via serve " &
+    "(allowed on this host: " & allowed.join(", ") & "; see serve " &
+    "--allow-incus-reprobuild-store)"
 
 proc commonReason(parsed: ParsedArgv): string =
   ## Checks every admitted subcommand shares (run after ``parseAgainst``).
@@ -885,6 +915,7 @@ proc hostResourceReason(sub: string, parsed: ParsedArgv,
   ##   repeated ``--backend`` cannot turn a name admitted for incus into a
   ##   path read by libvirt;
   ## * ``--incus-profile``: on the operator's allowlist, whatever the backend.
+  ## * ``--incus-reprobuild-store``: on the operator's allowlist, verbatim.
   for flag in ["--uefi-loader", "--uefi-nvram-template"]:
     for p in parsed.valuesOf(flag):
       let reason = firmwarePathReason(flag, p)
@@ -897,6 +928,9 @@ proc hostResourceReason(sub: string, parsed: ParsedArgv,
         if reason.len > 0: return reason
   for p in parsed.valuesOf("--incus-profile"):
     let reason = profileReason(p, pc)
+    if reason.len > 0: return reason
+  for d in parsed.valuesOf("--incus-reprobuild-store"):
+    let reason = reprobuildStoreReason(d, pc)
     if reason.len > 0: return reason
   ""
 

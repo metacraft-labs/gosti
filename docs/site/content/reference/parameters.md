@@ -119,6 +119,9 @@ the prior `incus launch` argv exactly.
 | --- | --- | --- | --- |
 | `--incus-security-nesting` | bool | `false` | Before first start, sets `security.nesting=true` plus the fixed mknod/setxattr syscall intercepts used by unprivileged nested Docker/Podman. |
 | `--incus-nested-kvm` | bool | `false` | Implies nesting; before first start attaches exactly host `/dev/kvm` to guest `/dev/kvm` as a unix-char device with mode `0666`, then converges and verifies that exact guest mode and a real read/write open. The host path/type/mode are not caller-selectable. |
+| `--incus-share-host-nix-store` | bool | `false` | Before first start, mounts host `/nix/store` read-only and the host nix-daemon socket directory into the container; after it, installs `/usr/local/bin/nix*` wrappers that run the host's Nix client (resolved from `/run/current-system/sw/bin/nix` into `/nix/store`) with `NIX_REMOTE=daemon`, and verifies one runs. The guest is an untrusted daemon client (`Trusted: 0`). The paths are not caller-selectable. A host whose Nix client does not resolve into `/nix/store` refuses the create before anything is made. |
+| `--incus-reprobuild-store <dir>` | host path | empty | Before first start, mounts this existing host directory (the reprobuild BLAKE3 CAS) read-write. Content-addressed, so a guest cannot corrupt an existing entry. Through `gosti serve` it must be on the daemon's `--allow-incus-reprobuild-store` list (default `/var/lib/reprobuild/shared-store`). |
+| `--incus-reprobuild-store-guest-path <dir>` | guest path | the host path | In-guest mount point for `--incus-reprobuild-store`. |
 | `--incus-profile <name>` | repeatable string | empty | Forwards existing administrator-created Incus profiles in the supplied order. Empty retains Incus's automatic `default` profile. An explicit list replaces it: include `--incus-profile default` first to retain its root disk and NIC before an overlay profile. |
 
 Profiles are applied at instance creation, before the first guest process.
@@ -162,6 +165,14 @@ Gosti. All are ignored by non-incus providers.
 | `incusGpuPassthrough` | bool | `false` | Attaches an NVIDIA GPU to each container (`incus config device add <c> gpu gpu` + `nvidia.runtime=true`). Requires `hardware.nvidia-container-toolkit.enable = true` on the host. Backs a GPU runner class. |
 
 ### Shared-store options
+
+A provider with `backend = "remote"` and `remote.targetBackend = "incus"` sets
+the same three as `remote.incusShareHostNixStore`, `remote.incusReprobuildStore`
+and `remote.incusReprobuildStoreGuestPath`. It forwards them to the serving
+host's `gosti run --ephemeral --backend incus` as
+`--incus-share-host-nix-store`, `--incus-reprobuild-store` and
+`--incus-reprobuild-store-guest-path` (section 2), so the host paths are that
+host's, not the controller's.
 
 | Option | Type | Default | Effect + security posture |
 | --- | --- | --- | --- |

@@ -449,7 +449,7 @@ sleep 120
 """)
 
 proc writeFakeSshpass(path: string) =
-  ## Answers the two remote commands the golden build issues. The command it
+  ## Answers the remote commands the golden build issues. The command it
   ## matches on is the REAL one the backend built.
   writeExecutable(path, """#!/bin/sh
 last=""
@@ -485,6 +485,20 @@ case "$last" in
       exit 0
     fi
     exit 1
+    ;;
+  *"-File C:\\Windows\\Temp\\assert-"*)
+    # A capture gate. Records which gate ran, in order, and refuses when the
+    # test dropped a `refuse-<gate>` file -- otherwise it answers the way a
+    # passing gate does, with the marker the backend requires.
+    gate="${last##*\\}"
+    printf '%s\n' "$gate" >> "$GOSTI_GOLDEN_FAKE_SSH_DIR/capture-gates"
+    if [ -f "$GOSTI_GOLDEN_FAKE_SSH_DIR/refuse-$gate" ]; then
+      echo "  [FAIL] vswhere.exe missing: VS Build Tools are not installed"
+      echo "DO NOT capture this image."
+      exit 1
+    fi
+    echo "$gate: OK -- This image is fit to capture."
+    exit 0
     ;;
   *sysprep.exe*)
     : > "$GOSTI_GOLDEN_FAKE_SSH_DIR/sysprep-launched"

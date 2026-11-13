@@ -30,6 +30,18 @@ suite "CLI Incus lifecycle":
       expect ValueError:
         discard parseCliOpts(invalid)
 
+  test "the reprobuild guest path is a POSIX path on every host":
+    # It names a directory inside a Linux container, so a Windows host must
+    # not rewrite it with its own separators (CI on self-hosted-windows-x64
+    # once saw path=\\srv\\repro-store reach `incus config device add`).
+    # The host-side store path is a path on the host gosti runs on, and keeps
+    # that host's semantics (checkedAbsoluteDir).
+    check checkedGuestAbsoluteDir("g", "/srv//repro-store/") == "/srv/repro-store"
+    check checkedGuestAbsoluteDir("g", "/") == "/"
+    for bad in ["", "srv", "/srv/../etc", "C:\\srv", "/srv\\x", "/srv\0"]:
+      expect ValueError:
+        discard checkedGuestAbsoluteDir("g", bad)
+
   test "nested capability flags parse only for ephemeral Incus runs":
     let both = parseCliOpts(@[
       "run", "--ephemeral", "--backend", "incus",
@@ -53,6 +65,45 @@ suite "CLI Incus lifecycle":
       @["provision", "--backend", "incus", "--incus-security-nesting"],
       @["run", "--ephemeral", "--backend", "auto",
         "--incus-security-nesting"],
+    ]:
+      expect ValueError:
+        discard parseCliOpts(invalid)
+
+  test "shared-store flags parse only for ephemeral Incus runs":
+    let o = parseCliOpts(@[
+      "run", "--ephemeral", "--backend", "incus",
+      "--incus-share-host-nix-store",
+      "--incus-reprobuild-store", "/var/lib/reprobuild//shared-store/",
+      "--incus-reprobuild-store-guest-path", "/srv/repro-store",
+      "--baseline", "runner-store", "--", "true",
+    ])
+    check o.incusShareHostNixStore
+    # Normalized, so the serve allowlist and the device argv see one spelling.
+    # (with the host's own separators: it is a path on the host gosti runs on)
+    check o.incusReprobuildStore == "/var/lib/reprobuild/shared-store".normalizedPath
+    check o.incusReprobuildStoreGuestPath == "/srv/repro-store"
+    let none = parseCliOpts(@["run", "--ephemeral", "--backend", "incus",
+                              "--baseline", "plain", "--", "true"])
+    check not none.incusShareHostNixStore
+    check none.incusReprobuildStore.len == 0
+
+    for invalid in [
+      @["run", "--backend", "incus", "--incus-share-host-nix-store"],
+      @["run", "--ephemeral", "--backend", "libvirt",
+        "--incus-share-host-nix-store"],
+      @["provision", "--backend", "incus", "--incus-reprobuild-store",
+        "/var/lib/reprobuild/shared-store"],
+      @["run", "--ephemeral", "--backend", "incus",
+        "--incus-reprobuild-store", "relative/store"],
+      @["run", "--ephemeral", "--backend", "incus",
+        "--incus-reprobuild-store", "/var/lib/../etc"],
+      @["run", "--ephemeral", "--backend", "incus",
+        "--incus-reprobuild-store"],
+      @["run", "--ephemeral", "--backend", "incus",
+        "--incus-reprobuild-store-guest-path", "/srv/repro-store"],
+      @["run", "--ephemeral", "--backend", "incus",
+        "--incus-reprobuild-store", "/var/lib/reprobuild/shared-store",
+        "--incus-reprobuild-store-guest-path", "srv"],
     ]:
       expect ValueError:
         discard parseCliOpts(invalid)

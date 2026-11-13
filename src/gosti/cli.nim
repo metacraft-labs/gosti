@@ -16,7 +16,7 @@
 ## CLI falls back to NoopBackend if ``--allow-noop-fallback`` is set
 ## (used by the M0 selection test on hosts without real hypervisors).
 
-import std/[json, options, os, osproc, sequtils, strformat, strutils, tables,
+import std/[json, options, os, osproc, pathnorm, sequtils, strformat, strutils, tables,
             terminal, times]
 import ./types, ./output, ./auto, ./orchestrator, ./detached_bootstrap
 import ./cloud_init_seed
@@ -187,6 +187,15 @@ type
                                  ## opt-in for the fixed /dev/kvm device.
     incusProfiles*: seq[string]  ## Ordered, administrator-selected Incus
                                  ## profiles; empty retains Incus's default.
+    incusShareHostNixStore*: bool ## ``--incus-share-host-nix-store`` —
+                                 ## trusted controller opt-in for the fixed
+                                 ## shared host Nix store (PM2).
+    incusReprobuildStore*: string ## ``--incus-reprobuild-store <dir>`` —
+                                 ## host reprobuild CAS shared read-write
+                                 ## (PM3); empty ⇒ none.
+    incusReprobuildStoreGuestPath*: string ## ``--incus-reprobuild-store-
+                                 ## guest-path <dir>`` — its in-guest mount
+                                 ## point; empty ⇒ the host path.
     kernel*: string              ## ``--kernel <path>`` — optional direct-kernel
                                  ## boot bzImage for the ephemeral clone (the
                                  ## tiny Linux golden). Omit for a disk-bootable
@@ -276,6 +285,12 @@ type
                                  ## ``--incus-profile`` names ``/v1/exec``
                                  ## admits. Else
                                  ## ``$GOSTI_SERVE_ALLOW_INCUS_PROFILES``.
+    allowIncusReprobuildStores*: seq[string] ## ``serve
+                                 ## --allow-incus-reprobuild-store <dir>``
+                                 ## (repeatable): the
+                                 ## ``--incus-reprobuild-store`` directories
+                                 ## ``/v1/exec`` admits. Else
+                                 ## ``$GOSTI_SERVE_ALLOW_INCUS_REPROBUILD_STORES``.
 
 const HelpText = """
 gosti <subcommand> [flags]
@@ -520,6 +535,19 @@ Common flags:
                                   security.nesting and attach a fixed
                                   read/write /dev/kvm device before first
                                   start. Requires host nested KVM support.
+  --incus-share-host-nix-store   Incus run --ephemeral only: before first
+                                  start, share the host /nix/store read-only
+                                  and the nix-daemon socket directory; after
+                                  it, install /usr/local/bin/nix* wrappers
+                                  that run the host's Nix client against the
+                                  host daemon (the guest is an untrusted
+                                  daemon client).
+  --incus-reprobuild-store <dir>  Incus run --ephemeral only: before first
+                                  start, share this host reprobuild CAS
+                                  directory read-write (content-addressed).
+  --incus-reprobuild-store-guest-path <dir>
+                                  Its in-guest mount point (default: the host
+                                  path). Requires --incus-reprobuild-store.
   --cpus/--memory-mb (Incus)      With run --ephemeral --backend incus, set
                                   the container's limits.cpu (a CPU count)
                                   and limits.memory (MiB) before first start.
@@ -577,6 +605,7 @@ serve daemon (RA1 remoting — the authenticated network access point):
                    [--worker-exe <path>] [--port-file <f>] [--quiet]
                    [--serve-threads <n>] [--exec-deadline-sec <n>]
                    [--allow-image-root <dir>]... [--allow-incus-profile <name>]...
+                   [--allow-incus-reprobuild-store <dir>]...
                    [--enroll-secret-file <f>] [--identity-ttl-sec <n>]
                    [--host-id <name>]
     Expose the gosti CLI backend ops over a versioned HTTP/JSON RPC
@@ -607,6 +636,13 @@ serve daemon (RA1 remoting — the authenticated network access point):
                                   admitted (replaces the default, `default`).
                                   Also $GOSTI_SERVE_ALLOW_INCUS_PROFILES
                                   (comma-separated).
+  --allow-incus-reprobuild-store <dir>
+                                  Repeatable. The exact host directories
+                                  --incus-reprobuild-store may name (replaces
+                                  the default,
+                                  /var/lib/reprobuild/shared-store). Also
+                                  $GOSTI_SERVE_ALLOW_INCUS_REPROBUILD_STORES
+                                  (path-list).
 
   RA6 enrollment / signed capability manifest (GET /v1/manifest):
   --enroll-secret-file <path>     Per-host enrollment secret (prefer over
@@ -702,6 +738,47 @@ proc checkedImageRoot*(source, root: string): string =
     raise newException(ValueError, source & " contains a NUL byte")
   root
 
+proc checkedAbsoluteDir*(source, dir: string): string =
+  ## An absolute directory with no ``..`` component, no NUL and no
+  ## ``key=value`` separator ambiguity: the value lands verbatim in an
+  ## ``incus config device add … source=<dir>`` / ``path=<dir>`` argument, and
+  ## a relative path would move with the worker's cwd. Returned normalized
+  ## (``/a//b/`` → ``/a/b``) so an allowlist compares one spelling.
+  if dir.len == 0 or not dir.isAbsolute:
+    raise newException(ValueError,
+      source & " '" & dir & "' must be an absolute directory")
+  if '\0' in dir:
+    raise newException(ValueError, source & " contains a NUL byte")
+  for part in dir.split({'/', '\\'}):
+    if part == "..":
+      raise newException(ValueError,
+        source & " '" & dir & "' may not contain a '..' component")
+  result = dir.normalizedPath
+  if result.len > 1 and result.endsWith("/"):
+    result.setLen(result.len - 1)
+
+proc checkedGuestAbsoluteDir*(source, dir: string): string =
+  ## Like ``checkedAbsoluteDir``, for a directory INSIDE a Linux guest. The
+  ## value is a POSIX path whatever the host is, so it is checked and
+  ## normalized with ``/`` semantics: ``normalizedPath`` would rewrite
+  ## ``/srv/repro-store`` to ``\srv\repro-store`` on a Windows host, which no
+  ## Linux container can mount.
+  if dir.len == 0 or not dir.startsWith('/'):
+    raise newException(ValueError,
+      source & " '" & dir & "' must be an absolute guest directory (starting with '/')")
+  if '\0' in dir:
+    raise newException(ValueError, source & " contains a NUL byte")
+  if '\\' in dir:
+    raise newException(ValueError,
+      source & " '" & dir & "' is a guest path and may not contain '\\'")
+  for part in dir.split('/'):
+    if part == "..":
+      raise newException(ValueError,
+        source & " '" & dir & "' may not contain a '..' component")
+  result = pathnorm.normalizePath(dir, '/')
+  if result.len > 1 and result.endsWith("/"):
+    result.setLen(result.len - 1)
+
 proc checkedIncusProfile*(source, name: string): string =
   ## A ``serve --allow-incus-profile`` value: a non-empty name with no
   ## whitespace, separator or NUL (Incus's own profile-name rule is
@@ -732,6 +809,11 @@ proc serveAllowlistsFromEnv*(opts: var CliOpts) =
       if name.strip.len > 0:
         opts.allowIncusProfiles.add(
           checkedIncusProfile("GOSTI_SERVE_ALLOW_INCUS_PROFILES", name.strip))
+  if opts.allowIncusReprobuildStores.len == 0:
+    for dir in getEnv("GOSTI_SERVE_ALLOW_INCUS_REPROBUILD_STORES").split(PathSep):
+      if dir.strip.len > 0:
+        opts.allowIncusReprobuildStores.add(checkedAbsoluteDir(
+          "GOSTI_SERVE_ALLOW_INCUS_REPROBUILD_STORES", dir.strip))
 
 proc parseCliOpts*(args: seq[string]): CliOpts =
   ## Minimal hand-rolled parser. Keeps the binary dependency-free.
@@ -896,6 +978,24 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       inc i
     of "--incus-nested-kvm":
       result.incusNestedKvm = true
+      inc i
+    of "--incus-share-host-nix-store":
+      result.incusShareHostNixStore = true
+      inc i
+    of "--incus-reprobuild-store":
+      inc i
+      if i >= args.len:
+        raise newException(ValueError, "--incus-reprobuild-store requires a directory")
+      result.incusReprobuildStore =
+        checkedAbsoluteDir("--incus-reprobuild-store", args[i])
+      inc i
+    of "--incus-reprobuild-store-guest-path":
+      inc i
+      if i >= args.len:
+        raise newException(ValueError,
+          "--incus-reprobuild-store-guest-path requires a directory")
+      result.incusReprobuildStoreGuestPath =
+        checkedGuestAbsoluteDir("--incus-reprobuild-store-guest-path", args[i])
       inc i
     of "--incus-profile":
       inc i
@@ -1067,6 +1167,14 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       result.allowIncusProfiles.add(
         checkedIncusProfile("--allow-incus-profile", args[i]))
       inc i
+    of "--allow-incus-reprobuild-store":
+      inc i
+      if i >= args.len:
+        raise newException(ValueError,
+          "--allow-incus-reprobuild-store requires a directory")
+      result.allowIncusReprobuildStores.add(
+        checkedAbsoluteDir("--allow-incus-reprobuild-store", args[i]))
+      inc i
     of "-h", "--help":
       result.subcommand = "help"
       inc i
@@ -1124,12 +1232,19 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
     raise newException(ValueError,
       "--ssh-host-key-alias must not contain whitespace or control characters")
   if result.incusSecurityNesting or result.incusNestedKvm or
-      result.incusProfiles.len > 0:
+      result.incusProfiles.len > 0 or result.incusShareHostNixStore or
+      result.incusReprobuildStore.len > 0 or
+      result.incusReprobuildStoreGuestPath.len > 0:
     if result.subcommand != "run" or not result.ephemeral or
        result.backend.toLowerAscii() != $biIncus:
       raise newException(ValueError,
-        "--incus-security-nesting/--incus-nested-kvm/--incus-profile require " &
+        "--incus-security-nesting/--incus-nested-kvm/--incus-profile/" &
+        "--incus-share-host-nix-store/--incus-reprobuild-store* require " &
         "run --ephemeral --backend incus")
+  if result.incusReprobuildStoreGuestPath.len > 0 and
+      result.incusReprobuildStore.len == 0:
+    raise newException(ValueError,
+      "--incus-reprobuild-store-guest-path requires --incus-reprobuild-store")
 
 proc logEvent*(format: LogFormat, level: string, msg: string,
               fields: openArray[(string, string)] = []) =
@@ -1663,7 +1778,10 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
     userData: userData,
     config: incusEphemeralLimits(opts.cpus, opts.memoryMB),
     securityNesting: opts.incusSecurityNesting,
-    nestedKvm: opts.incusNestedKvm)
+    nestedKvm: opts.incusNestedKvm,
+    shareHostNixStore: opts.incusShareHostNixStore,
+    reprobuildStore: opts.incusReprobuildStore,
+    reprobuildStoreGuestPath: opts.incusReprobuildStoreGuestPath)
   logEvent(opts.logFormat, "info", "ephemeral container: launch",
            {"backend": $biIncus, "name": opts.baseline,
             "base": (if opts.baseImage.len > 0: opts.baseImage else: ib.baseImage)})
@@ -3158,7 +3276,8 @@ proc serveConfigFor*(cliOpts: CliOpts, token, host: string,
     serveThreads: opts.serveThreads,
     execDeadlineSec: opts.execDeadlineSec,
     allowImageRoots: opts.allowImageRoots,
-    allowIncusProfiles: opts.allowIncusProfiles)
+    allowIncusProfiles: opts.allowIncusProfiles,
+    allowIncusReprobuildStores: opts.allowIncusReprobuildStores)
 
 proc cmdServe(opts: CliOpts): int =
   ## Run the remoting daemon. Binds an authenticated HTTP/JSON endpoint and

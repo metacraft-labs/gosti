@@ -49,6 +49,22 @@ containing:
   [`../windows-x64-base/README.md`](../windows-x64-base/README.md#git-for-windows-and-why-the-machine-path-matters);
   the pin lives in [`../lib/provision-git.ps1`](../lib/provision-git.ps1)
   and is shared with the x64 recipe.
+- **Visual Studio 2022 Build Tools** at
+  `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`:
+  `Workload.VCTools`, `VC.Tools.x86.x64`, `VC.Tools.ARM64` and
+  `Windows11SDK.26100`, with `--includeRecommended`. MSVC is not
+  redistributable, so no store can supply it, and without it every MSVC
+  cargo link on a clone fails with ``linker `link.exe` not found`` (the
+  2026-09-15 golden shipped without it). Jobs here currently run an x64
+  toolchain under emulation, which needs `VC.Tools.x86.x64`; the ARM64
+  toolset serves the native target. The bootstrapper is the fixed-version
+  one, pinned by SHA-256 in
+  [`../lib/vs-buildtools.pins`](../lib/vs-buildtools.pins) (the same pin as
+  infra's persistent x64 runner) and Authenticode-checked; the guest
+  downloads it and the component payloads during FirstLogonCommand 6,
+  which takes 20-40 minutes. The installer is
+  [`../lib/provision-vs-buildtools.ps1`](../lib/provision-vs-buildtools.ps1),
+  shared with the x64 golden.
 - WinRM disabled (we use SSH, not PSRemoting, to mirror the cross-
   backend transport contract).
 - UTM guest tools (`spice-guest-tools` for ARM) installed so
@@ -224,6 +240,23 @@ continues; use `--require-virtio-netkvm-arm64` when building QEMU-ready
 goldens.
 
 ### Verify before SysPrep
+
+**The headless build (`buildWindowsArmGolden`) runs every gate below
+itself**, over SSH, after the install sentinel and before sysprep, and
+refuses the build when one fails (`QwaCaptureGates`: Git, PowerShell 7,
+VS Build Tools). The manual commands here are for a golden captured by
+hand. The VS Build Tools gate is:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File C:\Windows\Temp\assert-vs-buildtools.ps1
+```
+
+It requires no `gosti-vs-buildtools-provision-failed` marker, `vswhere`
+finding one installation that carries every `VS_COMPONENTS` id at the
+pinned path, a `link.exe` and `cl.exe` for both the `x64` and `arm64`
+targets plus their CRT libraries, and the SDK's headers and import
+libraries for both.
 
 `repro-install-done` is gated on OpenSSH only, **not** on Git: a Git
 failure must not make an otherwise-good golden look unprovisioned, and

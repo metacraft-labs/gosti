@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pinned Visual Studio 2022 Build Tools for Windows goldens. KEY=VALUE, one
+# per line, read by provision-vs-buildtools.ps1 and assert-vs-buildtools.ps1
+# (both in this directory). The Windows-ARM golden
+# (../windows-arm-base/) installs from it.
+#
+# THE SAME PIN AS infra's persistent x64 runner. infra
+# machines/server/_win-ci-vm-001/system_windows_runner.nim carries
+# vsBuildToolsVersion / vsBuildToolsSha256 / vsBuildToolsUrl with these exact
+# values, and its comment says to bump the goldens in lockstep. Bump both
+# together, or the fleet carries two MSVC builds.
+#
+# This is the FIXED-VERSION bootstrapper for VS 2022 17.14.41 (the "Build
+# Tools" link on
+# https://learn.microsoft.com/visualstudio/releases/2022/release-history),
+# not the evergreen aka.ms channel link. Its bytes never change, so it is
+# digest-pinned, and the product version it installs cannot drift with the
+# channel. It is ALSO Authenticode-checked (O=Microsoft Corporation) before
+# it runs. The URL's second path segment is the same digest. Recompute a
+# bump with:
+#   curl -fsSL "$VS_BUILDTOOLS_URL" -o vs_BuildTools.exe && sha256sum vs_BuildTools.exe
+#
+# The bootstrapper downloads the component payloads from Microsoft's CDN at
+# install time; the installer verifies those against its own signed channel
+# manifest. So installing needs network, and nothing here is redistributed.
+VS_BUILDTOOLS_VERSION=17.14.37710.0
+VS_BUILDTOOLS_URL=https://download.visualstudio.microsoft.com/download/pr/bc92e2cb-33de-4a0c-995d-efa817f16b16/37bb0fb429d163ecebd272a865d11a37b906d152bef960da2ddb29c2e2fd6eeb/vs_BuildTools.exe
+VS_BUILDTOOLS_SHA256=37bb0fb429d163ecebd272a865d11a37b906d152bef960da2ddb29c2e2fd6eeb
+VS_INSTALL_PATH=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
+
+# The component set, installed with --includeRecommended. It is the x64
+# golden's set (../windows-x64-base/ci-toolchain.pins VS_COMPONENTS) plus the
+# ARM64 MSVC toolset:
+#   * VC.Tools.x86.x64 -- jobs on the Windows-ARM runners currently run an
+#     x64 toolchain under emulation (rustc host x86_64-pc-windows-msvc), and
+#     its MSVC link.exe comes from here. Without it every cargo link fails
+#     with "linker `link.exe` not found".
+#   * VC.Tools.ARM64 -- the native aarch64-pc-windows-msvc target.
+#   * Windows11SDK.26100 -- headers and import libraries for both.
+VS_COMPONENTS=Microsoft.VisualStudio.Workload.VCTools Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.Tools.ARM64 Microsoft.VisualStudio.Component.Windows11SDK.26100
+WINDOWS_SDK_VERSION=10.0.26100.0
+
+# The MSVC targets the gate requires a working link.exe, cl.exe and CRT for.
+VS_REQUIRED_TARGETS=x64 arm64

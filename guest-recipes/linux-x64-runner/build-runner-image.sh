@@ -255,6 +255,36 @@ trap cleanup EXIT
 # published image carries no stray static address (the provider injects the real
 # per-job IP via cloud-init).
 EGRESS_BIP=""
+# The build replaces the container's /etc/resolv.conf with a single static
+# resolver (BUILD_EGRESS_DNS), because the build container may have no DHCP
+# lease and so no resolver of its own. That file must not ship: the cloud
+# image's own /etc/resolv.conf is systemd-resolved's stub symlink, which per-job
+# guests need so their DHCP/cloud-init-supplied resolver is used. A golden that
+# kept the build file resolved every name through one public server and ignored
+# the host's (agent-harbor run 39236373898 attempt 2, 2026-10-19: "Could not
+# resolve host: cache.nixos.org" on garm-r6cr8xfuo68q). So the original is
+# saved when the build resolver goes in and restored when egress is torn down.
+# Both take the root to act on as $1 ("" inside the build container) so
+# tests/unit/t_linux_runner_resolv_conf.nim can run them against a scratch tree.
+RESOLV_SAVE_SH='set -eu
+etc="$1/etc"
+saved="$etc/.gosti-build-resolv.conf"
+# Only the FIRST save counts: a second call must not save the build file.
+if [ -e "$saved" ] || [ -L "$saved" ] || [ -e "$saved.absent" ]; then exit 0; fi
+if [ -e "$etc/resolv.conf" ] || [ -L "$etc/resolv.conf" ]; then
+  mv "$etc/resolv.conf" "$saved"
+else
+  : > "$saved.absent"
+fi'
+RESOLV_RESTORE_SH='set -eu
+etc="$1/etc"
+saved="$etc/.gosti-build-resolv.conf"
+if [ -e "$saved" ] || [ -L "$saved" ]; then
+  rm -f "$etc/resolv.conf"
+  mv "$saved" "$etc/resolv.conf"
+elif [ -e "$saved.absent" ]; then
+  rm -f "$etc/resolv.conf" "$saved.absent"
+fi'
 ensure_build_egress() {
   [ -n "$EGRESS_BIP" ] && return 0
   local gw bip
@@ -271,6 +301,7 @@ ensure_build_egress() {
     exit 1
   fi
   log "build-container egress ${bip} via ${gw} (dns ${BUILD_EGRESS_DNS})"
+  "${INCUS[@]}" exec "$BLD" -- sh -c "$RESOLV_SAVE_SH" gosti-resolv-save ""
   "${INCUS[@]}" exec "$BLD" -- sh -c "
     set -e
     ip addr add ${bip}/24 dev eth0 2>/dev/null || true
@@ -284,6 +315,13 @@ ensure_build_egress() {
 teardown_build_egress() {
   [ -z "$EGRESS_BIP" ] && return 0
   "${INCUS[@]}" exec "$BLD" -- sh -c "ip addr del ${EGRESS_BIP}/24 dev eth0 2>/dev/null || true" || true
+  # Not best-effort: an image that still carries the build resolver is the
+  # defect this restores against, so a failed restore fails the build.
+  "${INCUS[@]}" exec "$BLD" -- sh -c "$RESOLV_RESTORE_SH" gosti-resolv-restore ""
+  if "${INCUS[@]}" exec "$BLD" -- sh -c "grep -qx 'nameserver ${BUILD_EGRESS_DNS}' /etc/resolv.conf 2>/dev/null && [ ! -L /etc/resolv.conf ]"; then
+    echo "[build-runner-image] ERROR: /etc/resolv.conf still holds the build-time resolver ${BUILD_EGRESS_DNS} after teardown" >&2
+    exit 1
+  fi
   EGRESS_BIP=""
 }
 
@@ -1001,10 +1039,11 @@ if [ -n "$KVM" ]; then
   "
 fi
 
-# 5e. Undo the shared build-time egress IP so the published image carries no
-#     stray static address (the provider injects the real per-job IP via
-#     cloud-init). Always runs now — step 3b's baseline git/xz install brings
-#     egress up on every build, not just the nested-capability bakes.
+# 5e. Undo the shared build-time egress IP and resolver so the published image
+#     carries no stray static address and keeps its own /etc/resolv.conf (the
+#     provider injects the real per-job IP via cloud-init). Always runs now —
+#     step 3b's baseline git/xz install brings egress up on every build, not
+#     just the nested-capability bakes.
 teardown_build_egress
 
 # 6. Record the image provenance.

@@ -231,6 +231,9 @@ scratch (SSH password files, mount-share scripts). `--dry-run` reports only.
 | `--base-image <alias>` | incus: base image alias the container launches from (default `gosti-base`). |
 | `--incus-security-nesting` | Incus ephemeral runs only: before first start, enable `security.nesting` and the fixed mknod/setxattr intercepts needed by unprivileged nested containers. Default off. |
 | `--incus-nested-kvm` | Incus ephemeral runs only: before first start, imply nesting and attach the fixed host `/dev/kvm` → guest `/dev/kvm` unix-char device at mode `0666`; verify that exact guest mode and a real read/write open before returning. Default off. |
+| `--incus-share-host-nix-store` | Incus ephemeral runs only: before first start, share the host `/nix/store` read-only (device `nixstore`) and the nix-daemon socket directory (device `nixdaemon`); after it, write `/usr/local/bin/nix*` wrappers that run the host's Nix client with `NIX_REMOTE=daemon`, and check that `nix --version` runs, before returning. The guest is an untrusted daemon client. Default off. |
+| `--incus-reprobuild-store <dir>` | Incus ephemeral runs only: before first start, share this host reprobuild CAS directory read-write (device `reprostore`). Must exist. Via `gosti serve` it must be on the daemon's `--allow-incus-reprobuild-store` list. |
+| `--incus-reprobuild-store-guest-path <dir>` | Its in-guest mount point (default: the host path). Requires `--incus-reprobuild-store`. |
 | `--kernel` / `--initrd` / `--kernel-cmdline` | libvirt: optional direct-kernel-boot for the tiny-Linux golden. |
 | `--user-data <path>` | Cloud-init user-data injected into the ephemeral clone (config-drive on libvirt; `cloud-init.user-data` on incus). The JIT bootstrap seam. |
 | `--meta-data <path>` | libvirt: optional config-drive `meta_data.json` override. |
@@ -288,13 +291,15 @@ Beyond flags, several backends and recipes read `GOSTI_*` environment variables
 - `GOSTI_RECIPES_DIR` — override where `--recipe <id>` is resolved from.
 - `GOSTI_TART_CMD` — override the `tart` binary path (also honored by `prune`).
 
-The two Incus capability flags are accepted only with
+The Incus capability and shared-store flags are accepted only with
 `run --ephemeral --backend incus`. They are host privileges selected by a local
 Incus administrator or by the authenticated `gosti serve` fleet controller.
 Through `gosti serve` (and `--remote`), only the subcommands and options in the
 daemon's exec policy are accepted; host-path options such as `--mount`,
 `--user-data` and `--state-dir` are refused there. `--incus-profile` must be
-on the daemon's `--allow-incus-profile` list (default: `default` only), and a
+on the daemon's `--allow-incus-profile` list (default: `default` only),
+`--incus-reprobuild-store` on its `--allow-incus-reprobuild-store` list
+(default: `/var/lib/reprobuild/shared-store` only), and a
 `--source-image`/`--base-image` file path must be a disk image of the
 backend's format, with no backing file, data file or parent outside the same
 check, under one of the daemon's `--allow-image-root` directories. When none

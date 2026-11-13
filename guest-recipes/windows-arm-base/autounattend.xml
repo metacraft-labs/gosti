@@ -37,6 +37,10 @@
       and put C:\PortableGit\bin on the MACHINE PATH, which is what
       makes `bash.exe` reachable by a GitHub Actions runner service on
       clones of this golden. See guest-recipes/lib/provision-git.ps1.
+    - FirstLogonCommands install the pinned Visual Studio 2022 Build
+      Tools (MSVC x64 + ARM64 toolsets, Windows SDK 26100), so MSVC links
+      work on clones. See guest-recipes/lib/provision-vs-buildtools.ps1
+      and its capture gate assert-vs-buildtools.ps1.
     - Writes C:\Windows\Temp\repro-install-done as the "install
       finished" sentinel so the recipe scripts can poll for completion.
       NOTE: the sentinel is gated on OpenSSH only, not on Git — a Git
@@ -252,6 +256,27 @@
           <Path>cmd.exe /c "for %i in (D E F G H) do if exist %i:\assert-pwsh-provisioned.ps1 copy /Y %i:\assert-pwsh-provisioned.ps1 C:\Windows\Temp\assert-pwsh-provisioned.ps1"</Path>
           <Description>Stage the PowerShell 7 provisioning gate script locally</Description>
         </RunSynchronousCommand>
+        <!-- Stage the Visual Studio Build Tools installer script, its pin
+             file and its capture gate. Same reason as the staging above:
+             the install media is gone by FirstLogon. The bootstrapper
+             itself is not on the ISO; provision-vs-buildtools.ps1 downloads
+             it from the pinned URL and checks its SHA-256 and Authenticode
+             signature, and the component payloads need network anyway. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>10</Order>
+          <Path>cmd.exe /c "for %i in (D E F G H) do if exist %i:\provision-vs-buildtools.ps1 copy /Y %i:\provision-vs-buildtools.ps1 C:\Windows\Temp\provision-vs-buildtools.ps1"</Path>
+          <Description>Stage VS Build Tools provisioning script locally</Description>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>11</Order>
+          <Path>cmd.exe /c "for %i in (D E F G H) do if exist %i:\vs-buildtools.pins copy /Y %i:\vs-buildtools.pins C:\Windows\Temp\vs-buildtools.pins"</Path>
+          <Description>Stage VS Build Tools pins locally</Description>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>12</Order>
+          <Path>cmd.exe /c "for %i in (D E F G H) do if exist %i:\assert-vs-buildtools.ps1 copy /Y %i:\assert-vs-buildtools.ps1 C:\Windows\Temp\assert-vs-buildtools.ps1"</Path>
+          <Description>Stage the VS Build Tools capture gate script locally</Description>
+        </RunSynchronousCommand>
       </RunSynchronous>
     </component>
   </settings>
@@ -432,22 +457,49 @@
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
 
-        <!-- 6. Copy the SysPrep answer file from the autounattend ISO
-             to C:\ so the manual step-5 SysPrep invocation finds it. -->
+        <!-- 6. Install Visual Studio 2022 Build Tools (MSVC + Windows SDK).
+
+             Without them every MSVC cargo link on a clone of this golden
+             fails with "error: linker `link.exe` not found", and reprobuild
+             reports "MSVC dev-env activation skipped: vswhere.exe not
+             found". MSVC is not redistributable, so no content-addressed
+             store can supply it; the machine has to.
+
+             The pins (fixed-version bootstrapper, SHA-256, install path,
+             components incl. both VC.Tools.x86.x64 and VC.Tools.ARM64) live
+             in ../lib/vs-buildtools.pins, shared with infra's persistent x64
+             runner. The helper downloads the bootstrapper, checks digest
+             and Authenticode signature, installs, and requires vswhere to
+             see every component afterwards. It is the longest step of the
+             chain (20-40 min), so it runs after OpenSSH, Git and pwsh.
+
+             On failure it writes C:\Windows\Temp\gosti-vs-buildtools-provision-failed
+             and exits 0, so it cannot wedge the sentinel below; the capture
+             gate assert-vs-buildtools.ps1 refuses that image before
+             sysprep. -->
         <SynchronousCommand wcm:action="add">
           <Order>6</Order>
+          <CommandLine><![CDATA[powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p='C:\Windows\Temp\provision-vs-buildtools.ps1'; $m='C:\Windows\Temp\gosti-vs-buildtools-provision-failed'; if (Test-Path -LiteralPath $p) { & $p -FailureMarker $m -LogPath 'C:\Windows\Temp\gosti-vs-buildtools-provision.log' } else { Set-Content -LiteralPath $m -Value 'provision-vs-buildtools.ps1 not found' -Encoding UTF8 -Force }; exit 0"]]></CommandLine>
+          <Description>Install Visual Studio 2022 Build Tools</Description>
+          <RequiresUserInput>false</RequiresUserInput>
+        </SynchronousCommand>
+
+        <!-- 7. Copy the SysPrep answer file from the autounattend ISO
+             to C:\ so the manual step-5 SysPrep invocation finds it. -->
+        <SynchronousCommand wcm:action="add">
+          <Order>7</Order>
           <CommandLine>cmd.exe /c "for %i in (D E F G H) do if exist %i:\repro-sysprep.xml copy /Y %i:\repro-sysprep.xml C:\repro-sysprep.xml"</CommandLine>
           <Description>Stage repro-sysprep.xml on C:\</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
 
-        <!-- 7. Marker file the recipe scripts poll for. Written only if
+        <!-- 8. Marker file the recipe scripts poll for. Written only if
              OpenSSH provisioning did not leave a failure marker and the
              sshd service is running. If OpenSSH is unavailable, inspect
              C:\Windows\Temp\gosti-openssh-provision.log and
              C:\Windows\Temp\gosti-openssh-provision-failed. -->
         <SynchronousCommand wcm:action="add">
-          <Order>7</Order>
+          <Order>8</Order>
           <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "if ((Test-Path -LiteralPath 'C:\Windows\Temp\gosti-openssh-provision-failed') -or ((Get-Service -Name sshd -ErrorAction SilentlyContinue).Status -ne 'Running')) { exit 0 }; Set-Content -LiteralPath 'C:\Windows\Temp\repro-install-done' -Value 'install-done' -Encoding ASCII -Force; exit 0"</CommandLine>
           <Description>Write install-done sentinel after OpenSSH is ready</Description>
           <RequiresUserInput>false</RequiresUserInput>
