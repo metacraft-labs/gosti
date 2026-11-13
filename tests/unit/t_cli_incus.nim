@@ -30,6 +30,16 @@ suite "CLI Incus lifecycle":
       expect ValueError:
         discard parseCliOpts(invalid)
 
+  test "the reprobuild guest path is a POSIX path on every host":
+    # It names a directory inside a Linux container, so a Windows host must
+    # not rewrite it with its own separators (CI on self-hosted-windows-x64
+    # once saw path=\\srv\\repro-store reach `incus config device add`).
+    check checkedGuestAbsoluteDir("g", "/srv//repro-store/") == "/srv/repro-store"
+    check checkedGuestAbsoluteDir("g", "/") == "/"
+    for bad in ["", "srv", "/srv/../etc", "C:\\srv", "/srv\\x", "/srv\0"]:
+      expect ValueError:
+        discard checkedGuestAbsoluteDir("g", bad)
+
   test "nested capability flags parse only for ephemeral Incus runs":
     let both = parseCliOpts(@[
       "run", "--ephemeral", "--backend", "incus",

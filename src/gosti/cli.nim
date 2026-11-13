@@ -16,7 +16,7 @@
 ## CLI falls back to NoopBackend if ``--allow-noop-fallback`` is set
 ## (used by the M0 selection test on hosts without real hypervisors).
 
-import std/[json, options, os, osproc, sequtils, strformat, strutils, tables,
+import std/[json, options, os, osproc, pathnorm, sequtils, strformat, strutils, tables,
             terminal, times]
 import ./types, ./output, ./auto, ./orchestrator, ./detached_bootstrap
 import ./cloud_init_seed
@@ -757,6 +757,28 @@ proc checkedAbsoluteDir*(source, dir: string): string =
   if result.len > 1 and result.endsWith("/"):
     result.setLen(result.len - 1)
 
+proc checkedGuestAbsoluteDir*(source, dir: string): string =
+  ## Like ``checkedAbsoluteDir``, for a directory INSIDE a Linux guest. The
+  ## value is a POSIX path whatever the host is, so it is checked and
+  ## normalized with ``/`` semantics: ``normalizedPath`` would rewrite
+  ## ``/srv/repro-store`` to ``\srv\repro-store`` on a Windows host, which no
+  ## Linux container can mount.
+  if dir.len == 0 or not dir.startsWith('/'):
+    raise newException(ValueError,
+      source & " '" & dir & "' must be an absolute guest directory (starting with '/')")
+  if '\0' in dir:
+    raise newException(ValueError, source & " contains a NUL byte")
+  if '\\' in dir:
+    raise newException(ValueError,
+      source & " '" & dir & "' is a guest path and may not contain '\\'")
+  for part in dir.split('/'):
+    if part == "..":
+      raise newException(ValueError,
+        source & " '" & dir & "' may not contain a '..' component")
+  result = pathnorm.normalizePath(dir, '/')
+  if result.len > 1 and result.endsWith("/"):
+    result.setLen(result.len - 1)
+
 proc checkedIncusProfile*(source, name: string): string =
   ## A ``serve --allow-incus-profile`` value: a non-empty name with no
   ## whitespace, separator or NUL (Incus's own profile-name rule is
@@ -973,7 +995,7 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
         raise newException(ValueError,
           "--incus-reprobuild-store-guest-path requires a directory")
       result.incusReprobuildStoreGuestPath =
-        checkedAbsoluteDir("--incus-reprobuild-store-guest-path", args[i])
+        checkedGuestAbsoluteDir("--incus-reprobuild-store-guest-path", args[i])
       inc i
     of "--incus-profile":
       inc i
