@@ -6,16 +6,17 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 default:
     just lint
 
+# Build the CLI and the snapshot-revert benchmark into build/bin through the
+# reprobuild graph (the `default` collection of `repro.nim`).
 build:
-    mkdir -p build/bin test-logs
-    nim c --hints:off -o:build/gosti.out src/gosti/cli.nim 2>&1 | tee test-logs/build.log
-    bash scripts/install-binaries.sh build/gosti.out build/bin
-    rm -f build/gosti.out
-    nim c --hints:off --path:src -o:build/bin/gosti-bench-snapshot-revert tools/bench/snapshot_revert_bench.nim 2>&1 | tee -a test-logs/build.log
+    repro build
 
+# Run the deterministic, host-independent suite through `repro test` (the
+# `test` collection of `repro.nim`; scripts/test-catalog.txt is shared with
+# the native runner `scripts/run_tests.nim`, which `just test-host` extends to
+# the live hypervisor tier).
 test:
-    mkdir -p test-logs
-    bash scripts/run-tests.sh 2>&1 | tee test-logs/test.log
+    repro test
 
 t: test
 

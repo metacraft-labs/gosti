@@ -54,8 +54,9 @@ assets live in `guest-scripts/` and `guest-recipes/`, and tests are split across
 Use the Nix development environment (`repro allow` and the repro shell hook) and the
 repository entrypoints below:
 
-- `just build` builds the CLI and snapshot benchmark.
-- `just test` runs the deterministic test catalog in `scripts/run-tests.sh`.
+- `just build` runs `repro build`: the CLI and snapshot benchmark.
+- `just test` runs `repro test`: the deterministic test catalog
+  (`scripts/test-catalog.txt`) through the reprobuild graph.
 - `just test-host` runs the opt-in gates that require a real host hypervisor.
 - `just lint` checks the Nim entrypoint and Nix formatting.
 - `just format` formats Nim and Nix sources.
@@ -65,9 +66,8 @@ repository entrypoints below:
 - `repro test --tool-provisioning=path --daemon=off` builds and executes the
   deterministic reprobuild test graph.
 
-`just test` is the deterministic three-class Nix CI catalog. `repro test` is
-the additive five-class catalog spanning Linux x64/ARM64, macOS ARM64, and
-Windows x64/ARM64. Backend tests that require a real hypervisor live behind
+`just test` and `repro test` are the same command: the deterministic catalog,
+spanning Linux x64/ARM64, macOS ARM64, and Windows x64/ARM64. Backend tests that require a real hypervisor live behind
 `just test-host` and must keep an explicit platform and prerequisite guard. Do
 not turn a missing prerequisite into claimed coverage.
 Three production host-level gates run outside this repository, against the CI

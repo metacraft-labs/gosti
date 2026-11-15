@@ -5,7 +5,7 @@
 # install-binaries.sh <built-cli> <bin-dir>
 #
 # The ONE definition of the installed command name, shared by the flake's
-# installPhase and `just build` so the two can never disagree: the CLI and
+# installPhase and the release build so the two can never disagree: the CLI and
 # serve daemon are installed as <bin-dir>/gosti. See
 # docs/contributors/architecture.md "Command names".
 set -euo pipefail

@@ -4,7 +4,7 @@
 ## (docs/contributors/architecture.md §6.0).
 ##
 ## Builds the REAL CLI, installs it with the SAME script the flake's
-## installPhase and `just build` use (scripts/install-binaries.sh), or the
+## installPhase and the release build use (scripts/install-binaries.sh), or the
 ## Windows release's install-binaries.ps1, and pins:
 ##   1. Exactly one command is installed, `gosti`, as a regular file; the
 ##      retired name is not installed alongside it.

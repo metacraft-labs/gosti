@@ -437,7 +437,7 @@ exit $LASTEXITCODE
 
 The CLI and the serve daemon are one binary, installed as `bin/gosti`.
 `meta.mainProgram` is `gosti`, so `lib.getExe` consumers run it. Both the
-flake's `installPhase` and `just build` install it through the one script
+flake's `installPhase` and the release build install it through the one script
 `scripts/install-binaries.sh`, so they cannot disagree; Windows releases use
 `scripts/install-binaries.ps1` to install `gosti.exe`. The command-name
 integration test runs the production installer on each OS and checks that
