@@ -219,6 +219,12 @@ test all tests/e2e/t_gosti_serve_teardown_survives_disconnect.nim
 # abandoned and completed execs. Falsifiable: routing writes back through
 # std/net's send(Socket, string) fails all three. Hermetic (self-exec worker).
 test all tests/e2e/t_gosti_serve_client_disconnect_no_spin.nim
+# A worker that exits while a background descendant still holds its stdout
+# (as `tart run` did after `run --ephemeral --keep`) must still end the exec
+# with `exit` within seconds; the descendant must survive writing afterwards
+# (no SIGPIPE), and its pipe is closed once it ends. Falsifiable: a daemon
+# that reads to EOF times the bounded client out. Hermetic (self-exec worker).
+test posix tests/e2e/t_gosti_serve_exit_despite_held_output.nim
 # Runner-Fleet-M3-ARM-Wave MA12 gate:
 # t_gosti_serve_survives_a_hung_request — the daemon must survive a HUNG
 # request, not merely a slow one. Three layers: one hung /v1/exec does not

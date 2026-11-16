@@ -16,7 +16,46 @@ import gosti/backends/tart
 import gosti/types
 
 when defined(posix):
-  import std/posix
+  import std/[monotimes, osproc, posix, times]
+
+  # Child role for "tart run does not hold its launcher's stdout": start the
+  # background ``tart run`` exactly as a ``gosti run --ephemeral --keep``
+  # worker does, record its PID, and exit. The test reads this process's
+  # stdout pipe, which must reach EOF once it is gone.
+  let roleArgs = commandLineParams()
+  if roleArgs.len == 4 and roleArgs[0] == "__launch_tart":
+    putEnv("TART_HOME", roleArgs[2])
+    let backend = newTartBackend(guestOs = goLinux, tartCmd = roleArgs[1])
+    let pid = backend.runTartVmInBackground("ephemeral")
+    writeFile(roleArgs[3], $pid)
+    echo "launched ", pid
+    quit(0)
+
+  proc readToEof(fd: cint, budget: Duration): tuple[eof: bool, data: string] =
+    ## Read ``fd`` until EOF or until ``budget`` elapses, whichever is first.
+    ## Bounded, so a writer that never lets go fails the test instead of
+    ## hanging it.
+    let deadline = getMonoTime() + budget
+    var buf: array[512, char]
+    while true:
+      let left = (deadline - getMonoTime()).inMilliseconds
+      if left <= 0:
+        return (false, result.data)
+      var pfd = TPollfd(fd: fd, events: POLLIN)
+      let r = poll(addr pfd, 1, cint(left))
+      if r < 0 and errno == EINTR:
+        continue
+      doAssert r >= 0, "poll failed"
+      if r == 0:
+        continue
+      let n = read(fd, addr buf[0], buf.len)
+      if n < 0 and errno == EINTR:
+        continue
+      doAssert n >= 0, "read failed"
+      if n == 0:
+        return (true, result.data)
+      for i in 0 ..< n:
+        result.data.add(buf[i])
 
 suite "Tart backend commands":
   when defined(macosx):
@@ -30,6 +69,13 @@ suite "Tart backend commands":
       let tmp = createTempDir("gosti-tart-unit-", "")
       defer: removeDir(tmp)
       let tart = commandFixture(tmp / "tart", %*{"sleepMs": 60000})
+      # Keep the run log out of the developer's real Tart store.
+      let savedTartHome = getEnv("TART_HOME")
+      putEnv("TART_HOME", tmp / "tart-home")
+      defer:
+        if savedTartHome.len > 0: putEnv("TART_HOME", savedTartHome)
+        else: delEnv("TART_HOME")
+      createDir(tmp / "tart-home" / TartVmsSubdir / "ephemeral")
 
       let backend = newTartBackend(guestOs = goMacos, tartCmd = tart)
       let pid = backend.runTartVmInBackground("ephemeral")
@@ -37,6 +83,60 @@ suite "Tart backend commands":
       sleep(100)
 
       check getpgid(Pid(pid)) == getpgrp()
+
+    test "tart run does not hold its launcher's stdout":
+      # An orphaned `tart run` holding the
+      # `gosti run --ephemeral --keep` worker's stdout kept `gosti serve`'s
+      # exec stream open until the guest stopped. The launcher's stdout must
+      # reach EOF when the launcher exits, while `tart run` keeps running
+      # with its output in the per-instance log.
+      #
+      # The stand-in is a shell script rather than the native fixture: it has
+      # to write to stdout and stderr BEFORE it sleeps, and the test is POSIX
+      # only. `exec sleep` keeps the PID the backend returned.
+      let tmp = createTempDir("gosti-tart-unit-", "")
+      defer: removeDir(tmp)
+      let tartHome = tmp / "tart-home"
+      createDir(tartHome / TartVmsSubdir / "ephemeral") # what `tart clone` makes
+      let tart = tmp / "tart"
+      writeFile(tart, "#!/bin/sh\necho \"fake tart $*\"\n" &
+        "echo \"fake tart stderr\" >&2\nexec sleep 60\n")
+      setFilePermissions(tart, {fpUserRead, fpUserWrite, fpUserExec})
+      let pidFile = tmp / "tart.pid"
+      let launcher = startProcess(getAppFilename(),
+        args = @["__launch_tart", tart, tartHome, pidFile],
+        options = {poStdErrToStdOut})
+      var tartPid = 0
+      try:
+        let (eof, output) = readToEof(cint(launcher.outputHandle),
+                                      initDuration(seconds = 10))
+        check launcher.waitForExit() == 0
+        tartPid = parseInt(readFile(pidFile).strip())
+        check "launched" in output
+        check eof
+        # Positive control: the writer that would have held the pipe is alive.
+        check posix.kill(Pid(tartPid), 0) == 0
+        when defined(linux):
+          check expandSymlink("/proc" / $tartPid / "fd" / "0") == "/dev/null"
+        let log = tmp / "tart-home" / TartVmsSubdir / "ephemeral" /
+                  TartRunLogName
+        var logText = ""
+        for _ in 0 ..< 50:
+          logText = readFile(log)
+          if "fake tart stderr" in logText: break
+          sleep(100)
+        check "fake tart run --no-graphics ephemeral" in logText
+        check "fake tart stderr" in logText
+        check "fake tart" notin output
+      finally:
+        if tartPid == 0 and fileExists(pidFile):
+          tartPid = parseInt(readFile(pidFile).strip())
+        if tartPid > 0:
+          discard posix.kill(Pid(tartPid), SIGKILL)
+        if launcher.peekExitCode == -1:
+          launcher.kill()
+          discard launcher.waitForExit()
+        launcher.close()
 
   test "clone randomizes the ephemeral MAC before boot":
     let tmp = createTempDir("gosti-tart-unit-", "")

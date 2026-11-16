@@ -323,6 +323,25 @@ The `exit` event is written only after the daemon has reaped the worker and
 closed its pipes, so a client may send its next request as soon as it sees
 `exit` without racing the previous request's teardown (gosti#69).
 
+The stream ends when the **worker** exits, not when every process that
+inherited its stdout has let go. On POSIX the daemon reads the merged pipe
+until EOF, but once the worker itself has exited it waits at most
+`ExitedWorkerDrainMs` (2 s) more for that EOF. If a background descendant of
+the worker still holds the pipe open after that, the daemon reports `exit`
+anyway and hands the pipe's read end to a single drainer thread
+(`serve/held_pipe_drainer.nim`). The drainer reads and discards whatever the
+descendant writes and closes the pipe when its last writer is gone. The read
+end is never closed while a descendant can still write to it: that write
+would then kill the descendant with SIGPIPE, or fail with EPIPE because the
+daemon ignores SIGPIPE and descendants inherit that. Such a pipe is the one
+descriptor the handler does not close itself. Its single close is the
+drainer's, so the gosti#69 guarantee is unchanged. The case is real: a
+`tart run` left running by `run --ephemeral --keep` used to hold the worker's
+stdout for the guest's whole life, so a remote Tart create never received
+`exit`. The Tart backend no longer passes its
+stdio to `tart run`, and this bound is defence in depth. The Windows daemon
+still reads to EOF.
+
 `{"type":"error","message":"…"}` is emitted if the daemon cannot start the
 worker. The worker's stdout and stderr are **merged**; the stream does not
 frame them separately.
@@ -535,6 +554,13 @@ let code = c.execStream(@["run", "--ephemeral", "--backend", "incus",
   still answers. Falsifiable: routing the writes back through std/net's
   `send(Socket, string)` makes every assertion fail. Hermetic (self-exec
   worker). In `just test`.
+- `tests/e2e/t_gosti_serve_exit_despite_held_output.nim` — a worker that
+  exits while a background descendant still holds its stdout ends the exec
+  with `exit 0` within seconds. The descendant writes to the pipe after `exit`
+  and must survive with the write succeeding, and the daemon closes the pipe
+  once the descendant ends. A daemon that reads to EOF fails it at the
+  client's bounded wait; one that closes the read end fails the late write.
+  Hermetic (self-exec worker). POSIX. In `just test`.
 - `tests/e2e/t_gosti_serve_roundtrip_incus.nim` — the same remote path
   against a **real** incus ephemeral container, including authenticated
   selection of the pre-start nesting/KVM policy and guest mode verification.
