@@ -36,6 +36,8 @@ when defined(windows):
 else:
   import std/posix
 import ./protocol, ./http, ./capability, ./enrollment, ./dispatch_queue
+when defined(posix):
+  import ./held_pipe_drainer
 import ../types, ../auto, ../process_cleanup
 
 # Import the backend modules so ``registeredBackends`` / ``newBackend`` see
@@ -519,6 +521,112 @@ proc releaseWorkerStdio*(p: Process) =
   ## win-ci-bare-001), and already closes a merged handle only once.
   closeMergedProcessStdio(p, workerOutputClosed)
 
+proc deliverLine(ctx: ServeContext, cs: var ClientStream, pid: int,
+                 line: string) =
+  ## Forward one worker line, or discard it once the client is gone. Once the
+  ## client is gone the handler keeps DRAINING the worker — blocked on the
+  ## pipe, not on the socket — so the worker runs to completion instead of
+  ## stalling on a full pipe, and the handler costs nothing while it does.
+  if cs.gone:
+    cs.discardLine(line)
+  elif not cs.emit(logEvent(line) & "\n"):
+    daemonLog(ctx, "exec client gone (" & cs.why & "); letting worker " &
+              $pid & " run to completion, output discarded")
+    cs.discardLine(line)
+
+const
+  ExitedWorkerDrainMs* = 2000
+    ## How long the handler keeps reading a worker's output after the worker
+    ## itself has exited, waiting for EOF, before it reports ``exit`` anyway.
+    ## Output the worker wrote just before exiting is already in the pipe and
+    ## is read at once; this only bounds the wait for a descendant that still
+    ## holds the pipe open. See ``streamWorkerOutput``.
+  WorkerPollMs = 200
+    ## How often the read loop checks, while the pipe is quiet, whether the
+    ## worker has exited. Costs one ``waitpid(WNOHANG)`` per tick.
+
+when defined(posix):
+  proc streamWorkerOutput(ctx: ServeContext, cs: var ClientStream,
+                          p: Process, slot: int): bool =
+    ## Stream the worker's merged output until EOF, OR until the worker has
+    ## exited and ``ExitedWorkerDrainMs`` has passed without EOF. Returns true
+    ## in the second case: the pipe is still held open by a descendant the
+    ## worker left behind, and the caller must hand it to the drainer rather
+    ## than close it.
+    ##
+    ## Why EOF alone is not enough: EOF needs EVERY writer to close the pipe,
+    ## and a worker's background children inherit its writer. A ``tart run``
+    ## left running by ``run --ephemeral --keep`` held the pipe for the
+    ## guest's whole life, so the remote create never got its ``exit`` and
+    ## GARM destroyed the guest at its provider deadline. The backend no longer
+    ## leaks its stdio into ``tart run``; this is defence in depth against the
+    ## next descendant that does.
+    ##
+    ## Reads the raw descriptor with ``poll``/``read`` and never materialises
+    ## ``p.outputStream``: a buffered ``File`` over the descriptor would make
+    ## the hand-off ambiguous about who closes it. On EOF the caller closes it
+    ## through ``releaseWorkerStdio`` as before.
+    let fd = cint(p.outputHandle)
+    var buf: array[8192, char]
+    var pending = ""
+    var exited = false
+    var drainUntil: MonoTime
+    # Lines end at LF, CRLF or a lone CR, as with ``streams.readLine``, which
+    # this loop replaces. A CR that ends the buffered data may be the first
+    # half of a CRLF, so it waits for the next read (or EOF).
+    # A template, not a closure: a closure cannot capture the ``var`` ``cs``.
+    template flushLines(final: bool) =
+      var start = 0
+      var i = 0
+      while i < pending.len:
+        let c = pending[i]
+        if c == '\n' or c == '\r':
+          if c == '\r' and i + 1 == pending.len and not final:
+            break
+          deliverLine(ctx, cs, p.processID, pending[start ..< i])
+          if c == '\r' and i + 1 < pending.len and pending[i + 1] == '\n':
+            inc i
+          start = i + 1
+        inc i
+      pending = pending[start .. ^1]
+      if final and pending.len > 0:
+        deliverLine(ctx, cs, p.processID, pending)
+        pending = ""
+    while true:
+      let timeout =
+        if exited: max(0, (drainUntil - getMonoTime()).inMilliseconds.int)
+        else: WorkerPollMs
+      var pfd = TPollfd(fd: fd, events: POLLIN)
+      let ready = posix.poll(addr pfd, 1, cint(timeout))
+      if ready < 0:
+        if errno == EINTR: continue
+        raiseOSError(osLastError(), "poll on the worker's output")
+      if ready > 0:
+        let n = posix.read(fd, addr buf[0], buf.len)
+        if n < 0:
+          if errno in [EINTR, EAGAIN]: continue
+          raiseOSError(osLastError(), "read from the worker's output")
+        if n == 0:
+          flushLines(final = true)
+          return false
+        let at = pending.len
+        pending.setLen(at + n)
+        copyMem(addr pending[at], addr buf[0], n)
+        flushLines(final = false)
+      if not exited and p.peekExitCode() != -1:
+        # The worker is reaped (peekExitCode collected it). Disarm the
+        # deadline now rather than in the ``finally``: the kill token is a
+        # pid, and from here on that pid may be reused by an unrelated
+        # process, which the reaper must never be able to signal.
+        exited = true
+        execKillToken[slot].store(0)
+        execDeadlineAt[slot].store(0)
+        drainUntil = getMonoTime() + initDuration(
+          milliseconds = ExitedWorkerDrainMs)
+      if exited and getMonoTime() >= drainUntil:
+        flushLines(final = true)
+        return true
+
 proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
                 slot: int) =
   ## Parse the forwarded argv, spawn the worker (the same vm-harness
@@ -598,23 +706,22 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
   var code = 1
   var streamFailed = false
   var streamError = ""
+  var outputHeld = false
+    ## The worker exited but a descendant still holds its output pipe open.
   try:
     # Feed optional stdin, then close it so stdin-reading workers don't hang.
     if parsed.stdin.len > 0:
       p.inputStream.write(parsed.stdin)
     p.inputStream.close()
-    let outStream = p.outputStream
-    var line = ""
-    # Once the client is gone this loop keeps DRAINING the worker — blocked on
-    # the pipe, not on the socket — so the worker runs to completion instead
-    # of stalling on a full pipe, and the handler costs nothing while it does.
-    while outStream.readLine(line):
-      if cs.gone:
-        cs.discardLine(line)
-      elif not cs.emit(logEvent(line) & "\n"):
-        daemonLog(ctx, "exec client gone (" & cs.why & "); letting worker " &
-                  $pid & " run to completion, output discarded")
-        cs.discardLine(line)
+    when defined(posix):
+      outputHeld = streamWorkerOutput(ctx, cs, p, slot)
+    else:
+      # Windows keeps reading to EOF. Tart, whose orphan motivated the bounded
+      # drain, does not run there.
+      let outStream = p.outputStream
+      var line = ""
+      while outStream.readLine(line):
+        deliverLine(ctx, cs, pid, line)
     code = p.waitForExit()
   except CatchableError as e:
     streamFailed = true
@@ -667,7 +774,31 @@ proc handleExec(ctx: ServeContext, client: Socket, req: HttpRequest,
       discard p.waitForExit()
     except CatchableError:
       discard
-    releaseWorkerStdio(p)
+    when defined(posix):
+      if outputHeld:
+        # A descendant of the worker still holds the pipe's write end. Closing
+        # our read end now would make its next write fail: SIGPIPE kills it,
+        # or EPIPE if it inherited our ignored SIGPIPE (a ``tart run`` could
+        # take its guest down with it); keeping it unread would block it once
+        # the pipe fills. See held_pipe_drainer.nim. The drainer reads and
+        # discards until that last writer is gone, then closes the pipe — the
+        # one close of this descriptor. stdin was closed in the try above.
+        let held = cint(p.outputHandle)
+        if handOffHeldPipe(held):
+          daemonLog(ctx, "worker " & $pid & " exited but a descendant still " &
+                    "holds its output pipe; reporting exit after " &
+                    $ExitedWorkerDrainMs & " ms and draining the rest " &
+                    "in the background")
+        else:
+          # Without a drainer, prefer one leaked descriptor to killing the
+          # descendant: the read end stays open and unread.
+          daemonLog(ctx, "worker " & $pid & " exited but a descendant still " &
+                    "holds its output pipe, and the drainer is unavailable; " &
+                    "leaving descriptor " & $held & " open")
+      else:
+        releaseWorkerStdio(p)
+    else:
+      releaseWorkerStdio(p)
     # Delete the user-data seed as soon as the worker exits: the backend has
     # already read it (incus copies it into ``cloud-init.user-data``), so the
     # token-bearing file must not linger on disk.

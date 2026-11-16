@@ -147,6 +147,15 @@ const
     ## reclaim it.
   TartVmConfigName* = "config.json"
     ## Tart's per-VM metadata file.
+  TartRunLogName* = "vm-harness-tart-run.log"
+    ## Where ``runTartVmInBackground`` appends the stdout and stderr of
+    ## ``tart run``: a file of this name INSIDE the clone's own VM directory
+    ## (``tartRunLogPath``). That directory is the clone's per-instance state:
+    ## Tart creates it at ``tart clone`` and removes it, log included, at
+    ## ``tart delete``, so the log lives exactly as long as the instance and
+    ## needs no reaper of its own. Tart ignores files it does not know about
+    ## in a VM directory.
+
 
 when defined(macosx):
   const
@@ -176,6 +185,11 @@ proc tartHomeDir*(): string =
 proc tartVmsDir*(): string =
   ## The directory holding one sub-directory per LOCAL Tart VM.
   tartHomeDir() / TartVmsSubdir
+
+proc tartRunLogPath*(name: string): string =
+  ## The per-instance log of the ``tart run`` that boots VM ``name``; see
+  ## ``TartRunLogName``.
+  tartVmsDir() / name / TartRunLogName
 
 proc defaultSharedDirs(guestOs: GuestOs): seq[TartSharedDir] =
   let nixStore = getEnv("MCL_RUNNER_SHARED_NIX_STORE")
@@ -560,12 +574,26 @@ proc ensureTartCpuMemory*(b: TartBackend, name: string): bool =
   true
 
 proc runTartVmInBackground*(b: TartBackend, name: string): int =
-  ## Spawn ``tart run --no-graphics <name>`` as a detached background
-  ## process and return the child's PID. The caller (revertToBaseline)
-  ## proceeds to ``tart ip --wait`` once the VM is on the wire. Note: the
-  ## process is intentionally NOT reaped here — the VM lifecycle ends
-  ## when ``stopAndCleanup`` issues ``tart stop`` (which causes the
-  ## ``tart run`` process to exit cleanly on its own).
+  ## Spawn ``tart run --no-graphics <name>`` as a background process and
+  ## return the child's PID. The caller (revertToBaseline) proceeds to
+  ## ``tart ip --wait`` once the VM is on the wire. Note: the process is
+  ## intentionally NOT reaped here — the VM lifecycle ends when
+  ## ``stopAndCleanup`` issues ``tart stop`` (which causes the ``tart run``
+  ## process to exit cleanly on its own).
+  ##
+  ## ``tart run`` gets NONE of this process's stdio: stdin is ``/dev/null``
+  ## and stdout/stderr are appended to ``tartRunLogPath(name)``. It outlives
+  ## us whenever ``run --ephemeral --keep`` hands the instance back, and an
+  ## orphan holding our stdout keeps whoever reads that stream waiting for an
+  ## EOF that only comes when the guest stops. ``vm-harness serve`` reads its
+  ## worker's stdout to EOF before it reports ``exit``, so a remote create
+  ## never returned and GARM destroyed the running guest at its 20-minute
+  ## provider deadline.
+  ##
+  ## When the clone's VM directory does not exist — only possible with a
+  ## stand-in ``tart`` in tests, since a real ``tart clone`` just created it —
+  ## the output goes to ``/dev/null`` and a warning names the directory,
+  ## rather than this process creating a directory inside Tart's store.
   var args = @["run", "--no-graphics"]
   for d in b.sharedDirs:
     var share = d.hostPath
@@ -577,9 +605,47 @@ proc runTartVmInBackground*(b: TartBackend, name: string): int =
     args.add("--dir")
     args.add(share)
   args.add(name)
-  let p = startProcess(b.tartCmd,
-                       args = args,
-                       options = {poUsePath, poParentStreams})
+  # Resolve the command here, as ``poUsePath`` used to: a missing ``tart``
+  # must still fail this call with OSError, not surface later as a boot
+  # timeout from a shell that could not exec it.
+  let exe = if DirSep in b.tartCmd or AltSep in b.tartCmd: b.tartCmd
+            else: findExe(b.tartCmd)
+  if exe.len == 0 or not fileExists(exe):
+    raise newException(OSError, "tart command not found: " & b.tartCmd)
+  let logPath = tartRunLogPath(name)
+  var target = "/dev/null"
+  if dirExists(logPath.parentDir):
+    target = logPath
+    # A header per start, so a log that spans several boots of the same name
+    # (never the case for an ephemeral clone, but cheap) stays readable.
+    try:
+      let f = open(logPath, fmAppend)
+      f.writeLine("=== " & $now() & " vm-harness: " & exe & " " &
+                  args.join(" "))
+      f.close()
+    except IOError, OSError:
+      discard # The shell's own redirection below reports a real failure.
+  else:
+    stderr.writeLine("vm-harness: warning: Tart VM directory " &
+      logPath.parentDir & " does not exist; `tart run` output for " & name &
+      " is discarded")
+  # osproc cannot point a child's stdio at a file, so a POSIX shell applies the
+  # redirections and then ``exec``s tart in its own place: the returned PID is
+  # tart's, and tart starts with the redirected descriptors and never sees
+  # ours. The shell inherits our streams for the instant before its ``exec``,
+  # which is also where its own diagnostic goes if the log cannot be opened.
+  # ``"$0" "$@"`` passes the command and every argument through unparsed;
+  # only the log path is interpolated, quoted.
+  when defined(windows):
+    # Tart exists only on macOS. This branch serves the stand-in ``tart`` of
+    # the cross-platform unit suite, which has no /bin/sh to redirect with.
+    let p = startProcess(exe, args = args, options = {poParentStreams})
+  else:
+    let script = "exec \"$0\" \"$@\" </dev/null >>" & quoteShell(target) &
+                 " 2>&1"
+    let p = startProcess("/bin/sh",
+                         args = @["-c", script, exe] & args,
+                         options = {poParentStreams})
   result = p.processID
   # Do not use poDaemon here.  The provider launches vm-harness in a dedicated
   # process group and tears an instance down with kill(-vmHarnessPid).  A daemon
@@ -589,8 +655,8 @@ proc runTartVmInBackground*(b: TartBackend, name: string): int =
   # remains concurrent while inheriting the provider-owned process group.
   # Don't close(p): closing detaches our handle, but the process keeps running.
   # We can't waitForExit either — that would block until tart stop. Just drop
-  # the handle; the OS keeps the child alive.
-  # Nim's startProcess returns a ref that we let go of.
+  # the handle; the OS keeps the child alive. With poParentStreams there are
+  # no pipes for the handle to own, so dropping it leaks no descriptor.
 
 proc terminateTartRun(b: TartBackend, name: string) =
   ## Terminate the background `tart run` child and forget its bookkeeping.
