@@ -282,21 +282,58 @@ var
   imageCopyIncomplete = false
 
 
+proc incusClientsNaming(word: string): int =
+  ## How many of this user's processes, other than this one, have ``word``
+  ## in their command line: an ``incus init``/``start``/``image copy`` that
+  ## gosti or this test started and that is still talking to the daemon.
+  let me = getuid()
+  let self = getCurrentProcessId()
+  for kind, path in walkDir("/proc"):
+    let pidText = path.extractFilename
+    if kind != pcDir or not pidText.allCharsInSet({'0' .. '9'}) or
+        parseInt(pidText) == self:
+      continue
+    var info: Stat
+    if stat(path.cstring, info) != 0 or info.st_uid != me:
+      continue
+    try:
+      if word in readFile(path / "cmdline").replace('\0', ' '):
+        inc result
+    except CatchableError:
+      discard
+
 proc tearDown() =
+  ## Every way out ends here: the cases' end, a failed setup, SIGTERM or
+  ## SIGINT. An Incus client that was still running when the test stopped
+  ## (an ``incus init`` inside gosti's create, an ``image copy``) completes
+  ## in the daemon after it, so each object is deleted only once no client
+  ## of ours still names it, and deleted again if it appeared meanwhile.
   if tornDown: return
   tornDown = true
-  if name.len > 0:
-    if incus.containerExists(name):
-      discard incus.deleteContainer(name)
-    discard reapVmHolder(name)
   stopStarted()
+  let deadline = epochTime() + 900.0
+  if name.len > 0:
+    while true:
+      let busy = incusClientsNaming(name) > 0
+      if incus.containerExists(name):
+        discard incus.deleteContainer(name)
+      elif not busy:
+        break
+      if epochTime() >= deadline:
+        break
+      sleep(1000)
+    discard reapVmHolder(name)
   if image.len > 0:
-    # A copy this test stopped (timed out, or the test was signalled) can
-    # still finish inside the Incus daemon and add the image afterwards, so
-    # then wait for it to appear before deleting it.
-    let deadline = epochTime() + (if imageCopyIncomplete: 600.0 else: 0.0)
-    while run(@["incus", "image", "delete", image]).code != 0 and
-        epochTime() < deadline:
+    # A copy the test stopped can also finish inside the daemon after its
+    # client is gone, so an incomplete copy is waited for a while longer.
+    let copyDeadline = epochTime() + (if imageCopyIncomplete: 600.0 else: 0.0)
+    while true:
+      let busy = incusClientsNaming(image) > 0
+      let deleted = run(@["incus", "image", "delete", image]).code == 0
+      if (deleted or epochTime() >= copyDeadline) and not busy:
+        break
+      if epochTime() >= deadline:
+        break
       sleep(2000)
     stopStarted()
   if root.len > 0:
