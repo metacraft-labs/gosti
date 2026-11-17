@@ -177,6 +177,26 @@ type
       ## GOSTI2 (crud create_vm --mount): host directories attached as
       ## ``disk`` devices (``gosti-mount-<i>``) before the first start.
       ## Non-empty selects the pre-start path.
+    shareHostRunQuota*: bool
+      ## Operator-controlled: give the container the HOST's RunQuota daemon,
+      ## so builds in it lease CPU and memory from the host budget instead of
+      ## running unbounded or under a daemon of their own. After the first
+      ## start, the fixed ``proxy`` device ``runquota`` listens in the guest
+      ## at the standard rendezvous (``/run/runquota/runquotad.sock``, in a
+      ## root-only ``0700`` directory) and forwards each connection to the
+      ## host endpoint (``RUNQUOTA_SOCKET`` of THIS process when set, else
+      ## the provisioned ``/run/runquota/runquotad.sock``). The proxy
+      ## connects as this process's uid, so the host daemon reads the
+      ## container's builds as the container's owner -- whoever ran gosti --
+      ## and admits them in that owner's share; neither the uid nor the host
+      ## endpoint is caller-selectable. See ``runquotaProxyDeviceArgs``.
+    runquotaSession*: string
+      ## The RunQuota session group the container's builds join, written to
+      ## the container's ``environment.RUNQUOTA_SESSION`` before the first
+      ## start. Empty ⇒ this process's own ``RUNQUOTA_SESSION`` (the agent
+      ## session or CI job that asked for the container), and none when that
+      ## is unset too. Requires ``shareHostRunQuota``. A group name only
+      ## ranks work within its owner's share, so choosing one grants nothing.
 
   IncusDiskMount* = object
     ## One host→guest bind share (an incus ``disk`` device).
@@ -1222,6 +1242,173 @@ proc attachSharedStores(b: IncusBackend, name: string,
         " -> " & d.mount.guestPath & ", readonly=" & $d.mount.readOnly &
         ") failed (exit " & $r.exitCode & "): " & r.stdout)
 
+# ---------------------------------------------------------------------------
+# The host RunQuota daemon inside a container (``shareHostRunQuota``).
+#
+# WHY A PROXY DEVICE AND NOT A BIND MOUNT. A provisioned host's rendezvous
+# directory is ``0750 runquota:runquota``: the kernel admits members of the
+# ``runquota`` group and nobody else. An unprivileged container's processes
+# are host uids from the container's idmap (guest root is host uid 1000000 on
+# a stock idmap), in no host group, so a bind-mounted socket or directory is
+# one they cannot ``connect(2)`` to. Granting them the group would need a
+# host idmap entry for it, which is host configuration, not a per-container
+# choice. An Incus ``proxy`` device instead runs a forwarder (``forkproxy``)
+# ON THE HOST that drops to ``security.uid`` / ``security.gid`` and holds
+# exactly those credentials with no supplementary groups, and listens INSIDE
+# the guest. So:
+#
+# * reachability: the forwarder connects as the container's OWNER (this
+#   process's uid) with the rendezvous directory's group when the owner is a
+#   member of it (``runquotaProxyGid``), so it reaches the host socket exactly
+#   when the owner could;
+# * attribution: the host daemon reads SO_PEERCRED from the forwarder, so
+#   every build in the container is the owner's -- in the owner's share
+#   between users, and able to join the owner's session groups -- and never
+#   some host-mapped uid no account has, nor root;
+# * no escalation: the uid is this process's own and the gid one it already
+#   holds, so the container can reach nothing its owner could not.
+#
+# The device is added AFTER the first start: a guest init that mounts a
+# fresh tmpfs on ``/run`` would otherwise hide a listener created before it.
+# Per-job containers are never restarted; one that is restarted gets its
+# listener back from Incus but may have it hidden the same way.
+# ---------------------------------------------------------------------------
+
+const
+  IncusRunQuotaDevice* = "runquota"
+    ## The fixed name of the ``proxy`` device that carries the rendezvous.
+  IncusRunQuotaGuestDir* = "/run/runquota"
+  IncusRunQuotaGuestSocket* = "/run/runquota/runquotad.sock"
+    ## The standard Linux rendezvous, so a client in the guest finds the
+    ## daemon with no configuration (RunQuota's endpoint discovery).
+  DefaultRunQuotaHostEndpoint* = "/run/runquota/runquotad.sock"
+    ## The provisioned host rendezvous, used unless ``RUNQUOTA_SOCKET`` is set
+    ## in this process's environment.
+  IncusRunQuotaSessionKey* = "environment.RUNQUOTA_SESSION"
+  RunQuotaSessionMaxBytes* = 128
+    ## RunQuota's limit on a session group name.
+
+proc hostRunQuotaEndpoint*(): string =
+  ## The host endpoint the proxy forwards to: what a RunQuota client in this
+  ## process would use (``RUNQUOTA_SOCKET``, else the provisioned path).
+  let fromEnv = getEnv("RUNQUOTA_SOCKET")
+  if fromEnv.len > 0: fromEnv else: DefaultRunQuotaHostEndpoint
+
+proc runquotaSessionProblem*(name: string): string =
+  ## Why ``name`` cannot be a RunQuota session group, or "" when it can. The
+  ## same rule RunQuota's client applies to ``RUNQUOTA_SESSION``: at most
+  ## 128 bytes and no control characters (an empty name means "no group").
+  if name.len > RunQuotaSessionMaxBytes:
+    return "a RunQuota session group is at most " & $RunQuotaSessionMaxBytes &
+      " bytes, got " & $name.len
+  for c in name:
+    if ord(c) < 32 or ord(c) == 127:
+      return "a RunQuota session group must not contain control characters"
+  ""
+
+proc effectiveRunQuotaSession*(spec: EphemeralIncusSpec): string =
+  ## The group the container's builds join: the spec's, else this process's
+  ## own ``RUNQUOTA_SESSION``.
+  if spec.runquotaSession.len > 0: spec.runquotaSession
+  else: getEnv("RUNQUOTA_SESSION")
+
+proc runquotaProxyGid*(endpointDirGid, egid: int64;
+                       groups: openArray[int64]): int64 =
+  ## The gid the forwarder connects with. It holds no supplementary groups,
+  ## so the one gid must be the one that opens the rendezvous: the endpoint
+  ## directory's group when this process is a member of it (a provisioned
+  ## host: ``runquota``), else this process's effective gid. Never a group
+  ## this process does not already hold.
+  if endpointDirGid >= 0 and (endpointDirGid == egid or endpointDirGid in groups):
+    endpointDirGid
+  else:
+    egid
+
+proc runquotaProxyDeviceArgs*(container, hostEndpoint: string;
+                              uid, gid: int64): seq[string] =
+  ## ``incus config device add`` for the rendezvous proxy. ``bind=container``
+  ## puts the LISTENER in the guest; the guest socket is root's, mode
+  ## ``0600``, inside the ``0700`` directory gosti creates, which is what a
+  ## RunQuota client running as guest root accepts with no ``runquota``
+  ## account in the guest (its single-user rendezvous policy).
+  ## https://linuxcontainers.org/incus/docs/main/reference/devices_proxy/
+  @["config", "device", "add", container, IncusRunQuotaDevice, "proxy",
+    "connect=unix:" & hostEndpoint,
+    "listen=unix:" & IncusRunQuotaGuestSocket,
+    "bind=container", "uid=0", "gid=0", "mode=0600",
+    "security.uid=" & $uid, "security.gid=" & $gid]
+
+when defined(posix):
+  from std/posix import Stat, Gid, stat, geteuid, getegid, getgroups
+
+  proc callerGroups(): seq[int64] =
+    var buffer: array[0 .. 255, Gid]
+    let count = getgroups(cint(buffer.len), addr buffer)
+    for i in 0 ..< max(0, int(count)):
+      result.add(int64(buffer[i]))
+
+  proc endpointDirGid(hostEndpoint: string): int64 =
+    var info: Stat
+    if stat(parentDir(hostEndpoint).cstring, info) == 0:
+      int64(info.st_gid)
+    else:
+      -1
+
+  proc hostRunQuotaCredentials*(hostEndpoint: string): tuple[uid, gid: int64] =
+    ## The forwarder's credentials: this process's effective uid, and
+    ## ``runquotaProxyGid`` for the endpoint.
+    (int64(geteuid()),
+     runquotaProxyGid(endpointDirGid(hostEndpoint), int64(getegid()),
+                      callerGroups()))
+else:
+  proc hostRunQuotaCredentials*(hostEndpoint: string): tuple[uid, gid: int64] =
+    raise newException(ValueError,
+      "sharing the host RunQuota daemon needs a POSIX host")
+
+proc runquotaSpecProblem*(spec: EphemeralIncusSpec): string =
+  ## Why the RunQuota part of ``spec`` cannot be honoured, or "".
+  if spec.runquotaSession.len > 0 and not spec.shareHostRunQuota:
+    return "runquotaSession is set without shareHostRunQuota"
+  if not spec.shareHostRunQuota:
+    return ""
+  let endpoint = hostRunQuotaEndpoint()
+  if not endpoint.isAbsolute or '\0' in endpoint:
+    return "the host RunQuota endpoint '" & endpoint &
+      "' (RUNQUOTA_SOCKET) is not an absolute path"
+  runquotaSessionProblem(effectiveRunQuotaSession(spec))
+
+proc attachHostRunQuota(b: IncusBackend, name: string) =
+  ## After the first start: create the guest rendezvous directory, add the
+  ## proxy device, and prove its listener is there. A guest that already has
+  ## something at the rendezvous (a daemon of its own) fails the add, and
+  ## the create with it: a container whose builds would lease elsewhere is
+  ## exactly what this capability exists to prevent.
+  b.awaitExecReady(name, "the RunQuota rendezvous")
+  let dir = b.runIncus(@["exec", name, "--", "sh", "-c",
+    "mkdir -p \"$1\" && chown 0:0 \"$1\" && chmod 0700 \"$1\"",
+    "gosti-runquota-dir", IncusRunQuotaGuestDir], timeoutSec = 60)
+  if dir.exitCode != 0:
+    raise newGostiError($b.id, lpStartup,
+      "creating " & IncusRunQuotaGuestDir & " in " & name & " failed (exit " &
+      $dir.exitCode & "): " & dir.stdout)
+  let endpoint = hostRunQuotaEndpoint()
+  let creds = hostRunQuotaCredentials(endpoint)
+  let add = b.runIncus(runquotaProxyDeviceArgs(name, endpoint, creds.uid,
+                                               creds.gid),
+                       timeoutSec = incusConfigTimeoutSec())
+  if add.exitCode != 0:
+    raise newGostiError($b.id, lpStartup,
+      "incus config device add " & IncusRunQuotaDevice & " (" & endpoint &
+      " -> " & IncusRunQuotaGuestSocket & ") failed (exit " &
+      $add.exitCode & "): " & add.stdout)
+  let probe = b.runIncus(@["exec", name, "--", "test", "-S",
+                           IncusRunQuotaGuestSocket], timeoutSec = 60)
+  if probe.exitCode != 0:
+    raise newGostiError($b.id, lpStartup,
+      "the RunQuota rendezvous " & IncusRunQuotaGuestSocket & " is not a " &
+      "socket in " & name & " after the proxy device was added (exit " &
+      $probe.exitCode & ")")
+
 proc resolveHostNixBinDir*(client: string): string =
   ## Resolve the host Nix client into the ``/nix/store`` directory that holds
   ## it. A shared-store guest reaches the host's tools only through the
@@ -1411,6 +1598,12 @@ proc provisionEphemeralClone*(b: IncusBackend,
     raise (ref InvalidSpecError)(backend: $b.id, phase: lpProvisioning,
       msg: "provisionEphemeralClone: reprobuildStoreGuestPath is set " &
         "without reprobuildStore")
+  let runquotaProblem = runquotaSpecProblem(spec)
+  if runquotaProblem.len > 0:
+    raise (ref InvalidSpecError)(backend: $b.id, phase: lpProvisioning,
+      msg: "provisionEphemeralClone: " & runquotaProblem)
+  let runquotaSession =
+    if spec.shareHostRunQuota: effectiveRunQuotaSession(spec) else: ""
   # Resolved before anything is created, so a host whose Nix client cannot be
   # shared fails the create without leaving a half-built container.
   let nixBinDir =
@@ -1424,7 +1617,7 @@ proc provisionEphemeralClone*(b: IncusBackend,
   let needsPreStartCapabilities =
     spec.securityNesting or spec.nestedKvm or spec.hasResourceLimits or
     spec.cloudInitUserData.len > 0 or spec.mounts.len > 0 or
-    spec.hasSharedStores
+    spec.hasSharedStores or spec.shareHostRunQuota
   var launchArgs = @[
     (if needsPreStartCapabilities: "init" else: "launch"), base, spec.name]
   if spec.ephemeral:
@@ -1460,6 +1653,12 @@ proc provisionEphemeralClone*(b: IncusBackend,
         b.applyCloudInitUserData(spec.name, base, spec.cloudInitUserData)
       b.attachDiskMounts(spec.name, spec.mounts)
       b.attachSharedStores(spec.name, spec)
+      # Before the first start, so the guest's init and every later
+      # ``incus exec`` carry the group (a systemd service in the guest does
+      # not inherit ``environment.*``; see the per-backend notes).
+      if runquotaSession.len > 0:
+        b.setRequiredConfig(spec.name, IncusRunQuotaSessionKey,
+                            runquotaSession)
       let startRes = b.runIncus(@["start", spec.name],
                                 timeoutSec = incusStartTimeoutSec())
       if startRes.exitCode != 0:
@@ -1470,6 +1669,8 @@ proc provisionEphemeralClone*(b: IncusBackend,
         b.convergeNestedKvmAccess(spec.name)
       if spec.shareHostNixStore:
         b.installSharedNixClient(spec.name, nixBinDir)
+      if spec.shareHostRunQuota:
+        b.attachHostRunQuota(spec.name)
   except CatchableError as e:
     discard b.deleteContainer(spec.name)
     raise e

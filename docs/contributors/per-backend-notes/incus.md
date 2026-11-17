@@ -162,6 +162,42 @@ half-created container is force-deleted. With both flags absent, the original
 Both take the same stopped `init -> device -> start` path as the capability
 flags above, and a failure in any step force-deletes the container.
 
+### The host RunQuota daemon in the container
+
+`--incus-share-host-runquota` (`EphemeralIncusSpec.shareHostRunQuota`) makes
+the container's builds lease CPU and memory from the host's RunQuota daemon,
+instead of running unbounded or under a daemon of their own. After the first
+start (a guest init that mounts a fresh `/run` would otherwise hide the
+listener) and before the create returns, gosti:
+
+1. creates `/run/runquota` in the guest, root-owned, mode `0700`;
+2. adds the `proxy` device `runquota`: `connect=unix:<host endpoint>`
+   `listen=unix:/run/runquota/runquotad.sock` `bind=container uid=0 gid=0`
+   `mode=0600 security.uid=<gosti's euid> security.gid=<gid>`;
+3. proves `/run/runquota/runquotad.sock` is a socket in the guest.
+
+The host endpoint is `RUNQUOTA_SOCKET` of the gosti process when set, else
+`/run/runquota/runquotad.sock`. A proxy device rather than a bind mount,
+because a provisioned rendezvous is `0750 runquota:runquota` and the guest's
+host-mapped uids are in no host group, so a mounted socket is one they cannot
+connect to. The device's forwarder runs on the host with exactly
+`security.uid`/`security.gid` and no supplementary groups: the uid is gosti's
+own (not caller-selectable), and the gid is the rendezvous directory's group
+when gosti's user is a member of it, else gosti's gid. So the forwarder reaches
+the daemon exactly when gosti's user could, and the daemon attributes every
+build in the container to that user.
+
+`--incus-runquota-session <group>` (`runquotaSession`) names the RunQuota
+session group the container's builds join; empty takes gosti's own
+`RUNQUOTA_SESSION`. It is written to `environment.RUNQUOTA_SESSION` before the
+first start, so it reaches the guest's init and every `incus exec`, but not a
+systemd service in the guest, which must set it itself. The group is only
+ranked within its owner's share, so naming one grants nothing.
+
+A guest that already serves `/run/runquota/runquotad.sock` fails the create,
+and any failed step force-deletes the container. The flags are not on the
+`gosti serve` exec policy.
+
 These are **controller/operator privileges**, not workflow inputs. A local CLI
 caller already has access to the Incus administrative socket. A remote caller
 must possess the `gosti serve` bearer token and reach its overlay-only

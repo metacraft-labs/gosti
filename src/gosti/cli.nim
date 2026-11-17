@@ -196,6 +196,13 @@ type
     incusReprobuildStoreGuestPath*: string ## ``--incus-reprobuild-store-
                                  ## guest-path <dir>`` — its in-guest mount
                                  ## point; empty ⇒ the host path.
+    incusShareHostRunQuota*: bool ## ``--incus-share-host-runquota`` —
+                                 ## trusted controller opt-in: the container's
+                                 ## builds lease from the host RunQuota daemon
+                                 ## as this process's user.
+    incusRunQuotaSession*: string ## ``--incus-runquota-session <group>`` —
+                                 ## the RunQuota session group they join;
+                                 ## empty ⇒ this process's RUNQUOTA_SESSION.
     kernel*: string              ## ``--kernel <path>`` — optional direct-kernel
                                  ## boot bzImage for the ephemeral clone (the
                                  ## tiny Linux golden). Omit for a disk-bootable
@@ -548,6 +555,19 @@ Common flags:
   --incus-reprobuild-store-guest-path <dir>
                                   Its in-guest mount point (default: the host
                                   path). Requires --incus-reprobuild-store.
+  --incus-share-host-runquota    Incus run --ephemeral only: after first
+                                  start, forward the guest's RunQuota
+                                  rendezvous (/run/runquota/runquotad.sock)
+                                  to the host daemon (RUNQUOTA_SOCKET, else
+                                  /run/runquota/runquotad.sock) through a
+                                  proxy device that connects as this user, so
+                                  the guest's builds lease from the host
+                                  budget in this user's share.
+  --incus-runquota-session <group>
+                                  The RunQuota session group the guest's
+                                  builds join (environment.RUNQUOTA_SESSION;
+                                  default: this process's RUNQUOTA_SESSION).
+                                  Requires --incus-share-host-runquota.
   --cpus/--memory-mb (Incus)      With run --ephemeral --backend incus, set
                                   the container's limits.cpu (a CPU count)
                                   and limits.memory (MiB) before first start.
@@ -982,6 +1002,19 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
     of "--incus-share-host-nix-store":
       result.incusShareHostNixStore = true
       inc i
+    of "--incus-share-host-runquota":
+      result.incusShareHostRunQuota = true
+      inc i
+    of "--incus-runquota-session":
+      inc i
+      if i >= args.len or args[i].len == 0:
+        raise newException(ValueError,
+          "--incus-runquota-session requires a group name")
+      let problem = runquotaSessionProblem(args[i])
+      if problem.len > 0:
+        raise newException(ValueError, "--incus-runquota-session: " & problem)
+      result.incusRunQuotaSession = args[i]
+      inc i
     of "--incus-reprobuild-store":
       inc i
       if i >= args.len:
@@ -1234,13 +1267,18 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
   if result.incusSecurityNesting or result.incusNestedKvm or
       result.incusProfiles.len > 0 or result.incusShareHostNixStore or
       result.incusReprobuildStore.len > 0 or
-      result.incusReprobuildStoreGuestPath.len > 0:
+      result.incusReprobuildStoreGuestPath.len > 0 or
+      result.incusShareHostRunQuota or result.incusRunQuotaSession.len > 0:
     if result.subcommand != "run" or not result.ephemeral or
        result.backend.toLowerAscii() != $biIncus:
       raise newException(ValueError,
         "--incus-security-nesting/--incus-nested-kvm/--incus-profile/" &
-        "--incus-share-host-nix-store/--incus-reprobuild-store* require " &
+        "--incus-share-host-nix-store/--incus-reprobuild-store*/" &
+        "--incus-share-host-runquota/--incus-runquota-session require " &
         "run --ephemeral --backend incus")
+  if result.incusRunQuotaSession.len > 0 and not result.incusShareHostRunQuota:
+    raise newException(ValueError,
+      "--incus-runquota-session requires --incus-share-host-runquota")
   if result.incusReprobuildStoreGuestPath.len > 0 and
       result.incusReprobuildStore.len == 0:
     raise newException(ValueError,
@@ -1781,7 +1819,9 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
     nestedKvm: opts.incusNestedKvm,
     shareHostNixStore: opts.incusShareHostNixStore,
     reprobuildStore: opts.incusReprobuildStore,
-    reprobuildStoreGuestPath: opts.incusReprobuildStoreGuestPath)
+    reprobuildStoreGuestPath: opts.incusReprobuildStoreGuestPath,
+    shareHostRunQuota: opts.incusShareHostRunQuota,
+    runquotaSession: opts.incusRunQuotaSession)
   logEvent(opts.logFormat, "info", "ephemeral container: launch",
            {"backend": $biIncus, "name": opts.baseline,
             "base": (if opts.baseImage.len > 0: opts.baseImage else: ib.baseImage)})

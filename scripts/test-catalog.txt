@@ -57,6 +57,9 @@ test all tests/unit/t_cli_probe.nim
 test all tests/unit/t_cli_boot.nim
 test all tests/unit/t_cli_incus.nim
 test all tests/unit/t_incus_create_tuning.nim
+# The host-RunQuota capability (proxy device, forwarder credentials,
+# session group, create order). A fake incus records argv.
+test linux tests/unit/t_incus_runquota_share.nim
 # Per-run ownership of Incus containers and networks (user.gosti.owner).
 # A fake incus script stands in for the daemon (see the file header).
 # Linux only: IncusBackend exec/stop/delete refuse every call on other
@@ -369,6 +372,12 @@ host all tests/e2e/t_layer_gc_incus_host.nim
 # idmap. Self-skips when
 # Incus is unreachable or the image cannot be resolved.
 host all tests/e2e/t_crud_incus_real.nim
+# Host RunQuota sharing against REAL Incus and a private runquotad: two host
+# and two container builds of width 1 under a 2-CPU budget never run more
+# than 2 at once (flock ledger), and the container's builds join the
+# creating session's group as its owner. Self-skips without
+# GOSTI_RUNQUOTA_BIN_DIR.
+host linux tests/e2e/t_incus_runquota_host_budget.nim
 
 # Previously Reprobuild-only deterministic CLI coverage.
 test posix tests/unit/t_cli_ephemeral_vmrun.nim
