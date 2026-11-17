@@ -203,6 +203,12 @@ type
     incusRunQuotaSession*: string ## ``--incus-runquota-session <group>`` —
                                  ## the RunQuota session group they join;
                                  ## empty ⇒ this process's RUNQUOTA_SESSION.
+    incusVm*: bool               ## ``--incus-vm`` — an Incus VIRTUAL
+                                 ## MACHINE (``incus init --vm``) instead of
+                                 ## a container.
+    incusRegisterHostRunQuota*: bool ## ``--incus-register-host-runquota`` —
+                                 ## VM only: hold the VM's shape on the host
+                                 ## RunQuota daemon for its life.
     kernel*: string              ## ``--kernel <path>`` — optional direct-kernel
                                  ## boot bzImage for the ephemeral clone (the
                                  ## tiny Linux golden). Omit for a disk-bootable
@@ -568,6 +574,21 @@ Common flags:
                                   builds join (environment.RUNQUOTA_SESSION;
                                   default: this process's RUNQUOTA_SESSION).
                                   Requires --incus-share-host-runquota.
+  --incus-vm                      Incus run --ephemeral only: create a
+                                  virtual machine (incus init --vm) instead
+                                  of a container (the image must be a VM
+                                  image).
+  --incus-register-host-runquota  With --incus-vm: before first start,
+                                  register the VM's shape (--cpus vCPUs,
+                                  --memory-mb) with the host RunQuota daemon
+                                  (RUNQUOTA_SOCKET, else the provisioned
+                                  rendezvous) through `runquota vm hold`
+                                  (GOSTI_RUNQUOTA_CMD, else runquota on
+                                  PATH), and wait for the grant; the host
+                                  holds the VM's memory while it runs and
+                                  counts its vCPUs at full shape unless the
+                                  guest's RunQuota daemon links over vsock.
+                                  --incus-runquota-session names the group.
   --cpus/--memory-mb (Incus)      With run --ephemeral --backend incus, set
                                   the container's limits.cpu (a CPU count)
                                   and limits.memory (MiB) before first start.
@@ -1005,6 +1026,12 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
     of "--incus-share-host-runquota":
       result.incusShareHostRunQuota = true
       inc i
+    of "--incus-vm":
+      result.incusVm = true
+      inc i
+    of "--incus-register-host-runquota":
+      result.incusRegisterHostRunQuota = true
+      inc i
     of "--incus-runquota-session":
       inc i
       if i >= args.len or args[i].len == 0:
@@ -1268,17 +1295,29 @@ proc parseCliOpts*(args: seq[string]): CliOpts =
       result.incusProfiles.len > 0 or result.incusShareHostNixStore or
       result.incusReprobuildStore.len > 0 or
       result.incusReprobuildStoreGuestPath.len > 0 or
-      result.incusShareHostRunQuota or result.incusRunQuotaSession.len > 0:
+      result.incusShareHostRunQuota or result.incusRunQuotaSession.len > 0 or
+      result.incusVm or result.incusRegisterHostRunQuota:
     if result.subcommand != "run" or not result.ephemeral or
        result.backend.toLowerAscii() != $biIncus:
       raise newException(ValueError,
         "--incus-security-nesting/--incus-nested-kvm/--incus-profile/" &
         "--incus-share-host-nix-store/--incus-reprobuild-store*/" &
-        "--incus-share-host-runquota/--incus-runquota-session require " &
+        "--incus-share-host-runquota/--incus-runquota-session/" &
+        "--incus-vm/--incus-register-host-runquota require " &
         "run --ephemeral --backend incus")
-  if result.incusRunQuotaSession.len > 0 and not result.incusShareHostRunQuota:
+  if result.incusRunQuotaSession.len > 0 and
+      not result.incusShareHostRunQuota and
+      not result.incusRegisterHostRunQuota:
     raise newException(ValueError,
-      "--incus-runquota-session requires --incus-share-host-runquota")
+      "--incus-runquota-session requires --incus-share-host-runquota or " &
+      "--incus-register-host-runquota")
+  if result.incusRegisterHostRunQuota and not result.incusVm:
+    raise newException(ValueError,
+      "--incus-register-host-runquota requires --incus-vm")
+  if result.incusShareHostRunQuota and result.incusVm:
+    raise newException(ValueError,
+      "--incus-share-host-runquota is for containers; a VM is registered " &
+      "with --incus-register-host-runquota")
   if result.incusReprobuildStoreGuestPath.len > 0 and
       result.incusReprobuildStore.len == 0:
     raise newException(ValueError,
@@ -1821,7 +1860,9 @@ proc cmdRunEphemeralIncus(opts: CliOpts): int =
     reprobuildStore: opts.incusReprobuildStore,
     reprobuildStoreGuestPath: opts.incusReprobuildStoreGuestPath,
     shareHostRunQuota: opts.incusShareHostRunQuota,
-    runquotaSession: opts.incusRunQuotaSession)
+    runquotaSession: opts.incusRunQuotaSession,
+    virtualMachine: opts.incusVm,
+    registerWithHostRunQuota: opts.incusRegisterHostRunQuota)
   logEvent(opts.logFormat, "info", "ephemeral container: launch",
            {"backend": $biIncus, "name": opts.baseline,
             "base": (if opts.baseImage.len > 0: opts.baseImage else: ib.baseImage)})

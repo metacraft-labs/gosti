@@ -46,6 +46,7 @@ import ./gosti/boot_smoke
 import ./gosti/backends/lima
 import ./gosti/backends/libvirt
 import ./gosti/backends/incus
+import ./gosti/runquota_vm
 import ./gosti/serve/protocol
 import ./gosti/serve/http
 import ./gosti/serve/server
@@ -79,6 +80,7 @@ export boot_smoke
 export lima
 export libvirt except cleanupAcquiredDomain
 export incus
+export runquota_vm
 export protocol
 export http
 export server

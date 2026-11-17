@@ -198,6 +198,50 @@ A guest that already serves `/run/runquota/runquotad.sock` fails the create,
 and any failed step force-deletes the container. The flags are not on the
 `gosti serve` exec policy.
 
+### A VM registered with the host RunQuota daemon
+
+`--incus-vm` (`EphemeralIncusSpec.virtualMachine`) creates an Incus virtual
+machine (`incus init --vm`) instead of a container. A VM is not a process
+tree on the host: its memory is the host's from the moment it boots, and its
+vCPUs compete with the host's builds. `--incus-register-host-runquota`
+(`registerWithHostRunQuota`, VM only) holds the VM's shape on the host's
+RunQuota daemon for the VM's whole life, through a holder process,
+`runquota vm hold` (`runquotaCommand`, else `GOSTI_RUNQUOTA_CMD`, else
+`runquota` on `PATH`; the daemon is `RUNQUOTA_SOCKET` of the gosti process
+when set, else the provisioned rendezvous):
+
+1. before the first start, the holder registers the shape -- `limits.cpu`
+   vCPUs and `limits.memory`, both required (`--cpus`, `--memory-mb`) -- in
+   the session group `--incus-runquota-session` names (default: gosti's own
+   `RUNQUOTA_SESSION`), and the create waits until the host grants it
+   (`runquotaWaitSec`, default 600 s); a refusal or a timeout removes the
+   instance before it ever ran;
+2. after the start, gosti reads the VM's QEMU process (`incus query
+   /1.0/instances/<name>/state`) and its vsock CID (`volatile.vsock_id`,
+   assigned at start) and hands both to the holder, which reports them to the
+   daemon;
+3. the holder then waits on the VM process and releases the registration
+   when it exits; teardown (deleting or stopping the VM) is what ends it, and
+   gosti reaps the holder.
+
+The host daemon holds the VM's memory for as long as the registration lives
+and counts its vCPUs at their full count, unless a RunQuota daemon in the
+guest links to the host daemon over vsock (`runquotad --link-host
+vsock:PORT` in the guest, `--vm-link-vsock-port PORT` on the host): then the
+VM is charged what the guest's own leases hold, so host builds use the vCPUs
+an idle VM leaves free and give them back when the guest gets busy. Setting
+up the guest daemon is the guest image's job. If the holder dies, the daemon
+keeps the reservation exactly as long as the VM process lives; nothing stops
+the VM. An Incus VM restarted in place (a guest reboot, `incus restart`)
+runs on in a new QEMU process: gosti gives the holder a probe (`incus list
+^<name>$ -c sp`), and when the watched process exits the holder asks it,
+for up to 120 s, for the VM's next process, reports that one to the daemon
+and keeps holding; it releases once the VM no longer exists or the grace
+runs out (so a VM stopped and kept is held for 120 s more). A holder that
+was lost does not follow a restart: the daemon then releases the
+registration when the first process exits. The flags are not on the
+`gosti serve` exec policy.
+
 These are **controller/operator privileges**, not workflow inputs. A local CLI
 caller already has access to the Incus administrative socket. A remote caller
 must possess the `gosti serve` bearer token and reach its overlay-only

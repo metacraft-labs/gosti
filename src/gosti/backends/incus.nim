@@ -54,6 +54,7 @@ import std/[json, options, os, osproc, streams, strtabs,
 import ../types
 import ../auto
 import ../ephemeral_inventory
+import ../runquota_vm
 
 # ---------------------------------------------------------------------------
 # Backend type.
@@ -195,8 +196,32 @@ type
       ## the container's ``environment.RUNQUOTA_SESSION`` before the first
       ## start. Empty ⇒ this process's own ``RUNQUOTA_SESSION`` (the agent
       ## session or CI job that asked for the container), and none when that
-      ## is unset too. Requires ``shareHostRunQuota``. A group name only
-      ## ranks work within its owner's share, so choosing one grants nothing.
+      ## is unset too. Requires ``shareHostRunQuota`` or
+      ## ``registerWithHostRunQuota`` (for a VM, the group its registration
+      ## is held in). A group name only ranks work within its owner's share,
+      ## so choosing one grants nothing.
+    virtualMachine*: bool
+      ## Create an Incus VIRTUAL MACHINE (``incus init --vm``) instead of a
+      ## container. The image must be a VM image; exec and file transfer go
+      ## through the Incus agent, as for containers.
+    registerWithHostRunQuota*: bool
+      ## VM only, operator-controlled: register the VM with the HOST's
+      ## RunQuota daemon (``RUNQUOTA_SOCKET`` of this process, else the
+      ## provisioned rendezvous) for its whole life. Before the first start a
+      ## holder (``runquota vm hold``) registers the VM's shape --
+      ## ``limits.cpu`` vCPUs and ``limits.memory``, both required -- and the
+      ## create waits until the host grants it; after the start it reports
+      ## the VM's process and vsock CID, and it releases the registration
+      ## when that process exits (teardown). The host holds the VM's memory
+      ## the whole time, and charges its vCPUs at their full count unless a
+      ## RunQuota daemon in the guest links to it over vsock, in which case
+      ## at what the guest's own leases hold. See ``runquota_vm``.
+    runquotaCommand*: seq[string]
+      ## The RunQuota client the holder runs; empty ⇒ ``GOSTI_RUNQUOTA_CMD``,
+      ## else ``runquota`` on ``PATH``.
+    runquotaWaitSec*: int
+      ## How long the create waits for the host to grant the VM's shape;
+      ## 0 ⇒ ``DefaultRunQuotaVmWaitSec``.
 
   IncusDiskMount* = object
     ## One host→guest bind share (an incus ``disk`` device).
@@ -1365,10 +1390,52 @@ else:
     raise newException(ValueError,
       "sharing the host RunQuota daemon needs a POSIX host")
 
+proc vmShapeFromSpec*(spec: EphemeralIncusSpec;
+                      cpuMilli: var uint32; memoryBytes: var uint64): string =
+  ## The VM shape a host registration holds: ``limits.cpu`` (a vCPU count)
+  ## and ``limits.memory``. "" when both parse, else why not.
+  if not spec.config.hasKey(IncusLimitsCpuKey) or
+      not spec.config.hasKey(IncusLimitsMemoryKey):
+    return "registering a VM with the host RunQuota daemon needs its shape: " &
+      "set " & IncusLimitsCpuKey & " and " & IncusLimitsMemoryKey &
+      " (--cpus and --memory-mb)"
+  try:
+    let cpus = parseUInt(spec.config[IncusLimitsCpuKey].strip())
+    if cpus == 0 or cpus > 4096:
+      return IncusLimitsCpuKey & " must be a vCPU count, got '" &
+        spec.config[IncusLimitsCpuKey] & "'"
+    cpuMilli = uint32(cpus) * 1000'u32
+  except ValueError:
+    return IncusLimitsCpuKey & " must be a vCPU count to register a VM " &
+      "(a CPU set or allowance has no shape), got '" &
+      spec.config[IncusLimitsCpuKey] & "'"
+  try:
+    memoryBytes = parseMemoryBytes(spec.config[IncusLimitsMemoryKey])
+  except ValueError as e:
+    return IncusLimitsMemoryKey & ": " & e.msg
+  if memoryBytes == 0'u64:
+    return IncusLimitsMemoryKey & " must be non-zero"
+  ""
+
 proc runquotaSpecProblem*(spec: EphemeralIncusSpec): string =
   ## Why the RunQuota part of ``spec`` cannot be honoured, or "".
-  if spec.runquotaSession.len > 0 and not spec.shareHostRunQuota:
-    return "runquotaSession is set without shareHostRunQuota"
+  if spec.runquotaSession.len > 0 and not spec.shareHostRunQuota and
+      not spec.registerWithHostRunQuota:
+    return "runquotaSession is set without shareHostRunQuota or " &
+      "registerWithHostRunQuota"
+  if spec.registerWithHostRunQuota:
+    if not spec.virtualMachine:
+      return "registerWithHostRunQuota is for VMs (a container's builds " &
+        "lease from the host directly: shareHostRunQuota)"
+    var cpu: uint32
+    var memory: uint64
+    let shape = vmShapeFromSpec(spec, cpu, memory)
+    if shape.len > 0:
+      return shape
+    return runquotaSessionProblem(effectiveRunQuotaSession(spec))
+  if spec.shareHostRunQuota and spec.virtualMachine:
+    return "shareHostRunQuota forwards a socket into a container; a VM is " &
+      "registered instead (registerWithHostRunQuota)"
   if not spec.shareHostRunQuota:
     return ""
   let endpoint = hostRunQuotaEndpoint()
@@ -1547,6 +1614,55 @@ proc attachDiskMounts(b: IncusBackend, name: string,
         " (" & m.hostPath & " -> " & m.guestPath & ") failed (exit " &
         $r.exitCode & "): " & r.stdout)
 
+proc vmProcessAndCid*(b: IncusBackend, name: string): tuple[pid: int, cid: uint32] =
+  ## A running Incus VM's host process (the QEMU that runs it) and its
+  ## vsock CID (``volatile.vsock_id``, assigned at start).
+  let state = b.runIncus(@["query", "/1.0/instances/" & name & "/state"],
+                         timeoutSec = 30)
+  if state.exitCode != 0:
+    raise newGostiError($b.id, lpStartup,
+      "incus query " & name & " state failed (exit " & $state.exitCode &
+      "): " & state.stdout)
+  try:
+    result.pid = parseJson(state.stdout){"pid"}.getInt()
+  except CatchableError as e:
+    raise newGostiError($b.id, lpStartup,
+      "incus query " & name & " state: no pid: " & e.msg)
+  let cid = b.runIncus(@["config", "get", name, "volatile.vsock_id"],
+                       timeoutSec = 30)
+  if cid.exitCode == 0 and cid.stdout.strip().len > 0:
+    try:
+      result.cid = uint32(parseUInt(cid.stdout.strip()))
+    except ValueError:
+      result.cid = 0'u32
+  if result.pid <= 0:
+    raise newGostiError($b.id, lpStartup,
+      "incus reports no process for VM " & name)
+
+const IncusVmProcessProbeScript* =
+  "name=$1; shift; " &
+  "out=$(\"$@\" list \"^${name}\\$\" -c sp --format csv) || exit 1; " &
+  "[ -n \"$out\" ] || exit 0; " &
+  "case $out in RUNNING,*) p=${out#*,}; echo \"${p:-0}\" ;; *) echo 0 ;; esac"
+  ## The probe a VM's RunQuota holder runs after the VM's process exits
+  ## (``runquota vm hold --restart-grace``): the VM's QEMU pid while it runs,
+  ## ``0`` while it exists but does not run (an Incus guest reboot stops the
+  ## VM for a few seconds and starts a new QEMU), and nothing once it is
+  ## gone. The name and the Incus command are positional arguments, never
+  ## interpolated into the script.
+
+proc vmRestartProbe*(b: IncusBackend, name: string): seq[string] =
+  result = @["sh", "-c", IncusVmProcessProbeScript, "sh", name]
+  result.add(b.incusCmd)
+
+proc reportVmToHolder(b: IncusBackend, name: string;
+                      holder: var RunQuotaVmHolder) =
+  let (pid, cid) = b.vmProcessAndCid(name)
+  try:
+    holder.reportVmStarted(pid, cid)
+  except RunQuotaVmError as e:
+    raise newGostiError($b.id, lpStartup, e.msg)
+
 proc provisionEphemeralClone*(b: IncusBackend,
                               spec: EphemeralIncusSpec): VmHandle =
   ## Materialise ONE fresh per-job container from the base image.
@@ -1603,7 +1719,9 @@ proc provisionEphemeralClone*(b: IncusBackend,
     raise (ref InvalidSpecError)(backend: $b.id, phase: lpProvisioning,
       msg: "provisionEphemeralClone: " & runquotaProblem)
   let runquotaSession =
-    if spec.shareHostRunQuota: effectiveRunQuotaSession(spec) else: ""
+    if spec.shareHostRunQuota or spec.registerWithHostRunQuota:
+      effectiveRunQuotaSession(spec)
+    else: ""
   # Resolved before anything is created, so a host whose Nix client cannot be
   # shared fails the create without leaving a half-built container.
   let nixBinDir =
@@ -1617,9 +1735,12 @@ proc provisionEphemeralClone*(b: IncusBackend,
   let needsPreStartCapabilities =
     spec.securityNesting or spec.nestedKvm or spec.hasResourceLimits or
     spec.cloudInitUserData.len > 0 or spec.mounts.len > 0 or
-    spec.hasSharedStores or spec.shareHostRunQuota
+    spec.hasSharedStores or spec.shareHostRunQuota or
+    spec.registerWithHostRunQuota
   var launchArgs = @[
     (if needsPreStartCapabilities: "init" else: "launch"), base, spec.name]
+  if spec.virtualMachine:
+    launchArgs.add("--vm")
   if spec.ephemeral:
     launchArgs.add("--ephemeral")
   if spec.ownerToken.len > 0:
@@ -1635,6 +1756,8 @@ proc provisionEphemeralClone*(b: IncusBackend,
   let createSlot = acquireCreateSlot(base, incusCreateConcurrency(),
                                      incusInitTimeoutSec())
   defer: releaseCreateSlot(createSlot)
+  var holder: RunQuotaVmHolder
+  var holding = false
   let launchRes = b.runIncus(launchArgs, timeoutSec = incusInitTimeoutSec())
   if launchRes.exitCode != 0:
     # Best-effort teardown of any half-built container.
@@ -1659,12 +1782,29 @@ proc provisionEphemeralClone*(b: IncusBackend,
       if runquotaSession.len > 0:
         b.setRequiredConfig(spec.name, IncusRunQuotaSessionKey,
                             runquotaSession)
+      # THE HOST GRANTS THE VM'S SHAPE BEFORE IT BOOTS: a VM whose memory
+      # the host does not have does not start.
+      if spec.registerWithHostRunQuota:
+        var cpuMilli: uint32
+        var memoryBytes: uint64
+        discard vmShapeFromSpec(spec, cpuMilli, memoryBytes)
+        try:
+          holder = startVmHolder(runquotaVmCommand(spec.runquotaCommand),
+            spec.name, cpuMilli, memoryBytes, runquotaSession,
+            if spec.runquotaWaitSec > 0: spec.runquotaWaitSec
+            else: DefaultRunQuotaVmWaitSec,
+            b.vmRestartProbe(spec.name))
+        except RunQuotaVmError as e:
+          raise newGostiError($b.id, lpProvisioning, e.msg)
+        holding = true
       let startRes = b.runIncus(@["start", spec.name],
                                 timeoutSec = incusStartTimeoutSec())
       if startRes.exitCode != 0:
         raise newGostiError($b.id, lpStartup,
           "incus start " & spec.name & " failed (exit " &
           $startRes.exitCode & "): " & startRes.stdout)
+      if holding:
+        b.reportVmToHolder(spec.name, holder)
       if spec.nestedKvm:
         b.convergeNestedKvmAccess(spec.name)
       if spec.shareHostNixStore:
@@ -1673,10 +1813,20 @@ proc provisionEphemeralClone*(b: IncusBackend,
         b.attachHostRunQuota(spec.name)
   except CatchableError as e:
     discard b.deleteContainer(spec.name)
+    if holding:
+      if holder.started:
+        # The VM ran: deleting it ends its process, and the holder releases.
+        discard reapVmHolder(spec.name)
+      else:
+        holder.abandonVmHolder()
     raise e
 
   var extra = initTable[string, string]()
   extra["container"] = spec.name
+  if spec.virtualMachine:
+    extra["virtualMachine"] = "true"
+  if holding:
+    extra["runquotaLease"] = $holder.leaseId
   extra["ephemeral"] = "true"
   extra["baseImage"] = base
   extra["storagePool"] = b.storagePool
@@ -2043,6 +2193,10 @@ method stopAndCleanup*(b: IncusBackend, vm: VmHandle, deleteVm: bool = true) =
         discard b.runIncus(@["stop", "--force", vm.name], timeoutSec = 60)
     except CatchableError:
       discard
+    # A VM registered with the host RunQuota daemon: its holder releases the
+    # registration when the VM's process ends, and is reaped here. Stopping
+    # (not deleting) ends the process too.
+    discard reapVmHolder(vm.name)
   else:
     discard
 
