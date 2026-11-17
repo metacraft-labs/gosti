@@ -168,6 +168,18 @@ suite "SSH access preconditions":
     expect GostiError:
       discard b.execInGuest(vm, initTable[string, string](), @["true"])
 
+suite "the display device":
+  test "the machine model's default display stays unless asked otherwise":
+    check idx(buildQemuBootArgs(baseLaunch()), "-vga") < 0
+
+  test "noDisplayDevice adds -vga none and nothing else":
+    var l = baseLaunch()
+    let before = buildQemuBootArgs(l)
+    l.noDisplayDevice = true
+    let after = buildQemuBootArgs(l)
+    check valueAfter(after, "-vga") == "none"
+    check after.len == before.len + 2
+
 suite "restricted user networking":
   test "an unrestricted guest keeps the plain user network":
     var l = baseLaunch()

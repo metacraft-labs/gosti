@@ -377,6 +377,7 @@ type
     qmpSocketPath*: string     ## QMP monitor socket; "" => no monitor
     networkRestricted*: bool   ## ``restrict=on`` on the user-mode network
     guestForwards*: seq[GuestForward]
+    noDisplayDevice*: bool     ## ``-vga none``: no emulated display adapter
 
 proc guestForwardOption*(f: GuestForward): string =
   ## ``guestfwd=tcp:<ip>:<port>-cmd:<command>``. QEMU splits ``-netdev``
@@ -485,6 +486,9 @@ proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
     # loop until the gate's timeout expires and reports the wrong thing.
     "-no-reboot",
     "-rtc", "base=utc"]
+  # Only when asked for, so the argv of every existing boot is unchanged.
+  if l.noDisplayDevice:
+    result.add(@["-vga", "none"])
 
   case l.accel
   of baKvm:
@@ -815,7 +819,8 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
         diskReadonly: spec.diskReadonly,
         qmpSocketPath: qmpSocketPath,
         networkRestricted: spec.networkRestricted,
-        guestForwards: spec.guestForwards)
+        guestForwards: spec.guestForwards,
+        noDisplayDevice: spec.noDisplayDevice)
       for d in spec.dataDiskPaths:
         if not fileExists(d):
           raise newException(IOError,

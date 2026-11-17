@@ -383,6 +383,16 @@ type
       ## the only destinations the guest can open. Realised by ``qemu-boot``
       ## only; no other backend reads it.
     guestForwards*: seq[GuestForward]
+    noDisplayDevice*: bool          ## the guest has no emulated display
+      ## ``qemu-boot``: ``-vga none``, so the machine model's default VGA
+      ## adapter (q35's ``VGA``, which a Linux guest drives with
+      ## ``bochs-drm``) is not created. For guests reached only over SSH
+      ## and the serial console: under a heavily loaded host that driver's
+      ## vblank waits time out and the guest kernel raises a ``WARNING``
+      ## (and taints itself), which a gate comparing kernel state reads as
+      ## a change. Realised by ``qemu-boot`` only; no other backend reads
+      ## it. https://www.qemu.org/docs/master/system/invocation.html
+      ## (``-vga none``)
       ## ``qemu-boot`` only: guest-side addresses QEMU answers itself by
       ## running a command per connection (``guestfwd=tcp:IP:PORT-cmd:...``),
       ## e.g. a relay to a host-side proxy. The way a restricted guest is
