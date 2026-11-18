@@ -63,6 +63,13 @@ test linux tests/unit/t_incus_runquota_share.nim
 # An Incus VM registered with the host RunQuota daemon (shape, create order,
 # refusals, flags). A fake incus and a fake runquota client record argv.
 test posix tests/unit/t_incus_runquota_vm.nim
+# A pool's jobs waiting for a slot, reported as class-queue waits of the
+# pool's RunQuota class through one reporting session. A recording
+# runquota script stands in for the client (see the file header).
+test posix tests/unit/t_pool_class_queue.nim
+# The VM-class sizing helper (gosti vm-class-size) over runquota profile /
+# sizing answers; its CLI case uses a recording runquota script.
+test all tests/unit/t_vm_class_sizing.nim
 # Per-run ownership of Incus containers and networks (user.gosti.owner).
 # A fake incus script stands in for the daemon (see the file header).
 # Linux only: IncusBackend exec/stop/delete refuse every call on other
@@ -388,6 +395,12 @@ host linux tests/e2e/t_incus_runquota_host_budget.nim
 # its memory is never granted to host leases while it runs. Self-skips
 # without GOSTI_RUNQUOTA_BIN_DIR, /dev/kvm or /dev/vhost-vsock.
 host linux tests/e2e/t_incus_vm_runquota_link.nim
+# A pool that holds a job of a reserved RunQuota class waiting 90 s (real
+# wall time) shows it in a private runquotad's `runquota pressure --json`
+# as a class-queue wait of that class; the pool's reporter is the real
+# runquota client (mock VM backend). Self-skips without
+# GOSTI_RUNQUOTA_BIN_DIR.
+host posix tests/e2e/t_pool_class_queue_wait.nim
 
 # Previously Reprobuild-only deterministic CLI coverage.
 test posix tests/unit/t_cli_ephemeral_vmrun.nim

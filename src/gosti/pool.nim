@@ -26,6 +26,22 @@
 ##   pool.release(lease)
 ## ```
 ##
+## JOBS THAT WAIT FOR A SLOT. A pool that serves a queue of jobs -- a CI
+## runner pool -- holds each job from ``submit`` until ``acquireFor`` gives
+## it a slot (or ``withdraw`` drops it). With ``PoolConfig.runquotaClass``
+## set, each such wait is reported to the host's RunQuota daemon as a
+## ``class-queue`` wait of that class, which is how a host's reservation for
+## the class is judged large enough (see ``runquota_class_queue``):
+##
+## ```nim
+## var pool = newPool(PoolConfig(backend: b, baseline: "golden", size: 4,
+##                               runquotaClass: "ci"))
+## pool.construct()            # also starts the class's reporting session
+## let job = pool.submit("job-1234", queuedAtUnixMillis = createdAt)
+## # ... once a member is free:
+## let lease = pool.acquireFor(job)   # reports how long the job waited
+## ```
+##
 ## WHERE THE COST SITS, which is the whole point of the recycle variant:
 ## ``release`` does the resetting, not ``acquire``. A member is restored the
 ## moment its task finishes, so it is already warm when the next task
@@ -33,8 +49,12 @@
 ## ``acquire`` would move that cost back onto the critical path and give up
 ## most of the benefit.
 
-import std/[strformat, strutils, times]
+import std/strformat
 import ./types
+import ./runquota_class_queue
+import ./runquota_vm
+
+export runquota_class_queue
 
 type
   PoolAlgorithm* = enum
@@ -98,11 +118,42 @@ type
       ## ``construct`` verifies distinctness regardless, so a backend that
       ## gets this wrong fails loudly instead of producing a pool that looks
       ## full and silently corrupts tasks.
+    runquotaClass*: string
+      ## The RunQuota class the pool's jobs run in (a host reservation's
+      ## class, e.g. ``ci``). When set, the pool reports how long each job
+      ## it holds waits for a slot to the host's RunQuota daemon as a
+      ## ``class-queue`` wait (``runquota_class_queue``), so the class's
+      ## queue time is published beside build-wait pressure. Empty (the
+      ## default): nothing is reported.
+    runquotaSession*: string
+      ## The RunQuota session group the reporting session joins; empty for
+      ## the group named after the class.
+    runquotaCmd*: seq[string]
+      ## The RunQuota client; empty for ``GOSTI_RUNQUOTA_CMD`` or
+      ## ``runquota`` on ``PATH``.
 
+  PoolJob* = ref object
+    ## A job the pool holds until it gets a slot: from ``submit`` to
+    ## ``acquireFor`` (or ``withdraw``) it is WAITING, and that wait is
+    ## what the pool reports as its class's queue time.
+    id*: string
+    queuedAtUnixMillis*: int64
+      ## When the job started waiting: the job's own queued time when the
+      ## caller knows it (a CI system's), else when it was submitted.
+    waitedMillis*: int64
+      ## How long it waited, once it got a slot or was withdrawn; -1 while
+      ## it waits.
+    reported*: bool
+      ## Whether its wait was reported to RunQuota.
   Pool* = ref object
     cfg*: PoolConfig
     members*: seq[PoolMember]
     constructed*: bool
+    waiting*: seq[PoolJob]
+      ## Jobs submitted and not yet given a slot, oldest first.
+    reporter*: ClassQueueReporter
+      ## The class-queue reporting session, while the pool is constructed
+      ## and has a class.
 
   PoolError* = object of CatchableError
 
@@ -218,6 +269,16 @@ proc construct*(p: Pool) =
   ## that as the member's baseline. This is the expensive part and it is
   ## paid once -- nobody is waiting on it.
   if p.constructed: return
+  if p.cfg.runquotaClass.len > 0 and p.reporter.isNil:
+    # A MEASUREMENT, NOT A DEPENDENCY: a pool whose reporter cannot start
+    # serves its jobs anyway, and says once that their waits go unreported.
+    try:
+      p.reporter = startClassQueueReporter(
+        runquotaVmCommand(p.cfg.runquotaCmd), p.cfg.runquotaClass,
+        p.cfg.runquotaSession)
+    except ClassQueueError as e:
+      stderr.writeLine("gosti: pool class-queue waits of class " &
+        p.cfg.runquotaClass & " are not reported: " & e.msg)
   case p.cfg.algorithm
   of paClonePerTask:
     p.constructed = true
@@ -308,6 +369,54 @@ proc teardown*(p: Pool) =
       except CatchableError: discard
   p.members = @[]
   p.constructed = false
+  if not p.reporter.isNil:
+    p.reporter.close()
+    p.reporter = nil
+
+proc submit*(p: Pool; id: string;
+             queuedAtUnixMillis = 0'i64): PoolJob =
+  ## Hold job ``id`` until ``acquireFor`` gives it a slot. Its wait starts
+  ## at ``queuedAtUnixMillis`` (the job's own queued time, when the caller
+  ## knows it) or now.
+  result = PoolJob(id: id, waitedMillis: -1,
+    queuedAtUnixMillis:
+      if queuedAtUnixMillis > 0: queuedAtUnixMillis else: unixMillisNow())
+  p.waiting.add(result)
+
+proc endWait(p: Pool; job: PoolJob) =
+  ## The job's wait is over: remove it from the queue and report it.
+  let at = p.waiting.find(job)
+  if at >= 0:
+    p.waiting.delete(at)
+  job.waitedMillis = max(0'i64, unixMillisNow() - job.queuedAtUnixMillis)
+  if not p.reporter.isNil:
+    job.reported = p.reporter.reportWait(job.queuedAtUnixMillis,
+      job.waitedMillis)
+
+proc acquireFor*(p: Pool; job: PoolJob): PoolLease =
+  ## Give the waiting ``job`` a slot (``acquire``), and report how long it
+  ## waited for it. A job that cannot be given one (no free member) stays
+  ## waiting and the error propagates.
+  if job.isNil or p.waiting.find(job) < 0:
+    raise newException(PoolError, "job is not waiting in this pool")
+  result = p.acquire()
+  p.endWait(job)
+
+proc withdraw*(p: Pool; job: PoolJob) =
+  ## The job no longer waits (cancelled, sent elsewhere): its wait so far is
+  ## reported like a served one, as a withdrawn queue wait is.
+  if job.isNil or p.waiting.find(job) < 0:
+    return
+  p.endWait(job)
+
+proc oldestWaitMillis*(p: Pool): int64 =
+  ## How long the longest-waiting job has waited so far; 0 with none.
+  if p.waiting.len == 0:
+    return 0
+  var oldest = p.waiting[0].queuedAtUnixMillis
+  for job in p.waiting:
+    oldest = min(oldest, job.queuedAtUnixMillis)
+  max(0'i64, unixMillisNow() - oldest)
 
 proc freeCount*(p: Pool): int =
   ## Members not currently leased. Always 0 for `paClonePerTask`, which has
@@ -316,5 +425,12 @@ proc freeCount*(p: Pool): int =
     if not m.inUse: inc result
 
 proc describe*(p: Pool): string =
-  &"{p.cfg.algorithm} baseline={p.cfg.baseline} " &
-  &"members={p.members.len} free={p.freeCount()}"
+  result = &"{p.cfg.algorithm} baseline={p.cfg.baseline} " &
+    &"members={p.members.len} free={p.freeCount()}"
+  if p.waiting.len > 0:
+    result.add(&" waiting={p.waiting.len} oldest_wait_ms={p.oldestWaitMillis()}")
+  if p.cfg.runquotaClass.len > 0:
+    let state =
+      if p.reporter.isNil or p.reporter.lost: "unreported"
+      else: "reported"
+    result.add(&" class={p.cfg.runquotaClass} class_queue={state}")

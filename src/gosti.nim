@@ -47,6 +47,8 @@ import ./gosti/backends/lima
 import ./gosti/backends/libvirt
 import ./gosti/backends/incus
 import ./gosti/runquota_vm
+import ./gosti/runquota_class_queue
+import ./gosti/vm_class_sizing
 import ./gosti/serve/protocol
 import ./gosti/serve/http
 import ./gosti/serve/server
@@ -81,6 +83,8 @@ export lima
 export libvirt except cleanupAcquiredDomain
 export incus
 export runquota_vm
+export runquota_class_queue
+export vm_class_sizing
 export protocol
 export http
 export server

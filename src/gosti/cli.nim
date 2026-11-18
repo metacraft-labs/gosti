@@ -39,6 +39,7 @@ import ./backends/lima
 import ./backends/libvirt
 import ./backends/incus
 import ./backends/mock
+import ./vm_class_sizing
 {.pop.}
 import ./prune
 import ./ephemeral_handle
@@ -319,6 +320,10 @@ Subcommands:
                           a serial success marker and clean guest shutdown,
                           then remove the transient VM but preserve the disk.
   run                     One-shot revert + exec + harvest + cleanup.
+  vm-class-size           Size a VM class (vCPUs, memory per vCPU, disk,
+                          write bandwidth) from RunQuota's measurements of a
+                          project (`runquota profile` / `runquota sizing`);
+                          `gosti vm-class-size --help` for its flags.
   ephemeral-destroy       libvirt/incus: reclaim an ephemeral instance left
                           running by `run --ephemeral --keep` (destroy +
                           undefine --nvram + remove overlay/config-drive/
@@ -3674,6 +3679,11 @@ proc runCli*(args: seq[string]): int =
     tokenOpts.authToken = scan.authToken
     tokenOpts.authTokenFile = scan.authTokenFile
     return runRemote(scan.remote, tokenOpts, scan.forwarded)
+
+  # `vm-class-size` reads RunQuota's figures and boots nothing: its flags
+  # are its own, not the VM lifecycle's.
+  if args.len > 0 and args[0] == "vm-class-size":
+    return runVmClassSize(args[1 .. ^1])
 
   var opts: CliOpts
   try:

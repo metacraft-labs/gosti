@@ -105,7 +105,7 @@ proc vmHoldArgs*(name: string; cpuMilli: uint32; memoryBytes: uint64;
     result.add(@["--restart-grace", $restartGraceSec, "--"])
     result.add(restartProbe)
 
-proc readLineWithin(p: Process; timeoutSec: int; line: var string): bool =
+proc readLineWithin*(p: Process; timeoutSec: int; line: var string): bool =
   ## One line of the holder's stdout within ``timeoutSec``; false on
   ## timeout or end of output.
   when defined(posix):
@@ -133,7 +133,7 @@ proc readLineWithin(p: Process; timeoutSec: int; line: var string): bool =
     raise newException(RunQuotaVmError,
       "registering a VM with RunQuota needs a POSIX host")
 
-proc exitedWithin(p: Process; millis: int): bool =
+proc exitedWithin*(p: Process; millis: int): bool =
   ## Whether ``p`` exits within ``millis``. Polls ``running`` rather than
   ## calling ``waitForExit`` with a bound, which on POSIX kills a process
   ## still running at the bound.
