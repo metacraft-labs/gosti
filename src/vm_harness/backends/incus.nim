@@ -577,12 +577,29 @@ const
     ## unprivileged process can name a holder it could never find itself:
     ## finding one means reading every namespace's mount table as root.
     ## Overridable with ``VMH_INCUS_BUSY_DATASET_REPORT``.
+  BusyReportMaxAgeSec* = 600
+    ## How old the guard's report may be and still be trusted to say a pin is
+    ## ``locked``. The guard runs every 2 minutes; a report older than five of
+    ## its intervals means the guard has stopped, and a holder it named may
+    ## have exited since. A stale report never makes a teardown fail fast; it
+    ## still names the holder when the retry budget runs out.
+
+proc describeBusyPin(pin: JsonNode): string =
+  result = pin{"namespace"}.getStr() & " (" & pin{"kind"}.getStr()
+  if pin.hasKey("pid"):
+    result.add(": pid " & $pin{"pid"}.getInt() & " " & pin{"comm"}.getStr() &
+      ", uid " & $pin{"uid"}.getInt() & ", unit " & pin{"unit"}.getStr() &
+      ", age " & $pin{"age_seconds"}.getInt() & "s")
+  result.add(")")
+
+proc busyReportPath(): string =
+  gostiEnv("VMH_INCUS_BUSY_DATASET_REPORT", DefaultBusyDatasetReport)
 
 proc busyDatasetHolders*(name: string): string =
   ## One line naming what pins container ``name``'s dataset, from the guard's
   ## report; "" when the host runs no guard, the report is unreadable, or it
   ## lists no holder for ``name``. Never raises: this only enriches an error.
-  let path = gostiEnv("VMH_INCUS_BUSY_DATASET_REPORT", DefaultBusyDatasetReport)
+  let path = busyReportPath()
   if path.len == 0 or not fileExists(path):
     return ""
   try:
@@ -591,17 +608,47 @@ proc busyDatasetHolders*(name: string): string =
     for pin in report{"pins"}.getElems():
       if pin{"container"}.getStr() != name:
         continue
-      var who = pin{"namespace"}.getStr() & " (" & pin{"kind"}.getStr()
-      if pin.hasKey("pid"):
-        who.add(": pid " & $pin{"pid"}.getInt() & " " & pin{"comm"}.getStr() &
-          ", uid " & $pin{"uid"}.getInt() & ", unit " & pin{"unit"}.getStr() &
-          ", age " & $pin{"age_seconds"}.getInt() & "s")
-      who.add(")")
-      parts.add(who)
+      parts.add(describeBusyPin(pin))
     if parts.len == 0:
       return ""
     let age = int(epochTime()) - report{"generated"}.getInt()
     result = "held by mount namespace " & parts.join("; ") &
+      " per " & path & " (" & $age & "s old)"
+  except CatchableError:
+    result = ""
+
+proc lockedDatasetHolders*(name: string): string =
+  ## Non-empty only when retrying the delete of ``name`` cannot help: the
+  ## guard's report is fresh (``BusyReportMaxAgeSec``) and from a successful
+  ## run, lists at least one pin for ``name``, and gives EVERY such pin
+  ## ``release: "locked"``. A locked copy is one the guard tried to detach and
+  ## the kernel refused (EINVAL: the mount is locked into a less privileged
+  ## user namespace), so only the holding process's exit frees the dataset.
+  ##
+  ## Any other reason (``in_use``, ``error``, ``report_only``), a missing
+  ## ``release`` field (a guard older than infra #2396), a mix of locked and
+  ## other pins, or no usable report at all returns "", and the caller keeps
+  ## retrying as before. Never raises.
+  let path = busyReportPath()
+  if path.len == 0 or not fileExists(path):
+    return ""
+  try:
+    let report = parseFile(path)
+    if not report{"success"}.getBool(false):
+      return ""
+    let age = int(epochTime()) - report{"generated"}.getInt()
+    if age < 0 or age > BusyReportMaxAgeSec:
+      return ""
+    var parts: seq[string]
+    for pin in report{"pins"}.getElems():
+      if pin{"container"}.getStr() != name:
+        continue
+      if pin{"release"}.getStr() != "locked":
+        return ""
+      parts.add(describeBusyPin(pin))
+    if parts.len == 0:
+      return ""
+    result = "held by locked mount namespace " & parts.join("; ") &
       " per " & path & " (" & $age & "s old)"
   except CatchableError:
     result = ""
@@ -689,6 +736,22 @@ proc destroyContainerVerified*(b: IncusBackend, name: string;
     lastOutput = (r.stdout & r.stderr).strip()
     if r.exitCode == 0 and not b.containerPresent(name):
       return
+    # A dataset pinned only by LOCKED mount copies stays busy until the
+    # processes holding them exit, which can be days (2026-11-16..18: three
+    # leaked sandboxes pinned garm-* datasets on two hosts until they were
+    # ended by hand). Retrying cannot win, so fail now and say what to end.
+    # GARM retries the failed delete with its own backoff.
+    if "dataset is busy" in lastOutput.toLowerAscii():
+      let locked = lockedDatasetHolders(name)
+      if locked.len > 0:
+        stderr.writeLine("[vm-harness] incus delete " & name & " attempt " &
+          $attempt & " failed: dataset is busy and every holder is locked; " &
+          "not retrying")
+        raise newVmHarnessError($b.id, lpCleanup,
+          "incus delete " & name & " cannot complete: its dataset is busy " &
+          "and every holder is a locked mount copy, " & locked & ". This " &
+          "will not clear until that holder ends; not retrying (gave up " &
+          "after " & $attempt & " attempt(s); last output: " & lastOutput & ")")
     let transient = isTransientIncusDeleteError(lastOutput) or r.exitCode == -1
     # Record WHICH shape was used. An operator reading
     # `docs/CI-Runner-Fleet-Status.md`'s H7 section needs to tell at a glance

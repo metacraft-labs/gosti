@@ -39,7 +39,7 @@
 ## STATEFUL (a file of existing containers) so "the container is really gone
 ## afterwards" is checked, not assumed.
 
-import std/[os, strutils, tables, tempfiles, unittest]
+import std/[os, strutils, tables, tempfiles, times, unittest]
 import vm_harness/cli
 import vm_harness/ephemeral_inventory
 import vm_harness/backends/incus
@@ -392,6 +392,121 @@ when defined(linux):
         writeFile(work / "bad.json", "{not json")
         withEnv("VMH_INCUS_BUSY_DATASET_REPORT", work / "bad.json"):
           check busyDatasetHolders("garm-pinned") == ""
+
+    # ── Every holder LOCKED: fail fast ───────────────────────────────────────
+    #
+    # 2026-11-16..18: three leaked sandboxes held locked copies of garm-*
+    # rootfs mounts for days. The guard (infra #2396) marks such a pin
+    # `release: "locked"` (its detach failed with EINVAL), and only the
+    # holder's exit frees it, so every 240 s retry budget was spent for
+    # nothing. When EVERY pin of the container is locked the teardown fails
+    # on the first busy attempt and names what to end.
+    proc writePins(work: string; releases: openArray[string];
+                   generated = int(epochTime()); success = true): string =
+      ## A guard report with one pin of `garm-pinned` per entry of
+      ## `releases` ("" omits the field, as a guard older than #2396 does),
+      ## plus a locked pin of an unrelated container that must never count.
+      var pins = @["""{"container": "garm-other", "namespace": "mnt:[1]",
+        "kind": "process", "pid": 1, "comm": "x", "uid": 0, "unit": "x.service",
+        "age_seconds": 1, "release": "locked"}"""]
+      for i, rel in releases:
+        pins.add("""{"container": "garm-pinned", "namespace": "mnt:[402653568""" &
+          $i & """]", "kind": "process", "pid": 319197""" & $i &
+          """, "comm": "ah", "uid": 1007, "unit": "agent-harbor-cred.scope",
+          "age_seconds": 172800""" &
+          (if rel.len > 0: ", \"release\": \"" & rel & "\"" else: "") & "}")
+      result = work / "pins.json"
+      writeFile(result, "{\"generated\": " & $generated & ", \"success\": " &
+        $success & ", \"pins\": [" & pins.join(",\n") & "]}")
+
+    proc destroyMsg(work: string; budgetSec: int; slept: var seq[int]): string =
+      let ib = IncusBackend(newIncusBackend(@[work / "incus"]))
+      var s: seq[int]
+      try:
+        ib.destroyContainerVerified("garm-pinned", budgetSec = budgetSec,
+          sleeper = proc (ms: int) = s.add(ms))
+      except CatchableError as e:
+        result = e.msg
+      slept = s
+
+    test "every holder locked: fails on the first busy attempt, naming the holder":
+      let work = createTempDir("gosti-eph-destroy-locked", "")
+      defer: removeDir(work)
+      writeFile(work / "containers", "garm-pinned,STOPPED\n")
+      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 1000)):
+        withEnv("VMH_INCUS_BUSY_DATASET_REPORT",
+                writePins(work, ["locked", "locked"])):
+          check lockedDatasetHolders("garm-pinned").len > 0
+          var slept: seq[int]
+          let msg = destroyMsg(work, DefaultDestroyBudgetSec, slept)
+          # ONE delete, no backoff sleep: the 240 s budget is not spent.
+          check deleteAttempts(work) == 1
+          check slept.len == 0
+          check "dataset is busy" in msg
+          check "every holder is a locked mount copy" in msg
+          check "pid 3191970 ah, uid 1007, unit agent-harbor-cred.scope" in msg
+          check "pid 3191971 ah" in msg
+          check "will not clear until that holder ends" in msg
+          check "not retrying" in msg
+          check "garm-other" notin msg
+          check "x.service" notin msg
+      check readFile(work / "containers") == "garm-pinned,STOPPED\n"
+
+    test "a transient (in_use) pin is still retried until the delete wins":
+      let work = createTempDir("gosti-eph-destroy-inuse", "")
+      defer: removeDir(work)
+      writeFile(work / "containers", "garm-pinned,STOPPED\n")
+      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 2)):
+        withEnv("VMH_INCUS_BUSY_DATASET_REPORT", writePins(work, ["in_use"])):
+          var slept: seq[int]
+          check destroyMsg(work, DefaultDestroyBudgetSec, slept) == ""
+          check deleteAttempts(work) == 3
+          check slept == @[2000, 4000]
+      check readFile(work / "containers") == ""
+
+    test "without a guard report a busy delete is retried as before":
+      let work = createTempDir("gosti-eph-destroy-absent", "")
+      defer: removeDir(work)
+      writeFile(work / "containers", "garm-pinned,STOPPED\n")
+      withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 2)):
+        withEnv("VMH_INCUS_BUSY_DATASET_REPORT", work / "absent.json"):
+          check lockedDatasetHolders("garm-pinned") == ""
+          var slept: seq[int]
+          check destroyMsg(work, DefaultDestroyBudgetSec, slept) == ""
+          check deleteAttempts(work) == 3
+          check slept == @[2000, 4000]
+
+    # NEGATIVE CONTROL for the fast-fail test: the SAME report, the same
+    # stuck container, with exactly one property changed. Each must retry
+    # until the budget is spent, so the fast failure above is caused by
+    # "every pin locked, fresh, from a successful run" and by nothing else
+    # in the fixture.
+    test "negative control: one pin not locked, a stale or failed report, or no release field retries to the budget":
+      let now = int(epochTime())
+      let variants = @[
+        ("one of two pins in_use", @["locked", "in_use"], now, true),
+        ("report_only", @["report_only"], now, true),
+        ("error", @["error"], now, true),
+        ("pre-#2396 guard (no release field)", @[""], now, true),
+        ("stale report", @["locked"], now - BusyReportMaxAgeSec - 60, true),
+        ("failed guard run", @["locked"], now, false)]
+      for (label, releases, generated, success) in variants:
+        checkpoint label
+        let work = createTempDir("gosti-eph-destroy-ctl", "")
+        defer: removeDir(work)
+        writeFile(work / "containers", "garm-pinned,STOPPED\n")
+        withEnv("VMH_INCUS_CMD", fakeIncus(work, busyDeletes = 1000)):
+          withEnv("VMH_INCUS_BUSY_DATASET_REPORT",
+                  writePins(work, releases, generated, success)):
+            check lockedDatasetHolders("garm-pinned") == ""
+            var slept: seq[int]
+            let msg = destroyMsg(work, 10, slept)
+            check deleteAttempts(work) == 3
+            check slept == @[2000, 4000]
+            check "did not complete after 3 attempt(s)" in msg
+            check "will not clear" notin msg
+            # The holder is still named when the budget runs out.
+            check "held by mount namespace" in msg
 
     # ── H7: teardown ORDERING ────────────────────────────────────────────────
     #
