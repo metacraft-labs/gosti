@@ -74,7 +74,7 @@
 ## ``-append``). That is what makes a guest that reaches userspace in
 ## about a second — and therefore an unconditional vTPM gate — possible.
 
-import std/[hashes, options, os, osproc, streams, strutils, tables, times]
+import std/[hashes, json, options, os, osproc, streams, strutils, tables, times]
 
 when defined(posix):
   import std/posix
@@ -378,6 +378,7 @@ type
     networkRestricted*: bool   ## ``restrict=on`` on the user-mode network
     guestForwards*: seq[GuestForward]
     noDisplayDevice*: bool     ## ``-vga none``: no emulated display adapter
+    extraNics*: seq[ExtraNic]  ## more NICs on datagram links (``ExtraNic``)
 
 proc guestForwardOption*(f: GuestForward): string =
   ## ``guestfwd=tcp:<ip>:<port>-cmd:<command>``. QEMU splits ``-netdev``
@@ -397,6 +398,53 @@ proc guestForwardOption*(f: GuestForward): string =
     words.add("'" & w & "'")
   "guestfwd=tcp:" & f.guestAddress & ":" & $f.guestPort & "-cmd:" &
     words.join(" ").replace(",", ",,")
+
+proc extraNicProblem*(n: ExtraNic): string =
+  ## Why ``n`` cannot be realised, or "". The id is spliced into QEMU's
+  ## comma-separated option syntax and names the NIC to QMP, so it is held
+  ## to a plain identifier; the paths must fit a ``sun_path`` (108 bytes
+  ## with its terminator) and may not carry QEMU's option separator.
+  if n.id.len == 0 or n.id.len > 15 or n.id[0] notin {'a' .. 'z'}:
+    return "ExtraNic id must be 1 to 15 lowercase letters and digits, " &
+      "starting with a letter: " & n.id
+  for c in n.id:
+    if c notin {'a' .. 'z', '0' .. '9'}:
+      return "ExtraNic id must be lowercase letters and digits: " & n.id
+  if n.id == "net0":
+    return "ExtraNic id net0 is the user-mode NIC's"
+  let parts = n.mac.split(':')
+  var macOk = parts.len == 6
+  for p in parts:
+    if p.len != 2: macOk = false
+    for c in p:
+      if c notin {'0' .. '9', 'a' .. 'f'}: macOk = false
+  if not macOk:
+    return "ExtraNic mac must be six lowercase hex pairs: " & n.mac
+  if (parseHexInt(parts[0]) and 1) != 0:
+    return "ExtraNic mac must be a unicast address: " & n.mac
+  for (what, path) in [("localSocket", n.localSocket),
+                       ("remoteSocket", n.remoteSocket)]:
+    if not path.isAbsolute:
+      return "ExtraNic " & what & " must be an absolute path: " & path
+    if path.len > 107:
+      return "ExtraNic " & what & " is longer than a unix socket path " &
+        "may be (107 bytes): " & path
+    if ',' in path:
+      return "ExtraNic " & what & " may not contain a comma: " & path
+  if n.localSocket == n.remoteSocket:
+    return "ExtraNic localSocket and remoteSocket are the same path"
+  ""
+
+proc extraNicArgs*(n: ExtraNic): seq[string] =
+  ## The ``-netdev dgram`` and ``-device`` pair for ``n`` (validated by
+  ## ``extraNicProblem``, which raises here as ``ValueError``).
+  let problem = extraNicProblem(n)
+  if problem.len > 0:
+    raise newException(ValueError, problem)
+  @["-netdev", "dgram,id=" & n.id & ",local.type=unix,local.path=" &
+      n.localSocket & ",remote.type=unix,remote.path=" & n.remoteSocket,
+    "-device", "virtio-net-pci,netdev=" & n.id & ",id=" & n.id & ",mac=" &
+      n.mac]
 
 proc kvmUsable*(): bool =
   ## KVM is usable when ``/dev/kvm`` exists and this process may open it
@@ -564,6 +612,10 @@ proc buildQemuBootArgs*(l: QemuBootLaunch): seq[string] =
   else:
     # Boot gates are network-isolated by default.
     result.add(@["-nic", "none"])
+  # Extra NICs come after the user-mode one, so the guest's first NIC is
+  # still the one its SSH forward reaches.
+  for n in l.extraNics:
+    result.add(extraNicArgs(n))
 
   if l.qemuLogPath.len > 0:
     result.add(@["-D", l.qemuLogPath])
@@ -821,6 +873,22 @@ method bootFromMedia*(b: QemuBootBackend, spec: BootMediaSpec): VmHandle =
         networkRestricted: spec.networkRestricted,
         guestForwards: spec.guestForwards,
         noDisplayDevice: spec.noDisplayDevice)
+      for n in spec.extraNics:
+        let problem = extraNicProblem(n)
+        if problem.len > 0:
+          raise newException(ValueError, problem)
+        # QEMU binds the local datagram socket and refuses a path that
+        # exists. One left by this NIC's previous QEMU (a guest reboot is a
+        # new process under ``-no-reboot``) is removed; anything at the
+        # path that is not a socket is the caller's mistake, and stays.
+        when defined(posix):
+          var st: Stat
+          if lstat(n.localSocket.cstring, st) == 0:
+            if not S_ISSOCK(st.st_mode):
+              raise newException(IOError, "ExtraNic localSocket exists " &
+                "and is not a socket: " & n.localSocket)
+            removeFile(n.localSocket)
+        launch.extraNics.add(n)
       for d in spec.dataDiskPaths:
         if not fileExists(d):
           raise newException(IOError,
@@ -1412,6 +1480,18 @@ proc systemReset*(b: QemuBootBackend, vm: VmHandle):
   ##
   ## A failure is returned, never raised (``qmp.qmpCommand``).
   qmpCommand(vm.extra.getOrDefault("qmpSocketPath"), "system_reset")
+
+proc setLink*(b: QemuBootBackend, vm: VmHandle, nicId: string, up: bool):
+    tuple[ok: bool, detail: string] =
+  ## Bring the NIC ``nicId`` (an ``ExtraNic.id``, or ``net0``) up or down
+  ## with QMP ``set_link``: the guest sees its carrier go and come back, as
+  ## when a cable is pulled, and nothing inside the guest is involved. The
+  ## way a test breaks a guest's network from outside it.
+  ## https://www.qemu.org/docs/master/interop/qemu-qmp-ref.html (set_link)
+  ##
+  ## A failure is returned, never raised (``qmp.qmpCommand``).
+  qmpCommand(vm.extra.getOrDefault("qmpSocketPath"), "set_link",
+             %*{"name": nicId, "up": up})
 
 proc sweepStaleQemuBootProcesses*(b: QemuBootBackend): seq[string] =
   ## Kill every live QEMU carrying this backend's name prefix, every

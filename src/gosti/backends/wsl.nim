@@ -410,6 +410,11 @@ method bootFromMedia*(b: WslBackend, spec: BootMediaSpec): VmHandle =
     # dropping them would boot a guest without the disk the caller relies on.
     raise newException(BackendUnavailableError,
       "WslBackend.bootFromMedia does not attach BootMediaSpec.dataDiskPaths")
+  if spec.extraNics.len > 0:
+    # Only qemu-boot realises extra NICs (BootMediaSpec.extraNics); a guest
+    # booted without the link the caller wired would fail later and worse.
+    raise newException(BackendUnavailableError,
+      "WslBackend.bootFromMedia does not attach BootMediaSpec.extraNics")
   when defined(windows):
     if spec.kind != bmkRootfsTar:
       raise newException(BackendUnavailableError,

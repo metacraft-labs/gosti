@@ -297,6 +297,25 @@ type
     command*: seq[string]           ## run per connection, stdin/stdout = the
                                     ## connection; argv, absolute program
 
+  ExtraNic* = object
+    ## One more virtio NIC, on a point-to-point Ethernet link to one other
+    ## VM of this host (``BootMediaSpec.extraNics``). The link is a pair of
+    ## unix datagram sockets (QEMU ``-netdev dgram`` with ``local`` and
+    ## ``remote`` of type ``unix``): each VM binds its own path and sends
+    ## every frame to the other's, so the two need no start order, no
+    ## privileges and no host bridge, and nothing they send leaves the
+    ## host. A frame sent while the peer is not running is dropped, as on
+    ## an unplugged cable.
+    ## https://www.qemu.org/docs/master/system/invocation.html (``-netdev
+    ## dgram``)
+    id*: string            ## netdev and device id (``lan0``); ``setLink``
+                           ## names the NIC by it. Lowercase letters and
+                           ## digits, starting with a letter; not ``net0``
+    mac*: string           ## ``52:54:00:xx:xx:xx``: fixed by the caller, so
+                           ## the guest sees the same NIC across boots
+    localSocket*: string   ## absolute path of the socket this VM binds
+    remoteSocket*: string  ## absolute path of the peer's socket
+
   BootMediaSpec* = object
     ## Direct-boot media for testing OS bring-up itself (not test-in-guest).
     ## Distinct from BaselineSpec: BaselineSpec provisions a long-lived
@@ -383,6 +402,9 @@ type
       ## the only destinations the guest can open. Realised by ``qemu-boot``
       ## only; no other backend reads it.
     guestForwards*: seq[GuestForward]
+    extraNics*: seq[ExtraNic]       ## more NICs, each on a link to one
+      ## other VM (``ExtraNic``), after the user-mode NIC. Realised by
+      ## ``qemu-boot`` only; other backends refuse a non-empty value.
     noDisplayDevice*: bool          ## the guest has no emulated display
       ## ``qemu-boot``: ``-vga none``, so the machine model's default VGA
       ## adapter (q35's ``VGA``, which a Linux guest drives with

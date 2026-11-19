@@ -180,6 +180,62 @@ suite "the display device":
     check valueAfter(after, "-vga") == "none"
     check after.len == before.len + 2
 
+suite "extra NICs on datagram links":
+  let nic = ExtraNic(id: "lan0", mac: "52:54:00:12:34:56",
+                     localSocket: "/tmp/gosti-a.sock",
+                     remoteSocket: "/tmp/gosti-b.sock")
+
+  test "no extra NIC adds nothing":
+    var l = baseLaunch()
+    l.sshForwardPort = 2222
+    check idx(buildQemuBootArgs(l), "dgram,id=lan0,local.type=unix," &
+      "local.path=/tmp/gosti-a.sock,remote.type=unix," &
+      "remote.path=/tmp/gosti-b.sock") < 0
+
+  test "an extra NIC is a dgram netdev and a virtio device after net0":
+    var l = baseLaunch()
+    l.sshForwardPort = 2222
+    let before = buildQemuBootArgs(l)
+    l.extraNics = @[nic]
+    let args = buildQemuBootArgs(l)
+    check args.len == before.len + 4
+    let n = idx(args, "dgram,id=lan0,local.type=unix," &
+      "local.path=/tmp/gosti-a.sock,remote.type=unix," &
+      "remote.path=/tmp/gosti-b.sock")
+    check n > idx(args, "virtio-net-pci,netdev=net0")
+    check args[n - 1] == "-netdev"
+    check args[n + 1] == "-device"
+    check args[n + 2] == "virtio-net-pci,netdev=lan0,id=lan0,mac=52:54:00:12:34:56"
+
+  test "a bad id, MAC or path is refused before QEMU sees it":
+    for bad in [ExtraNic(id: "net0", mac: nic.mac, localSocket: nic.localSocket,
+                         remoteSocket: nic.remoteSocket),
+                ExtraNic(id: "Lan0", mac: nic.mac, localSocket: nic.localSocket,
+                         remoteSocket: nic.remoteSocket),
+                ExtraNic(id: "lan,x", mac: nic.mac, localSocket: nic.localSocket,
+                         remoteSocket: nic.remoteSocket),
+                ExtraNic(id: "lan0", mac: "53:54:00:12:34:56",
+                         localSocket: nic.localSocket,
+                         remoteSocket: nic.remoteSocket),
+                ExtraNic(id: "lan0", mac: "52:54:00:12:34",
+                         localSocket: nic.localSocket,
+                         remoteSocket: nic.remoteSocket),
+                ExtraNic(id: "lan0", mac: nic.mac, localSocket: "rel.sock",
+                         remoteSocket: nic.remoteSocket),
+                ExtraNic(id: "lan0", mac: nic.mac, localSocket: "/tmp/a,b",
+                         remoteSocket: nic.remoteSocket),
+                ExtraNic(id: "lan0", mac: nic.mac, localSocket: nic.localSocket,
+                         remoteSocket: nic.localSocket),
+                ExtraNic(id: "lan0", mac: nic.mac,
+                         localSocket: "/" & repeat('x', 107),
+                         remoteSocket: nic.remoteSocket)]:
+      check extraNicProblem(bad).len > 0
+      var l = baseLaunch()
+      l.extraNics = @[bad]
+      expect ValueError:
+        discard buildQemuBootArgs(l)
+    check extraNicProblem(nic) == ""
+
 suite "restricted user networking":
   test "an unrestricted guest keeps the plain user network":
     var l = baseLaunch()
