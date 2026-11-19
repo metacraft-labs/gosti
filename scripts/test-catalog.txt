@@ -139,6 +139,10 @@ test posix tests/unit/t_linux_runner_resolv_conf.nim
 # The Linux runner recipe bakes a working C compiler (gcc + libc6-dev) and curl,
 # which reprobuild needs on a host without Nix, and compiles a probe at build.
 test all tests/unit/t_linux_runner_c_toolchain.nim
+# The Linux runner recipe bakes `repro` only on an explicit GOSTI_RUNNER_REPRO=1
+# (repro-portable <= 0.2.18 hides /bin on a host without /nix); runs the
+# recipe's own assignment and guards, and holds the documented re-enable check.
+test all tests/unit/t_linux_runner_repro_default.nim
 test all tests/unit/t_tart_backend.nim
 # Tart per-job clones honour --disk-gb: grown with `tart set --disk-size`
 # before boot, an explicit shrink refused by name, and the guest root

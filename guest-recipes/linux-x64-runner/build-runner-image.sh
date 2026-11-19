@@ -76,7 +76,8 @@
 #   GOSTI_RUNNER_KVM      bake nested KVM (HR2)     (default: off; set =1)
 #   GOSTI_RUNNER_RECIPE_REVISION
 #                       image recipe revision property (default: linux-x64-runner-v2)
-#   GOSTI_RUNNER_REPRO    bake the `repro` CLI      (default: ON; set =0 to skip)
+#   GOSTI_RUNNER_REPRO    bake the `repro` CLI      (default: off; set =1 only
+#                                                 under REPRO BAKE's conditions)
 #   GOSTI_REPRO_PIN       reprobuild rev to build   (default: resolved from
 #                       repro-portable from       nixos-modules/flake.lock —
 #                                                 the single source of truth)
@@ -85,9 +86,24 @@
 #   GOSTI_NIXOS_MODULES_LOCK  path to the pinning   (default: ../../../nixos-modules
 #                       nixos-modules flake.lock  /flake.lock relative to script)
 #
-# REPRO BAKE (HR-REPRO): the ephemeral Linux runner ships the pinned `repro`
-# CLI pre-installed on PATH so CI jobs get it for free and reprobuild's
-# idempotent `setup-reprobuild` action no-ops. `repro` is distributed to
+# REPRO BAKE (HR-REPRO): OFF BY DEFAULT. When enabled, the ephemeral Linux
+# runner ships the pinned `repro` CLI pre-installed on PATH so CI jobs get it
+# for free and reprobuild's idempotent `setup-reprobuild` action no-ops.
+#
+# Why it is off: every `repro-portable` up to and including the one 0.2.18
+# shipped is broken on a host without /nix, in ways `repro --version` and
+# `repro hooks protocol` cannot see. Its nix-user-chroot mirrored only a fixed
+# list of host directories (no /bin, so every `/bin/sh` repro spawns fails with
+# ENOENT and the managed git hooks break), started repro in `/` instead of the
+# caller's directory, and emptied PATH. infra #2421 took repro off the
+# gosti-linux-runner image for exactly that. Re-enable (GOSTI_RUNNER_REPRO=1)
+# ONLY with a `repro-portable` built from a reprobuild revision whose
+# `checks.x86_64-linux.repro-portable-host-root` passes -- that check runs the
+# bundle on a host root without /nix and requires `/bin/sh`, the caller's cwd
+# and a real `hooks ensure` + `git checkout` round trip, against the stock
+# bundle as its negative control. A revision without that check does not carry
+# the fix. Confirm the baked image afterwards with infra's
+# `runner-image-repro-probe`. `repro` is distributed to
 # NON-nix hosts (this Debian image has no /nix/store) as `repro-portable` — a
 # ~234 MB self-extracting `toArx` bundle that, on FIRST run, extracts its whole
 # nix closure (~364 MB) under $HOME/.cache and re-exposes it at /nix/store via
@@ -160,12 +176,13 @@ DOCKER_VERSION="${GOSTI_DOCKER_VERSION:-27.5.1}"
 # bakes BOTH into one image (the `incus-nested` prod class needs both).
 KVM="${GOSTI_RUNNER_KVM:-}"
 RECIPE_REVISION="${GOSTI_RUNNER_RECIPE_REVISION:-linux-x64-runner-v2}"
-# HR-REPRO (repro CLI bake): ON by default so the live `gosti-linux-runner` image
-# ships `repro` on PATH. Set GOSTI_RUNNER_REPRO=0 to skip (e.g. to reproduce the
-# pre-repro image byte-for-byte). The pin is resolved from nixos-modules'
-# flake.lock unless GOSTI_REPRO_PIN pins a reprobuild rev explicitly; a pre-built
-# bundle can be supplied via GOSTI_REPRO_BUNDLE (host path) to skip the nix build.
-REPRO="${GOSTI_RUNNER_REPRO:-1}"
+# HR-REPRO (repro CLI bake): OFF by default -- see REPRO BAKE in the header for
+# why, and for the check a bundle must pass before GOSTI_RUNNER_REPRO=1 is set.
+# The pin is resolved from nixos-modules' flake.lock unless GOSTI_REPRO_PIN pins
+# a reprobuild rev explicitly; a pre-built bundle can be supplied via
+# GOSTI_REPRO_BUNDLE (host path) to skip the nix build. Any value other than 0
+# (or empty) enables the bake.
+REPRO="${GOSTI_RUNNER_REPRO:-0}"
 REPRO_PIN="${GOSTI_REPRO_PIN:-}"
 REPRO_BUNDLE="${GOSTI_REPRO_BUNDLE:-}"
 # nixos-modules is the single source of truth for the reprobuild pin. Default to
@@ -763,9 +780,9 @@ log "clearing root-owned runtime dirs + re-asserting ${RUNNER_USER} ownership"
 "
 
 # 5a-REPRO. HR-REPRO — bake the pinned `repro` CLI onto PATH + PRE-WARM its
-#     extraction so per-job first-run is fast. Default-ON (GOSTI_RUNNER_REPRO=1);
-#     set GOSTI_RUNNER_REPRO=0 to reproduce the pre-repro image. See the header
-#     for the full rationale (ephemeral runners must not pay the ~50 s cold
+#     extraction so per-job first-run is fast. Default-OFF; enabled only by an
+#     explicit GOSTI_RUNNER_REPRO=1, under the conditions in the header's
+#     REPRO BAKE section. See the header for the full rationale (ephemeral runners must not pay the ~50 s cold
 #     extraction per job).
 if [ "$REPRO" != "0" ]; then
   resolve_repro_pin

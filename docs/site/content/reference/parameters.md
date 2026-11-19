@@ -81,16 +81,35 @@ both).
 
 | Variable | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `GOSTI_RUNNER_REPRO` | bool (`0` = off) | on | Bake the pinned `repro` CLI onto PATH (as the portable self-extractor) and pre-warm its extraction at bake time so per-job first-run is fast (~4 s warm vs ~50 s cold). Set `0` to reproduce the pre-repro image byte-for-byte. |
+| `GOSTI_RUNNER_REPRO` | bool (`0` = off) | off | Bake the pinned `repro` CLI onto PATH (as the portable self-extractor) and pre-warm its extraction at bake time so per-job first-run is fast (~4 s warm vs ~50 s cold). Set `1` only under the conditions below. |
 | `GOSTI_REPRO_PIN` | git rev | resolved from nixos-modules `flake.lock` | reprobuild rev to build `repro-portable` from. Overrides the single-source-of-truth pin (e.g. to test an unlanded rev). |
 | `GOSTI_REPRO_BUNDLE` | path | nix-built on host | Pre-built `repro-portable` self-extractor to install, skipping the nix build. |
 | `GOSTI_NIXOS_MODULES_LOCK` | path | `../../../nixos-modules/flake.lock` (relative to the script) | The `flake.lock` whose `reprobuild` node rev pins `repro`. This is the single source of truth so the runner image and the nix fleet install byte-identical `repro`. |
 
-Note for out-of-tree consumers: the default `GOSTI_NIXOS_MODULES_LOCK` path
-assumes the sibling-checkout workspace layout. When the recipe is invoked from a
-context without that sibling (e.g. an isolated Nix-store source), either set
-`GOSTI_NIXOS_MODULES_LOCK` to a real path, set `GOSTI_REPRO_PIN` explicitly, or set
-`GOSTI_RUNNER_REPRO=0` to skip the bake — otherwise the build aborts.
+The bake is **off by default** because every `repro-portable` up to and including
+the one reprobuild 0.2.18 shipped is broken on a host without `/nix`, in ways
+`repro --version` and `repro hooks protocol` do not reveal: its `nix-user-chroot`
+mirrored only a fixed list of host directories (no `/bin`, so every `/bin/sh`
+that `repro` spawns fails with `ENOENT` and the managed git hooks break), started
+`repro` in `/` instead of the caller's directory, and emptied `PATH`. Set
+`GOSTI_RUNNER_REPRO=1` only with a bundle built from a reprobuild revision whose
+`checks.x86_64-linux.repro-portable-host-root` passes:
+
+```sh
+nix build "github:metacraft-labs/reprobuild/<rev>#checks.x86_64-linux.repro-portable-host-root"
+```
+
+That check runs the bundle on a host root with no `/nix` and requires `/bin/sh`,
+the caller's working directory, and a real `repro hooks ensure` + `git checkout`
+round trip, with the stock bundle as its negative control. A revision that has no
+such check does not carry the fix. The same applies to a `GOSTI_REPRO_BUNDLE`
+supplied by path: build it from such a revision.
+
+Note for out-of-tree consumers that enable the bake: the default
+`GOSTI_NIXOS_MODULES_LOCK` path assumes the sibling-checkout workspace layout.
+When the recipe is invoked from a context without that sibling (e.g. an isolated
+Nix-store source), either set `GOSTI_NIXOS_MODULES_LOCK` to a real path or set
+`GOSTI_REPRO_PIN` explicitly — otherwise the build aborts.
 
 ### Build-egress overrides (host-dependent)
 
