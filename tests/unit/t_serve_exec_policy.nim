@@ -138,6 +138,13 @@ let providerArgvs = @[
   @["run", "--ephemeral", "--backend", "tart-linux-arm", "--baseline",
     "garm-a1", "--base-image", "ghcr.io/x/y:1", "--source-image",
     "ghcr.io/x/y:1", "--keep", "--log-format", "json"],
+  # Remote Tart Linux with an explicit guest size: garm-provider-gosti sends
+  # `--cpus`/`--memory-mb` and, when the pool sets `tart_disk_gb`,
+  # `--disk-gb` (devops-modules 613b282). The guest disk is grown before boot.
+  @["run", "--ephemeral", "--backend", "tart-linux-arm", "--baseline",
+    "garm-a1", "--base-image", "ghcr.io/x/y:1", "--source-image",
+    "ghcr.io/x/y:1", "--cpus", "4", "--memory-mb", "20480", "--disk-gb", "100",
+    "--keep", "--log-format", "json"],
   # Remote libvirt (hms-libvirt: a qcow2 golden under /storage/iso, OVMF
   # firmware via /run/libvirt/nix-ovmf, 4 vCPU / 16 GiB). The firmware is
   # added per test where the host has a file under FirmwareRoots.

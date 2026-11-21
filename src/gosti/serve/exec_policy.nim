@@ -108,8 +108,9 @@ const
     ("--incus-share-host-nix-store", fkSwitch),
     ("--incus-reprobuild-store", fkValue),
     ("--incus-reprobuild-store-guest-path", fkValue), ("--cpus", fkValue),
-    ("--memory-mb", fkValue), ("--uefi-loader", fkValue),
-    ("--uefi-nvram-template", fkValue), ("--ephemeral-prefix", fkValue),
+    ("--memory-mb", fkValue), ("--disk-gb", fkValue),
+    ("--uefi-loader", fkValue), ("--uefi-nvram-template", fkValue),
+    ("--ephemeral-prefix", fkValue),
     ("--timeout-sec", fkValue), ("--log-format", fkValue)]
 
   EphemeralDestroyFlags: seq[Flag] = @[
