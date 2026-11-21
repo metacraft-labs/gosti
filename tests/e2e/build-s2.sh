@@ -61,7 +61,10 @@ build_and_run_test() {
       CMD=()
       for a in \"\${RAW[@]}\"; do
         case \"\$a\" in
-          --define:reproProviderMode) continue ;;
+          # This compile evaluates the DSL in process, so it needs the
+          # evaluation mode in place of the provider one: with neither,
+          # \`import reprobuild\` compiles only the thin form stubs.
+          --define:reproProviderMode) CMD+=(--define:reproEvalMode); continue ;;
           --nimcache:*) continue ;;
           --out:*) continue ;;
           '${FLAG_SRC}') continue ;;
