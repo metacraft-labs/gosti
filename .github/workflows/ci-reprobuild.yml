@@ -79,15 +79,7 @@ jobs:
     # at 63680f8 before product tests began. Keep the full test matrix.
     timeout-minutes: 180
     steps:
-      # Full history. Linux and macOS build the pinned reprobuild from source
-      # in .reprobuild-src, and reprobuild pins gosti as a sibling, which
-      # resolves to this checkout. repro accepts a sibling at or ahead of the
-      # pin and refuses one it cannot place, and a depth-1 clone cannot show
-      # that this commit descends from the pinned one (run 45782702955:
-      # "no acceptable source for GOSTI_SRC").
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Mint installation token
         id: ci-token
