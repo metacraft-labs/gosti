@@ -16,7 +16,10 @@
 ## it owns, with a host file that reserves capacity for class ``ci``; the
 ## pool's reporting session is the real ``runquota`` client
 ## (``runquota pressure report``), and the figures are read back through the
-## real ``runquota pressure --json``. The pool's VMs come from gosti's mock
+## real ``runquota pressure --json``. The reporting session connects on the
+## class's own socket (``class-ci.sock``, which the private daemon creates
+## owner-only beside its endpoint), because a class is claimed only there.
+## The pool's VMs come from gosti's mock
 ## backend: what is under test is the pool's queue and its report, not a
 ## hypervisor, and a booted VM would add minutes and nothing to it.
 ##
@@ -127,6 +130,25 @@ suite "pool class-queue waits":
 
   teardown:
     stopDaemon()
+
+  test "the reporter claims its class on the class's own socket":
+    # The private daemon gives the declared class an owner-only socket
+    # beside its endpoint, and the reporting session is served there. A
+    # class the host does not declare has no socket: the reporter is
+    # refused, with the client's reason, and the pool would serve its jobs
+    # unreported. Mutation: a reporter that reached the shared socket with
+    # the class would be refused there too, naming the class socket.
+    check isSocket(root / ("class-" & Class & ".sock"))
+    let reporter = startClassQueueReporter(@[binDir / "runquota"], Class)
+    check not reporter.isNil and not reporter.lost
+    reporter.close()
+    var refusal = ""
+    try:
+      discard startClassQueueReporter(@[binDir / "runquota"], "undeclared")
+    except ClassQueueError as e:
+      refusal = e.msg
+    checkpoint refusal
+    check "declares no class undeclared" in refusal
 
   test "a job of a reserved class waiting 90 s is a class-queue wait":
     let backend = newMockBackend()

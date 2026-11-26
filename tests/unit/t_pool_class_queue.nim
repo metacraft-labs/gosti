@@ -33,6 +33,7 @@ proc recordingRunquota(dir: string; ready = true): string =
   writeFile(result, "#!/bin/sh\n" &
     "echo \"argv $*\" >> " & quoteShell(dir / "log") & "\n" &
     "echo \"session ${RUNQUOTA_SESSION:-}\" >> " & quoteShell(dir / "log") & "\n" &
+    "echo \"class ${RUNQUOTA_CLASS:-}\" >> " & quoteShell(dir / "log") & "\n" &
     (if ready: "echo ready 7\n" else: "echo 'no daemon' >&2; exit 1\n") &
     "while read kind started length; do\n" &
     "  echo \"line $kind $started $length\" >> " & quoteShell(dir / "log") & "\n" &
@@ -75,9 +76,12 @@ suite "pool class-queue waits":
   test "one reporter per pool, with its class and group; one line per wait":
     # Mutations: measuring from `acquireFor` instead of the job's queued
     # time reports ~0 and nothing is sent; sending sub-second waits sends a
-    # second line.
+    # second line; leaving an inherited RUNQUOTA_CLASS in the reporter's
+    # environment makes it disagree with `--class` about the class's socket.
     let dir = createTempDir("gosti-cq-", "")
     defer: removeDir(dir)
+    putEnv("RUNQUOTA_CLASS", "inherited")
+    defer: delEnv("RUNQUOTA_CLASS")
     var p = mkPool(recordingRunquota(dir), "ci", session = "pool-7")
     p.construct()
     check not p.reporter.isNil
@@ -108,6 +112,7 @@ suite "pool class-queue waits":
     let lines = logLines(dir)
     check lines[0] == "argv pressure report --class ci"
     check lines[1] == "session pool-7"
+    check lines[2] == "class ci"
     var reported: seq[string]
     for line in lines:
       if line.startsWith("line "): reported.add(line)

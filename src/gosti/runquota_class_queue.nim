@@ -18,6 +18,16 @@
 ## answer (``reported ...``, ``skipped ...`` for a wait under a second,
 ## ``refused ...``). Closing its stdin ends the session.
 ##
+## WHO MAY REPORT INTO A CLASS is the host's decision, not the pool's. Each
+## reserved class has its own daemon socket (``class-<class>.sock`` beside
+## the daemon's endpoint), whose permissions the host file declares, and the
+## reporter connects there: ``--class`` picks the socket, and the reporter's
+## environment carries the same class in ``RUNQUOTA_CLASS``, so every
+## RunQuota client the reporting session starts claims the class the same
+## way. A pool whose account the class socket refuses, or whose class the
+## host does not declare, gets the client's refusal -- which names the
+## socket and the class -- on stderr, once.
+##
 ## Reporting is the pool's configuration: a pool with no class starts no
 ## reporter and reports nothing. A reporter that cannot be started, or that
 ## goes away, is a lost measurement, never a failed job: the pool keeps
@@ -62,7 +72,9 @@ proc startClassQueueReporter*(command: seq[string]; className: string;
   ## registered. ``session`` names the RunQuota session group (else the
   ## daemon puts it in the group named after the class). Raises
   ## ``ClassQueueError`` when the client cannot be run or refuses (an
-  ## unknown class name, a daemon that predates classes, none reachable).
+  ## unknown class name, a daemon that predates classes, none reachable, a
+  ## class socket that refuses this account, a class the host does not
+  ## declare), with the client's own message.
   if command.len == 0:
     raise newException(ClassQueueError, "no runquota command")
   if className.len == 0:
@@ -72,6 +84,10 @@ proc startClassQueueReporter*(command: seq[string]; className: string;
     env[k] = v
   if session.len > 0:
     env["RUNQUOTA_SESSION"] = session
+  # THE SAME CLASS IN THE ENVIRONMENT as in ``--class``: the client finds
+  # the class's socket by it, and an inherited ``RUNQUOTA_CLASS`` naming
+  # another class must not leave the session's clients disagreeing.
+  env["RUNQUOTA_CLASS"] = className
   let p =
     try:
       startProcess(command[0], args = command[1 .. ^1] &
