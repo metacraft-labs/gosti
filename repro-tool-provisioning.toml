@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Metacraft Labs / Schelling Point Labs
+# SPDX-License-Identifier: Apache-2.0
+#
+# Per-tool provisioning overrides (reprobuild docs/users "Choose where tools
+# come from"). repro.nim keeps `path` provisioning on Windows, where the CI
+# runner's PATH supplies MSYS2's shell tools and qemu-img. Nim is not on that
+# PATH, and since reprobuild 7004acdea7 path mode no longer falls back to the
+# catalog's archive for a tool PATH lacks, so Nim comes from its release
+# archive on Windows.
+schema = "reprobuild.project.tool-provisioning.v1"
+
+[tool-provisioning.overrides.windows]
+nim = "tarball"
